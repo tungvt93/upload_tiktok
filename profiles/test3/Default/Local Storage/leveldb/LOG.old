@@ -1,0 +1,5 @@
+2026/04/12-16:06:55.040 1bebce Reusing MANIFEST /Users/its/Documents/Codes/Code_labs/profiles/test3/Default/Local Storage/leveldb/MANIFEST-000001
+2026/04/12-16:06:55.045 1bebce Recovering log #30
+2026/04/12-16:06:55.045 1bebce Reusing old log /Users/its/Documents/Codes/Code_labs/profiles/test3/Default/Local Storage/leveldb/000030.log 
+2026/04/12-16:08:11.114 1bebd2 Level-0 table #33: started
+2026/04/12-16:08:11.120 1bebd2 Level-0 table #33: 54539 bytes OK

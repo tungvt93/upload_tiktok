@@ -1,0 +1,20 @@
+2026/04/12-16:10:34.415 1c0d49 Reusing MANIFEST /Users/its/Documents/Codes/Code_labs/profiles/test3/Default/Local Storage/leveldb/MANIFEST-000001
+2026/04/12-16:10:34.421 1c0d49 Recovering log #30
+2026/04/12-16:10:34.422 1c0d49 Level-0 table #32: started
+2026/04/12-16:10:34.430 1c0d49 Level-0 table #32: 54539 bytes OK
+2026/04/12-16:10:34.431 1c0d49 Recovering log #32
+2026/04/12-16:10:34.431 1c0d49 Reusing old log /Users/its/Documents/Codes/Code_labs/profiles/test3/Default/Local Storage/leveldb/000032.log 
+2026/04/12-16:10:34.434 1c0d49 Delete type=2 #33
+2026/04/12-16:10:34.434 1c0d49 Delete type=0 #30
+2026/04/12-16:10:34.436 1c0d4e Compacting 4@0 + 1@1 files
+2026/04/12-16:10:34.444 1c0d4e Generated table #33@0: 79 keys, 47293 bytes
+2026/04/12-16:10:34.444 1c0d4e Compacted 4@0 + 1@1 files => 47293 bytes
+2026/04/12-16:10:34.445 1c0d4e compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/04/12-16:10:34.445 1c0d4e Delete type=2 #29
+2026/04/12-16:10:34.445 1c0d4e Delete type=2 #21
+2026/04/12-16:10:34.446 1c0d4e Delete type=2 #32
+2026/04/12-16:10:34.446 1c0d4e Delete type=2 #27
+2026/04/12-16:10:34.446 1c0d4e Delete type=2 #24
+2026/04/12-16:19:35.885 1c0d5c Level-0 table #35: started
+2026/04/12-16:19:35.888 1c0d5c Level-0 table #35: 21450 bytes OK
+2026/04/12-16:19:35.891 1c0d5c Delete type=0 #32
