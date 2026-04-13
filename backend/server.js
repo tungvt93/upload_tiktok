@@ -6,6 +6,13 @@ import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
 import Database from 'better-sqlite3';
 import { exec } from 'child_process';
+import {
+    computeNextScheduledTime,
+    formatScheduleValue,
+    getScheduleHintText,
+    inferScheduleFieldKind,
+    sortScheduleInputs
+} from './schedule-utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -280,6 +287,92 @@ async function runAllParallel(profilesToRun) {
     }
 
     processQueue().catch(err => console.error('Parallel execution error:', err));
+}
+
+const describeScheduleInput = (input) => {
+    const hint = getScheduleHintText(input) || 'no-hint';
+    return `#${input.index} kind=${inferScheduleFieldKind(input)} hint="${hint.slice(0, 80)}"`;
+};
+
+async function resolveScheduleInputs(page, log) {
+    await page.waitForFunction(() => {
+        const visibleInputs = Array.from(document.querySelectorAll('input.TUXTextInputCore-input')).filter((input) => {
+            const style = window.getComputedStyle(input);
+            const rect = input.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        });
+
+        return visibleInputs.length >= 2;
+    }, { timeout: 10000 }).catch(() => null);
+
+    const locator = page.locator('input.TUXTextInputCore-input:visible');
+    const count = await locator.count();
+    const inputs = [];
+
+    for (let index = 0; index < count; index++) {
+        const meta = await locator.nth(index).evaluate((input) => {
+            const rect = input.getBoundingClientRect();
+            return {
+                placeholder: input.getAttribute('placeholder') || '',
+                ariaLabel: input.getAttribute('aria-label') || '',
+                label: (input.closest('label')?.innerText || input.parentElement?.innerText || '').trim().slice(0, 120),
+                name: input.getAttribute('name') || '',
+                id: input.id || '',
+                value: input.value || '',
+                top: rect.top,
+                left: rect.left
+            };
+        });
+
+        inputs.push({ index, ...meta });
+    }
+
+    const orderedInputs = sortScheduleInputs(inputs);
+    if (orderedInputs.length === 0) {
+        throw new Error('No visible schedule inputs found');
+    }
+
+    log(`Visible schedule inputs: ${orderedInputs.map(describeScheduleInput).join(' | ')}`);
+
+    const selected = { date: null, time: null };
+    for (const input of orderedInputs) {
+        const kind = inferScheduleFieldKind(input);
+        if (kind === 'date' && !selected.date) selected.date = input;
+        if (kind === 'time' && !selected.time) selected.time = input;
+    }
+
+    if (!selected.date) {
+        selected.date = orderedInputs[0];
+    }
+
+    if (!selected.time) {
+        selected.time = orderedInputs.find((input) => input.index !== selected.date?.index) || orderedInputs[1] || null;
+    }
+
+    return selected;
+}
+
+async function fillScheduleInput(page, inputMeta, value, label, log) {
+    if (!inputMeta) {
+        throw new Error(`${label} input not found`);
+    }
+
+    const input = page.locator('input.TUXTextInputCore-input:visible').nth(inputMeta.index);
+    log(`Setting ${label} using ${describeScheduleInput(inputMeta)} => ${value}`);
+
+    await input.scrollIntoViewIfNeeded();
+    await input.click({ clickCount: 3 });
+    await input.fill('');
+    await input.type(value, { delay: 50 });
+    await input.press('Tab').catch(() => null);
+    await page.waitForTimeout(500);
+
+    const actualValue = await input.inputValue().catch(() => '');
+    log(`${label} input value after fill: ${actualValue || '<empty>'}`);
+
+    if (actualValue && actualValue.trim() !== value) {
+        log(`Warning: ${label} input mismatch after fill. Expected ${value}, got ${actualValue}`);
+    }
 }
 
 async function runSingleProfile(profile) {
@@ -629,79 +722,37 @@ async function uploadVideo(profile, videoFolder, videos) {
                     log(`Task 3: Scheduling video ${i + 1}...`);
                     
                     // 1. Calculate schedule time
-                    if (i === 3) {
-                        // 4th video: +20 mins from now
-                        lastScheduledTime = new Date(Date.now() + 20 * 60000);
-                    } else if (lastScheduledTime) {
-                        // 5th+ video: +5 mins from last
-                        lastScheduledTime = new Date(lastScheduledTime.getTime() + 5 * 60000);
-                    } else {
-                        // Fallback if index 3 was skipped
-                        lastScheduledTime = new Date(Date.now() + 20 * 60000);
-                    }
+                    lastScheduledTime = computeNextScheduledTime({
+                        index: i,
+                        lastScheduledTime,
+                        now: new Date()
+                    });
 
                     if (lastScheduledTime) {
-                        // Round up to nearest 5 minutes as TikTok only accepts 5-min increments
-                        // Use milliseconds to ensure we round UP correctly even if there are remaining seconds
-                        const fiveMinutesInMs = 5 * 60 * 1000;
-                        lastScheduledTime = new Date(Math.ceil(lastScheduledTime.getTime() / fiveMinutesInMs) * fiveMinutesInMs);
-
-                        // Use local time instead of UTC to avoid timezone shifts
-                        const year = lastScheduledTime.getFullYear();
-                        const month = String(lastScheduledTime.getMonth() + 1).padStart(2, '0');
-                        const day = String(lastScheduledTime.getDate()).padStart(2, '0');
-                        const dateStr = `${year}-${month}-${day}`;
-                        
-                        const hours = String(lastScheduledTime.getHours()).padStart(2, '0');
-                        const mins = String(lastScheduledTime.getMinutes()).padStart(2, '0');
-                        const timeStr = `${hours}:${mins}`;
-                        
+                        const dateStr = formatScheduleValue(lastScheduledTime, 'date');
+                        const timeStr = formatScheduleValue(lastScheduledTime, 'time');
                         log(`Target schedule (Local): ${dateStr} ${timeStr}`);
 
                         // 2. Click "Schedule" radio
                         const scheduleRadio = 'input[value="schedule"]';
                         log(`Waiting for schedule radio: ${scheduleRadio}`);
-                        await page.waitForSelector(scheduleRadio, { timeout: 15000, state: 'attached' });
-                        
-                        // Scroll into view and click
-                        await page.evaluate((sel) => {
-                            const rb = document.querySelector(sel);
-                            if (rb) {
-                                rb.scrollIntoView();
-                                rb.click();
-                            }
-                        }, scheduleRadio);
+                        const scheduleRadioInput = page.locator(scheduleRadio).first();
+                        await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
+                        await scheduleRadioInput.scrollIntoViewIfNeeded().catch(() => null);
+                        await scheduleRadioInput.check({ force: true }).catch(async () => {
+                            await scheduleRadioInput.click({ force: true });
+                        });
                         
                         log(`Selected "Schedule" option.`);
                         await page.waitForTimeout(3000);
 
-                        // 3. Set Date and Time
-                        const setInput = async (selector, value, label) => {
-                            log(`Setting ${label} to ${value}...`);
-                            const success = await page.evaluate(({ sel, val }) => {
-                                const input = document.querySelector(sel);
-                                if (input) {
-                                    input.focus();
-                                    input.value = val;
-                                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                                    input.dispatchEvent(new Event('blur', { bubbles: true }));
-                                    return true;
-                                }
-                                return false;
-                            }, { sel: selector, val: value });
-                            
-                            if (!success) {
-                                log(`Warning: Could not find ${label} input (${selector})`);
-                            }
-                        };
+                        // 3. Resolve visible date/time inputs and fill them via Playwright
+                        const scheduleInputs = await resolveScheduleInputs(page, log);
+                        const resolvedDateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
+                        const resolvedTimeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
-                        // Selectors from user information
-                        const timeInputSelector = 'input.TUXTextInputCore-input[value*=":"]';
-                        const dateInputSelector = 'input.TUXTextInputCore-input[value*="-"]';
-
-                        await setInput(dateInputSelector, dateStr, 'Date');
-                        await setInput(timeInputSelector, timeStr, 'Time');
+                        await fillScheduleInput(page, scheduleInputs.date, resolvedDateValue, 'Date', log);
+                        await fillScheduleInput(page, scheduleInputs.time, resolvedTimeValue, 'Time', log);
                         
                         await page.waitForTimeout(3000); // Increased wait for UI to settle
                         
