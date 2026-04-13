@@ -28,11 +28,14 @@ const DB_PATH = path.join(DB_DIR, 'tiktok.db');
 const OLD_DB_PATH = path.join(DB_DIR, 'db.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+const EXTENSIONS_DIR = path.join(__dirname, '..', 'extensions');
+const URBAN_EXTENSION_PATH = path.join(EXTENSIONS_DIR, 'urban-vpn');
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR);
 if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+if (!fs.existsSync(EXTENSIONS_DIR)) fs.mkdirSync(EXTENSIONS_DIR);
 
 // Init SQLite DB
 const db = new Database(DB_PATH);
@@ -144,16 +147,44 @@ app.delete('/api/profiles/:id', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { video_folder, proxy, is_scheduled } = req.body;
+    const { name, video_folder, proxy, is_scheduled } = req.body;
+    const profileId = req.params.id;
+
+    // Check if profile exists
+    const currentProfile = db.prepare('SELECT name FROM profiles WHERE id = ?').get(profileId);
+    if (!currentProfile) return res.status(404).json({ error: 'Profile not found' });
+
+    if (name !== undefined) {
+        if (currentProfile.name !== name) {
+            // Check if new name exists
+            const existing = db.prepare('SELECT id FROM profiles WHERE name = ?').get(name);
+            if (existing) return res.status(400).json({ error: 'Profile name already exists' });
+
+            // Rename folder
+            const oldPath = path.join(PROFILES_DIR, currentProfile.name);
+            const newPath = path.join(PROFILES_DIR, name);
+            try {
+                if (fs.existsSync(oldPath)) {
+                    fs.renameSync(oldPath, newPath);
+                    console.log(`Renamed profile folder from ${currentProfile.name} to ${name}`);
+                }
+                const result = db.prepare('UPDATE profiles SET name = ? WHERE id = ?').run(name, profileId);
+                console.log(`Database update for name: ${result.changes} rows affected`);
+            } catch (err) {
+                console.error('Rename folder error:', err);
+                return res.status(500).json({ error: 'Failed to rename profile directory' });
+            }
+        }
+    }
     if (video_folder !== undefined) {
-        db.prepare('UPDATE profiles SET video_folder = ? WHERE id = ?').run(video_folder, req.params.id);
+        db.prepare('UPDATE profiles SET video_folder = ? WHERE id = ?').run(video_folder, profileId);
     }
     if (proxy !== undefined) {
-        db.prepare('UPDATE profiles SET proxy = ? WHERE id = ?').run(proxy, req.params.id);
+        db.prepare('UPDATE profiles SET proxy = ? WHERE id = ?').run(proxy, profileId);
     }
     if (is_scheduled !== undefined) {
         const val = is_scheduled ? 1 : 0;
-        db.prepare('UPDATE profiles SET is_scheduled = ? WHERE id = ?').run(val, req.params.id);
+        db.prepare('UPDATE profiles SET is_scheduled = ? WHERE id = ?').run(val, profileId);
     }
     res.json({ success: true });
 });
@@ -173,7 +204,7 @@ app.post('/api/select-folder', (req, res) => {
     let script = '';
 
     if (process.platform === 'darwin') {
-        script = `osascript -e 'POSIX path of (choose folder with prompt "Select Video Folder")'`;
+        script = `osascript -e 'tell application (path to frontmost application as text) to POSIX path of (choose folder with prompt "Select Video Folder")'`;
     } else if (process.platform === 'win32') {
         script = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.ShowDialog() | Out-Null; $f.SelectedPath"`;
     } else {
@@ -240,8 +271,21 @@ app.post('/api/open-profile', async (req, res) => {
         const userDataDir = path.join(PROFILES_DIR, profile.name);
         const browserOptions = {
             headless: false,
-            args: ['--disable-blink-features=AutomationControlled']
+            args: [
+                '--disable-blink-features=AutomationControlled'
+            ]
         };
+
+        const manifestPath = path.join(URBAN_EXTENSION_PATH, 'manifest.json');
+        if (fs.existsSync(manifestPath)) {
+            browserOptions.args.push(
+                `--disable-extensions-except=${URBAN_EXTENSION_PATH}`,
+                `--load-extension=${URBAN_EXTENSION_PATH}`
+            );
+            console.log(`[${profile.name}] Loading Urban VPN extension...`);
+        } else {
+            console.log(`[${profile.name}] Urban VPN extension not found or invalid (missing manifest.json). Skipping.`);
+        }
 
         if (profile.proxy) {
             browserOptions.proxy = { server: profile.proxy };
@@ -434,8 +478,21 @@ async function uploadVideo(profile, videoFolder, videos) {
 
     const browserOptions = {
         headless: false,
-        args: ['--disable-blink-features=AutomationControlled']
+        args: [
+            '--disable-blink-features=AutomationControlled'
+        ]
     };
+
+    const manifestPath = path.join(URBAN_EXTENSION_PATH, 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+        browserOptions.args.push(
+            `--disable-extensions-except=${URBAN_EXTENSION_PATH}`,
+            `--load-extension=${URBAN_EXTENSION_PATH}`
+        );
+        console.log(`[${profile.name}] Loading Urban VPN extension for automation...`);
+    } else {
+        console.log(`[${profile.name}] Urban VPN extension not found or invalid for automation. Skipping.`);
+    }
 
     if (profile.proxy) {
         console.log(`[${profile.name}] Using proxy: ${profile.proxy}`);
@@ -767,20 +824,13 @@ async function uploadVideo(profile, videoFolder, videos) {
 
             log(`Starting Post click sequence...`);
             let clickedPost = false;
-            for (let clickAttempt = 0; clickAttempt < 8; clickAttempt++) {
+            for (let clickAttempt = 0; clickAttempt < 10; clickAttempt++) {
                 await dismissPopups(page);
                 
-                // Screenshot before clicking Post
-                if (clickAttempt === 0) {
-                    await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_before_final_post.png`) }).catch(() => null);
-                }
-
-                // Refined selector for the big red "Post" button
                 const postSelectors = [
                     'button.common-button-post-video',
                     '[data-e2e="post_video_button"]',
                     'button:has-text("Post"):not(:has-text("draft"))',
-                    'button[data-size="large"]:has-text("Post")'
                 ];
                 
                 let targetBtn = null;
@@ -788,49 +838,58 @@ async function uploadVideo(profile, videoFolder, videos) {
                     const btn = await page.$(sel);
                     if (btn && await btn.isVisible() && !await btn.isDisabled()) {
                         targetBtn = btn;
-                        log(`Found Post button via ${sel}`);
                         break;
                     }
                 }
 
                 if (targetBtn) {
                     log(`Clicking Post button (Attempt ${clickAttempt + 1})...`);
-                    // Use only one click method to avoid double posting. 
-                    // evaluate click is often more robust for hidden/overlapped buttons in React.
-                    await targetBtn.evaluate(node => node.click()).catch(() => null);
-                }
-                
-                await page.waitForTimeout(8000); // Wait longer for post to process
-                
-                // Check if we are still on the upload page
-                const stillOnPage = await page.$('.video-info-container, button:has-text("Post")');
-                if (!stillOnPage) {
-                    log(`Post button and editor gone - success.`);
-                    clickedPost = true;
-                    break;
-                }
-            }
-
-            if (clickedPost) {
-                log(`Waiting for TikTok to confirm post...`);
-                let postConfirmed = false;
-                for (let confirmWait = 0; confirmWait < 12; confirmWait++) {
-                    await page.waitForTimeout(5000);
-                    if (await page.$('.upload-stage-btn') || !await page.$('.video-info-container')) {
-                        postConfirmed = true;
-                        log(`Post CONFIRMED.`);
-                        break;
+                    try {
+                        // Strategy A: Real browser click
+                        await targetBtn.click({ force: true, timeout: 5000 });
+                    } catch (e) {
+                        // Strategy B: Evaluate click fallback
+                        await targetBtn.evaluate(node => node.click()).catch(() => null);
                     }
                     await dismissPopups(page);
                 }
-                if (postConfirmed) {
-                    try {
-                        if (fs.existsSync(videoPath)) {
-                            fs.renameSync(videoPath, path.join(doneDir, videoFileName));
-                            log(`Moved ${videoFileName} to done.`);
-                        }
-                        uploadedCount++;
-                    } catch (err) { log(`Error moving file: ${err.message}`); }
+                
+                // Success detection polling (Wait up to 15s per attempt)
+                for (let poll = 0; poll < 3; poll++) {
+                    await page.waitForTimeout(5000);
+                    
+                    const postBtnGone = !await page.$('button:has-text("Post")');
+                    const successMsg = await page.$('text="Uploaded", text="Success", text="View video", text="Manage your posts", text="Share video"');
+                    const redirected = !page.url().includes('upload') || page.url().includes('manage') || page.url().includes('content');
+
+                    if (postBtnGone || successMsg || redirected) {
+                        log(`Post confirmed! (btnGone: ${postBtnGone}, msg: ${!!successMsg}, redirected: ${redirected})`);
+                        clickedPost = true;
+                        break;
+                    }
+                    
+                    // Check if button text changed to "Posting..."
+                    const btnText = await targetBtn?.innerText().catch(() => "");
+                    if (btnText?.includes("Posting")) {
+                        log("Status: Posting in progress...");
+                    }
+                    
+                    await dismissPopups(page);
+                }
+
+                if (clickedPost) break;
+            }
+
+            if (clickedPost) {
+                log(`Finalizing upload for ${videoFileName}...`);
+                try {
+                    if (fs.existsSync(videoPath)) {
+                        fs.renameSync(videoPath, path.join(doneDir, videoFileName));
+                        log(`SUCCESS: Moved ${videoFileName} to ${doneDir}`);
+                    }
+                    uploadedCount++;
+                } catch (err) { 
+                    log(`ERROR moving file: ${err.message}`); 
                 }
             }
         }

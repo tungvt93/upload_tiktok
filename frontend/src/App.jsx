@@ -17,7 +17,10 @@ import {
   Zap,
   FolderOpen,
   Link,
-  ExternalLink
+  ExternalLink,
+  Edit3,
+  Check,
+  X
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -30,6 +33,9 @@ const App = () => {
   const [message, setMessage] = useState(null);
   const [activeTab, setActiveTab] = useState('profiles');
   const [processingIds, setProcessingIds] = useState(new Set());
+  const [isSelectingFolder, setIsSelectingFolder] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editingValue, setEditingValue] = useState('');
 
   useEffect(() => {
     fetchData();
@@ -138,6 +144,23 @@ const App = () => {
       console.error(err);
     }
   };
+
+  const updateProfileName = async (id, newName) => {
+    if (!newName.trim()) {
+      setEditingId(null);
+      return;
+    }
+    try {
+      await axios.patch(`/api/profiles/${id}`, { name: newName });
+      setEditingId(null);
+      fetchData();
+      setMessage({ type: 'success', text: 'Profile renamed successfully' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to rename profile' });
+      setEditingId(null);
+    }
+  };
   
   const updateProfileSchedule = async (id, is_scheduled) => {
     // Prevent multiple concurrent updates
@@ -165,19 +188,26 @@ const App = () => {
   };
 
   const handleSelectFolder = async (id = null) => {
+    setIsSelectingFolder(true);
     try {
       const res = await axios.post('/api/select-folder');
       if (res.data.path) {
         if (id) {
-          updateProfileFolder(id, res.data.path);
+          await updateProfileFolder(id, res.data.path);
         } else {
           const newConfig = { ...config, videoFolder: res.data.path };
           setConfig(newConfig);
           await axios.post('/api/config', newConfig);
+          setMessage({ type: 'success', text: 'Default folder updated' });
+          setTimeout(() => setMessage(null), 3000);
+          // Auto-hide settings and go back to profiles dashboard
+          setActiveTab('profiles');
         }
       }
     } catch (err) {
       console.error('Folder selection cancelled or failed');
+    } finally {
+      setIsSelectingFolder(false);
     }
   };
 
@@ -381,7 +411,48 @@ const App = () => {
                             <Globe size={24} color="var(--accent)" />
                           </div>
                           <div>
-                            <h3 style={{ fontSize: '1.1rem', fontWeight: '700' }}>{profile.name}</h3>
+                            {editingId === profile.id ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <input 
+                                  autoFocus
+                                  className="input"
+                                  style={{ fontSize: '0.9rem', padding: '4px 8px', width: '150px' }}
+                                  value={editingValue}
+                                  onChange={(e) => setEditingValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') updateProfileName(profile.id, editingValue);
+                                    if (e.key === 'Escape') setEditingId(null);
+                                  }}
+                                />
+                                <button 
+                                  onClick={() => updateProfileName(profile.id, editingValue)}
+                                  style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '4px' }}
+                                >
+                                  <Check size={16} />
+                                </button>
+                                <button 
+                                  onClick={() => setEditingId(null)}
+                                  style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '4px' }}
+                                >
+                                  <X size={16} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <h3 style={{ fontSize: '1.1rem', fontWeight: '700' }}>{profile.name}</h3>
+                                <button 
+                                  onClick={() => {
+                                    setEditingId(profile.id);
+                                    setEditingValue(profile.name);
+                                  }}
+                                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.5, transition: 'opacity 0.2s' }}
+                                  onMouseOver={(e) => e.target.style.opacity = 1}
+                                  onMouseOut={(e) => e.target.style.opacity = 0.5}
+                                >
+                                  <Edit3 size={14} />
+                                </button>
+                              </div>
+                            )}
                             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                               <Clock size={12} /> 
                               {profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}
@@ -612,6 +683,58 @@ const App = () => {
           )}
         </main>
       </div>
+      {/* Folder Selection Loading Overlay */}
+      <AnimatePresence>
+        {isSelectingFolder && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0, 0, 0, 0.7)',
+              backdropFilter: 'blur(8px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+              flexDirection: 'column',
+              gap: '20px'
+            }}
+          >
+            <div className="glass" style={{ padding: '40px', borderRadius: '24px', textAlign: 'center', border: '1px solid var(--primary)' }}>
+              <div style={{ position: 'relative', width: '80px', height: '80px', margin: '0 auto 24px' }}>
+                <div style={{ 
+                  position: 'absolute', 
+                  inset: 0, 
+                  border: '4px solid rgba(255, 63, 182, 0.1)', 
+                  borderRadius: '50%' 
+                }} />
+                <motion.div 
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                  style={{ 
+                    position: 'absolute', 
+                    inset: 0, 
+                    border: '4px solid transparent', 
+                    borderTopColor: 'var(--primary)',
+                    borderRadius: '50%' 
+                  }} 
+                />
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <FolderOpen size={32} color="var(--primary)" />
+                </div>
+              </div>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '8px' }}>Select Folder...</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                Please select a folder in the native dialog that appeared.
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </div>
   );
 };

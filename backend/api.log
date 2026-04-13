@@ -1,4 +1,0 @@
-[2026-04-12T06:32:26.575Z] PATCH /api/profiles/1775897361231 - body: {"is_scheduled":false}
-[2026-04-12T06:32:26.576Z]   Updated profile 1775897361231 is_scheduled to 0
-[2026-04-12T06:32:29.682Z] PATCH /api/profiles/1775897361231 - body: {"is_scheduled":true}
-[2026-04-12T06:32:29.682Z]   Updated profile 1775897361231 is_scheduled to 1
