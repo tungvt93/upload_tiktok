@@ -13,6 +13,15 @@ import {
     inferScheduleFieldKind,
     sortScheduleInputs
 } from './schedule-utils.js';
+import {
+    initGroupSchema,
+    listGroups,
+    createGroup,
+    renameGroup,
+    deleteGroup,
+    assertGroupExists
+} from './group-store.js';
+import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +92,20 @@ try {
     console.error('Migration error (is_scheduled column):', err);
 }
 
+initGroupSchema(db);
+
+// Migration: Add group_id column to profiles if not exists
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasGroupId = tableInfo.some((col) => col.name === 'group_id');
+    if (!hasGroupId) {
+        db.exec('ALTER TABLE profiles ADD COLUMN group_id TEXT;');
+        console.log('Added group_id column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (group_id column):', err);
+}
+
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
     try {
@@ -123,9 +146,28 @@ if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
 db.prepare("UPDATE profiles SET status = 'idle' WHERE status = 'uploading'").run();
 console.log('Reset stuck "uploading" profiles to "idle"');
 
+function normalizeGroupId(value) {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const s = typeof value === 'string' ? value : String(value);
+    const trimmed = s.trim();
+    return trimmed.length === 0 ? null : trimmed;
+}
+
 // API Routes
 app.get('/api/profiles', (req, res) => {
-    const profiles = db.prepare('SELECT * FROM profiles ORDER BY created_at DESC').all();
+    const profiles = db
+        .prepare(
+            `
+            SELECT
+                p.*,
+                g.name AS group_name
+            FROM profiles p
+            LEFT JOIN groups g ON g.id = p.group_id
+            ORDER BY p.created_at DESC
+        `
+        )
+        .all();
     res.json(profiles);
 });
 
@@ -153,6 +195,25 @@ app.patch('/api/profiles/:id', (req, res) => {
     // Check if profile exists
     const currentProfile = db.prepare('SELECT name FROM profiles WHERE id = ?').get(profileId);
     if (!currentProfile) return res.status(404).json({ error: 'Profile not found' });
+
+    if ('group_id' in req.body) {
+        const normalizedGroupId = normalizeGroupId(req.body.group_id);
+        if (normalizedGroupId !== undefined) {
+            if (normalizedGroupId !== null) {
+                try {
+                    assertGroupExists(db, normalizedGroupId);
+                } catch (err) {
+                    return res
+                        .status(err.status || 400)
+                        .json({ error: err.message });
+                }
+            }
+            db.prepare('UPDATE profiles SET group_id = ? WHERE id = ?').run(
+                normalizedGroupId,
+                profileId
+            );
+        }
+    }
 
     if (name !== undefined) {
         if (currentProfile.name !== name) {
@@ -187,6 +248,46 @@ app.patch('/api/profiles/:id', (req, res) => {
         db.prepare('UPDATE profiles SET is_scheduled = ? WHERE id = ?').run(val, profileId);
     }
     res.json({ success: true });
+});
+
+app.get('/api/groups', (req, res) => {
+    try {
+        res.json(listGroups(db));
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+app.post('/api/groups', (req, res) => {
+    try {
+        const rawId = req.body.id;
+        const id =
+            typeof rawId === 'string' && rawId.trim() !== ''
+                ? rawId.trim()
+                : randomUUID();
+        createGroup(db, { id, name: req.body.name });
+        res.json({ success: true, id });
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+app.patch('/api/groups/:id', (req, res) => {
+    try {
+        renameGroup(db, { id: req.params.id, name: req.body.name });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+app.delete('/api/groups/:id', (req, res) => {
+    try {
+        deleteGroup(db, req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
 });
 
 app.get('/api/config', (req, res) => {

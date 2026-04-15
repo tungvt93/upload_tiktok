@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { 
   Plus, 
@@ -12,7 +12,6 @@ import {
   RefreshCw,
   Layout,
   Clock,
-  ChevronRight,
   ShieldCheck,
   Zap,
   FolderOpen,
@@ -20,7 +19,8 @@ import {
   ExternalLink,
   Edit3,
   Check,
-  X
+  X,
+  Users
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -36,6 +36,19 @@ const App = () => {
   const [isSelectingFolder, setIsSelectingFolder] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingValue, setEditingValue] = useState('');
+  const [groups, setGroups] = useState([]);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groupFilter, setGroupFilter] = useState('all');
+  const [editingGroupId, setEditingGroupId] = useState(null);
+  const [editingGroupValue, setEditingGroupValue] = useState('');
+
+  const filteredProfiles = useMemo(() => {
+    if (groupFilter === 'all') return profiles;
+    if (groupFilter === 'ungrouped') {
+      return profiles.filter((p) => !p.group_id);
+    }
+    return profiles.filter((p) => p.group_id === groupFilter);
+  }, [profiles, groupFilter]);
 
   useEffect(() => {
     fetchData();
@@ -45,9 +58,10 @@ const App = () => {
 
   const fetchData = async () => {
     try {
-      const [pRes, cRes] = await Promise.all([
+      const [pRes, cRes, gRes] = await Promise.all([
         axios.get('/api/profiles'),
-        axios.get('/api/config')
+        axios.get('/api/config'),
+        axios.get('/api/groups')
       ]);
       
       const newProfiles = pRes.data || [];
@@ -63,8 +77,64 @@ const App = () => {
       });
       
       setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
+      setGroups(gRes.data || []);
     } catch (err) {
       console.error('Fetch error:', err);
+    }
+  };
+
+  const addGroup = async () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    try {
+      await axios.post('/api/groups', { name });
+      setNewGroupName('');
+      await fetchData();
+      setMessage({ type: 'success', text: 'Group created successfully' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to create group' });
+    }
+  };
+
+  const updateGroupName = async (id, newName) => {
+    if (!newName.trim()) {
+      setEditingGroupId(null);
+      return;
+    }
+    try {
+      await axios.patch(`/api/groups/${id}`, { name: newName.trim() });
+      setEditingGroupId(null);
+      await fetchData();
+      setMessage({ type: 'success', text: 'Group renamed successfully' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to rename group' });
+      setEditingGroupId(null);
+    }
+  };
+
+  const deleteGroup = async (id) => {
+    if (!window.confirm('Delete this group? It must have no profiles assigned.')) return;
+    try {
+      await axios.delete(`/api/groups/${id}`);
+      if (groupFilter === id) setGroupFilter('all');
+      await fetchData();
+      setMessage({ type: 'success', text: 'Group deleted' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to delete group' });
+    }
+  };
+
+  const updateProfileGroup = async (profileId, groupId) => {
+    try {
+      await axios.patch(`/api/profiles/${profileId}`, { group_id: groupId });
+      await fetchData();
+      setMessage({ type: 'success', text: 'Profile group updated' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to update profile group' });
     }
   };
 
@@ -268,6 +338,26 @@ const App = () => {
               <Layout size={20} /> Profiles Management
             </button>
             <button 
+              onClick={() => setActiveTab('groups')}
+              style={{ 
+                width: '100%', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '12px', 
+                padding: '12px 16px', 
+                borderRadius: '12px',
+                background: activeTab === 'groups' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
+                color: activeTab === 'groups' ? 'var(--primary)' : 'var(--text-muted)',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: '600',
+                marginTop: '8px',
+                transition: 'all 0.2s'
+              }}
+            >
+              <Users size={20} /> Groups
+            </button>
+            <button 
               onClick={() => setActiveTab('settings')}
               style={{ 
                 width: '100%', 
@@ -337,6 +427,23 @@ const App = () => {
                 <div>
                   <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '4px' }}>Profiles Dashboard</h2>
                   <p style={{ color: 'var(--text-muted)' }}>Manage and automate your TikTok accounts</p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginTop: '16px', alignItems: 'center' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                      Group
+                      <select
+                        className="input"
+                        style={{ padding: '8px 12px', minWidth: '180px' }}
+                        value={groupFilter}
+                        onChange={(e) => setGroupFilter(e.target.value)}
+                      >
+                        <option value="all">All Groups</option>
+                        <option value="ungrouped">Ungrouped</option>
+                        {groups.map((g) => (
+                          <option key={g.id} value={g.id}>{g.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: '16px' }}>
                   <div className="input-group">
@@ -388,7 +495,7 @@ const App = () => {
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
                 <AnimatePresence mode="popLayout">
-                  {profiles.map((profile) => (
+                  {filteredProfiles.map((profile) => (
                     <motion.div 
                       key={profile.id}
                       layout
@@ -467,6 +574,27 @@ const App = () => {
                         >
                           <Trash2 size={18} />
                         </button>
+                      </div>
+
+                      <div style={{ marginBottom: '20px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                          <FolderOpen size={14} color="var(--text-muted)" />
+                          <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Group</span>
+                        </div>
+                        <select
+                          className="input"
+                          style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                          value={profile.group_id || ''}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            updateProfileGroup(profile.id, v === '' ? null : v);
+                          }}
+                        >
+                          <option value="">No group</option>
+                          {groups.map((g) => (
+                            <option key={g.id} value={g.id}>{g.name}</option>
+                          ))}
+                        </select>
                       </div>
 
                       <div style={{ marginBottom: '20px' }}>
@@ -600,6 +728,141 @@ const App = () => {
                   </div>
                   <h3 style={{ color: 'white', marginBottom: '8px' }}>No profiles yet</h3>
                   <p>Add your first TikTok account profile to start automation.</p>
+                </div>
+              )}
+
+              {profiles.length > 0 && filteredProfiles.length === 0 && (
+                <div
+                  style={{
+                    textAlign: 'center',
+                    padding: '48px 24px',
+                    color: 'var(--text-muted)',
+                    border: '2px dashed var(--border)',
+                    borderRadius: '24px',
+                    marginTop: '24px'
+                  }}
+                >
+                  <p style={{ color: 'white', marginBottom: '8px', fontWeight: '600' }}>No profiles match this filter</p>
+                  <p style={{ fontSize: '0.9rem' }}>Change the group filter above to see profiles.</p>
+                </div>
+              )}
+            </section>
+          ) : activeTab === 'groups' ? (
+            <section>
+              <div style={{ marginBottom: '28px' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '8px' }}>Groups</h2>
+                <p style={{ color: 'var(--text-muted)', maxWidth: '640px', lineHeight: 1.5 }}>
+                  Tạo và đổi tên nhóm để gom profile. Gán profile vào nhóm từ tab Profiles; xóa nhóm chỉ khi không còn profile gán.
+                </p>
+              </div>
+
+              <div className="glass" style={{ padding: '20px 24px', borderRadius: '20px', marginBottom: '28px' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center' }}>
+                  <input
+                    className="input"
+                    placeholder="Tên nhóm mới..."
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    style={{ flex: '1 1 220px', minWidth: '200px', padding: '10px 14px' }}
+                    onKeyDown={(e) => e.key === 'Enter' && addGroup()}
+                  />
+                  <button type="button" className="btn btn-primary" onClick={addGroup} style={{ padding: '10px 20px', gap: '8px' }}>
+                    <Plus size={18} />
+                    Create
+                  </button>
+                </div>
+              </div>
+
+              {groups.length === 0 ? (
+                <div
+                  className="glass"
+                  style={{
+                    textAlign: 'center',
+                    padding: '56px 32px',
+                    borderRadius: '24px',
+                    color: 'var(--text-muted)',
+                    border: '2px dashed var(--border)'
+                  }}
+                >
+                  <Users size={40} style={{ margin: '0 auto 16px', opacity: 0.35 }} />
+                  <p style={{ color: 'white', fontWeight: '600', marginBottom: '8px' }}>Chưa có nhóm</p>
+                  <p style={{ fontSize: '0.9rem' }}>Nhập tên và bấm Create để thêm nhóm đầu tiên.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {groups.map((g) => (
+                    <div
+                      key={g.id}
+                      className="glass"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '14px',
+                        flexWrap: 'wrap',
+                        padding: '16px 20px',
+                        borderRadius: '16px',
+                        border: '1px solid var(--border)'
+                      }}
+                    >
+                      {editingGroupId === g.id ? (
+                        <>
+                          <input
+                            autoFocus
+                            className="input"
+                            style={{ flex: '1 1 240px', padding: '8px 12px' }}
+                            value={editingGroupValue}
+                            onChange={(e) => setEditingGroupValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') updateGroupName(g.id, editingGroupValue);
+                              if (e.key === 'Escape') setEditingGroupId(null);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => updateGroupName(g.id, editingGroupValue)}
+                            style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '4px' }}
+                            aria-label="Save name"
+                          >
+                            <Check size={18} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingGroupId(null)}
+                            style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '4px' }}
+                            aria-label="Cancel rename"
+                          >
+                            <X size={18} />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ flex: '1 1 180px', fontWeight: '700', fontSize: '1rem' }}>{g.name}</span>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                            {g.profile_count ?? 0} profile{g.profile_count === 1 ? '' : 's'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingGroupId(g.id);
+                              setEditingGroupValue(g.name);
+                            }}
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '6px' }}
+                            aria-label="Rename group"
+                          >
+                            <Edit3 size={18} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteGroup(g.id)}
+                            style={{ background: 'none', border: 'none', color: 'rgba(239, 68, 68, 0.65)', cursor: 'pointer', padding: '6px' }}
+                            aria-label="Delete group"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </section>
