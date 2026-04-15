@@ -107,6 +107,19 @@ try {
     console.error('Migration error (group_id column):', err);
 }
 
+// Migration: set_music — khi bật mới chạy Edit video + chọn nhạc khi upload
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasSetMusic = tableInfo.some((col) => col.name === 'set_music');
+    if (!hasSetMusic) {
+        db.exec('ALTER TABLE profiles ADD COLUMN set_music INTEGER DEFAULT 0;');
+        db.prepare('UPDATE profiles SET set_music = 1').run();
+        console.log('Added set_music column to profiles (existing rows default to on)');
+    }
+} catch (err) {
+    console.error('Migration error (set_music column):', err);
+}
+
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
     try {
@@ -197,7 +210,7 @@ app.delete('/api/profiles/:id', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled } = req.body;
+    const { name, video_folder, proxy, is_scheduled, set_music } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -254,6 +267,10 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (is_scheduled !== undefined) {
         const val = is_scheduled ? 1 : 0;
         db.prepare('UPDATE profiles SET is_scheduled = ? WHERE id = ?').run(val, profileId);
+    }
+    if (set_music !== undefined) {
+        const val = set_music ? 1 : 0;
+        db.prepare('UPDATE profiles SET set_music = ? WHERE id = ?').run(val, profileId);
     }
     res.json({ success: true });
 });
@@ -342,7 +359,7 @@ const manualBrowsers = new Map(); // profileId -> browserContext
 
 
 app.post('/api/start', async (req, res) => {
-    const { profileId, profileIds } = req.body;
+    const { profileId, profileIds, runMode } = req.body;
 
     if (profileId) {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
@@ -355,8 +372,8 @@ app.post('/api/start', async (req, res) => {
         const allRows = db.prepare('SELECT * FROM profiles').all();
         let profiles = allRows;
         if (Array.isArray(profileIds) && profileIds.length > 0) {
-            const wanted = new Set(profileIds.map((id) => String(id)));
-            profiles = allRows.filter((p) => wanted.has(p.id));
+            const byId = new Map(allRows.map((p) => [String(p.id), p]));
+            profiles = profileIds.map((id) => byId.get(String(id))).filter(Boolean);
             if (profiles.length === 0) {
                 return res.status(400).json({ error: 'No matching profiles for the given selection' });
             }
@@ -371,8 +388,13 @@ app.post('/api/start', async (req, res) => {
             });
         }
 
-        runAllParallel(idleProfiles);
-        return res.json({ status: 'started', count: idleProfiles.length });
+        const mode = runMode === 'sequential' ? 'sequential' : 'parallel';
+        if (mode === 'sequential') {
+            runAllSequential(idleProfiles).catch((err) => console.error('Sequential execution error:', err));
+        } else {
+            runAllParallel(idleProfiles);
+        }
+        return res.json({ status: 'started', count: idleProfiles.length, runMode: mode });
     }
 });
 
@@ -455,6 +477,13 @@ async function runAllParallel(profilesToRun) {
     }
 
     processQueue().catch(err => console.error('Parallel execution error:', err));
+}
+
+async function runAllSequential(profilesToRun) {
+    for (const profile of profilesToRun) {
+        if (runningProfiles.has(profile.id)) continue;
+        await runSingleProfile(profile);
+    }
 }
 
 const describeScheduleInput = (input) => {
@@ -749,6 +778,10 @@ async function uploadVideo(profile, videoFolder, videos) {
                     } catch (e) {}
                 }
 
+                const useSetMusic = Number(profile.set_music) === 1;
+                if (!useSetMusic) {
+                    log(`set_music tắt: bỏ qua Edit video và chọn nhạc.`);
+                } else {
                 log(`Task 2: Handling Editor and Sound selection...`);
                 let soundsBtn = await page.$('button[data-button-name="sounds"]');
                 if (!soundsBtn) {
@@ -890,6 +923,7 @@ async function uploadVideo(profile, videoFolder, videos) {
                     }
                 } else {
                     log(`Editor/Sounds button not found. Skipping editor steps.`);
+                }
                 }
             } catch (e) {
                 log(`New tasks failed: ${e.message}`);

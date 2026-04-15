@@ -20,7 +20,8 @@ import {
   Edit3,
   Check,
   X,
-  Users
+  Users,
+  Music
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -46,6 +47,7 @@ const App = () => {
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editingGroupValue, setEditingGroupValue] = useState('');
   const [selectedForRun, setSelectedForRun] = useState(() => new Set());
+  const [bulkRunMode, setBulkRunMode] = useState('parallel');
 
   const filteredProfiles = useMemo(() => {
     if (groupFilter === 'all') return profiles;
@@ -218,14 +220,17 @@ const App = () => {
       } else {
         const profileIds = [...selectedForRun];
         if (profileIds.length === 0) {
-          setMessage({ type: 'error', text: 'Chọn ít nhất một profile (checkbox) để chạy song song.' });
+          setMessage({ type: 'error', text: 'Chọn ít nhất một profile (checkbox) để chạy hàng loạt.' });
           setIsLoading(false);
           return;
         }
-        await axios.post('/api/start', { profileIds });
+        await axios.post('/api/start', { profileIds, runMode: bulkRunMode });
         setMessage({
           type: 'success',
-          text: `Đã bật upload song song cho ${profileIds.length} profile đã chọn`
+          text:
+            bulkRunMode === 'sequential'
+              ? `Đã bật chạy tuần tự cho ${profileIds.length} profile (theo thứ tự đã chọn)`
+              : `Đã bật chạy cùng lúc cho ${profileIds.length} profile đã chọn`
         });
       }
       setTimeout(() => setMessage(null), 5000);
@@ -323,6 +328,28 @@ const App = () => {
       await fetchData();
     } finally {
       setProcessingIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const updateProfileSetMusic = async (id, enabled) => {
+    if (processingIds.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, set_music: enabled ? 1 : 0 } : p))
+    );
+    setProcessingIds((prev) => new Set(prev).add(id));
+    try {
+      await axios.patch(`/api/profiles/${id}`, { set_music: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      setProcessingIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
@@ -539,7 +566,8 @@ const App = () => {
                     )}
                     {selectedForRun.size > 0 && (
                       <span style={{ fontSize: '0.85rem', color: 'var(--accent)' }}>
-                        Đã chọn {selectedForRun.size} profile để chạy song song
+                        Đã chọn {selectedForRun.size} profile
+                        {bulkRunMode === 'sequential' ? ' (chạy tuần tự)' : ' (chạy cùng lúc)'}
                       </span>
                     )}
                   </div>
@@ -553,6 +581,18 @@ const App = () => {
                     <Plus size={18} />
                     Thêm mới
                   </button>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '160px' }}>
+                    Kiểu chạy
+                    <select
+                      className="input"
+                      value={bulkRunMode}
+                      onChange={(e) => setBulkRunMode(e.target.value === 'sequential' ? 'sequential' : 'parallel')}
+                      style={{ padding: '10px 12px', cursor: 'pointer' }}
+                    >
+                      <option value="parallel">Chạy cùng lúc</option>
+                      <option value="sequential">Chạy tuần tự</option>
+                    </select>
+                  </label>
                   <button 
                     className="btn btn-primary"
                     onClick={() => startAutomation()}
@@ -561,7 +601,7 @@ const App = () => {
                     style={{ gap: '10px' }}
                   >
                     {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
-                    Run All Parallel
+                    Chạy đã chọn
                   </button>
                 </div>
               </div>
@@ -581,7 +621,7 @@ const App = () => {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                           <label
                             style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', flexShrink: 0 }}
-                            title="Chọn để đưa vào lượt Run All Parallel (profile đang upload sẽ được server bỏ qua nếu vẫn chạy)"
+                            title="Chọn để đưa vào lượt chạy hàng loạt (tuần tự hoặc cùng lúc tùy Kiểu chạy). Profile đang upload sẽ được server bỏ qua nếu vẫn chạy."
                           >
                             <input
                               type="checkbox"
@@ -730,6 +770,26 @@ const App = () => {
                           <div style={{ display: 'flex', flexDirection: 'column' }}>
                             <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Schedule Public Video</span>
                             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Lên lịch công khai video</span>
+                          </div>
+                        </label>
+                      </div>
+
+                      <div style={{ marginBottom: '20px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                          <input
+                            type="checkbox"
+                            checked={profile.set_music === 1}
+                            onChange={(e) => updateProfileSetMusic(profile.id, e.target.checked)}
+                            style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          />
+                          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                              <Music size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                              Set nhạc khi upload
+                            </span>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                              Bật: mở Edit video, chọn nhạc từ Favorites rồi Save. Tắt: đăng không qua bước nhạc.
+                            </span>
                           </div>
                         </label>
                       </div>
