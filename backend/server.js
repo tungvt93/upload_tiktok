@@ -21,6 +21,7 @@ import {
     deleteGroup,
     assertGroupExists
 } from './group-store.js';
+import { createProfileRecord } from './profile-store.js';
 import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -172,14 +173,21 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name } = req.body;
-    if (!name) return res.status(400).json({ error: 'Name is required' });
+    const { name, group_id, video_folder } = req.body;
+
     try {
         const id = Date.now().toString();
-        db.prepare('INSERT INTO profiles (id, name, status, is_scheduled) VALUES (?, ?, ?, ?)').run(id, name, 'idle', 0);
-        res.json({ id, name, status: 'idle', is_scheduled: 0 });
+        const profile = createProfileRecord(db, {
+            id,
+            name,
+            group_id,
+            video_folder
+        });
+        res.json(profile);
     } catch (err) {
-        res.status(400).json({ error: 'Profile already exists or database error' });
+        res.status(err.status || 400).json({
+            error: err.message || 'Profile already exists or database error'
+        });
     }
 });
 
@@ -334,7 +342,7 @@ const manualBrowsers = new Map(); // profileId -> browserContext
 
 
 app.post('/api/start', async (req, res) => {
-    const { profileId } = req.body;
+    const { profileId, profileIds } = req.body;
 
     if (profileId) {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
@@ -344,9 +352,24 @@ app.post('/api/start', async (req, res) => {
         runSingleProfile(profile);
         return res.json({ status: 'started', profile: profile.name });
     } else {
-        const profiles = db.prepare('SELECT * FROM profiles').all();
-        const idleProfiles = profiles.filter(p => !runningProfiles.has(p.id));
-        if (idleProfiles.length === 0) return res.status(400).json({ error: 'No idle profiles' });
+        const allRows = db.prepare('SELECT * FROM profiles').all();
+        let profiles = allRows;
+        if (Array.isArray(profileIds) && profileIds.length > 0) {
+            const wanted = new Set(profileIds.map((id) => String(id)));
+            profiles = allRows.filter((p) => wanted.has(p.id));
+            if (profiles.length === 0) {
+                return res.status(400).json({ error: 'No matching profiles for the given selection' });
+            }
+        }
+        const idleProfiles = profiles.filter((p) => !runningProfiles.has(p.id));
+        if (idleProfiles.length === 0) {
+            return res.status(400).json({
+                error:
+                    Array.isArray(profileIds) && profileIds.length > 0
+                        ? 'No idle profiles in selection (they may already be running)'
+                        : 'No idle profiles'
+            });
+        }
 
         runAllParallel(idleProfiles);
         return res.json({ status: 'started', count: idleProfiles.length });

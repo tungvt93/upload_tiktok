@@ -29,6 +29,10 @@ const App = () => {
   const [profiles, setProfiles] = useState([]);
   const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2 });
   const [newProfileName, setNewProfileName] = useState('');
+  const [newProfileGroupId, setNewProfileGroupId] = useState('');
+  const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
+  const [isCreateProfileModalOpen, setIsCreateProfileModalOpen] = useState(false);
+  const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState(null);
   const [activeTab, setActiveTab] = useState('profiles');
@@ -41,6 +45,7 @@ const App = () => {
   const [groupFilter, setGroupFilter] = useState('all');
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editingGroupValue, setEditingGroupValue] = useState('');
+  const [selectedForRun, setSelectedForRun] = useState(() => new Set());
 
   const filteredProfiles = useMemo(() => {
     if (groupFilter === 'all') return profiles;
@@ -55,6 +60,14 @@ const App = () => {
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    const validIds = new Set(profiles.map((p) => p.id));
+    setSelectedForRun((prev) => {
+      const next = new Set([...prev].filter((id) => validIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [profiles]);
 
   const fetchData = async () => {
     try {
@@ -138,16 +151,38 @@ const App = () => {
     }
   };
 
+  const resetCreateProfileForm = () => {
+    setNewProfileName('');
+    setNewProfileGroupId('');
+    setNewProfileVideoFolder('');
+  };
+
+  const closeCreateProfileModal = ({ force } = {}) => {
+    if ((isCreatingProfile || isSelectingFolder) && !force) return;
+    setIsCreateProfileModalOpen(false);
+    resetCreateProfileForm();
+  };
+
   const addProfile = async () => {
-    if (!newProfileName) return;
+    if (isCreatingProfile) return;
+    const name = newProfileName.trim();
+    if (!name) return;
+
+    setIsCreatingProfile(true);
     try {
-      await axios.post('/api/profiles', { name: newProfileName });
-      setNewProfileName('');
-      fetchData();
+      await axios.post('/api/profiles', {
+        name,
+        group_id: newProfileGroupId || null,
+        video_folder: newProfileVideoFolder.trim() || null
+      });
+      closeCreateProfileModal({ force: true });
+      await fetchData();
       setMessage({ type: 'success', text: 'Profile added successfully' });
       setTimeout(() => setMessage(null), 3000);
     } catch (err) {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to add profile' });
+    } finally {
+      setIsCreatingProfile(false);
     }
   };
 
@@ -174,16 +209,54 @@ const App = () => {
   const startAutomation = async (profileId = null) => {
     setIsLoading(true);
     try {
-      await axios.post('/api/start', { profileId });
-      setMessage({ 
-        type: 'success', 
-        text: profileId ? `Automation started for profile` : 'Parallel automation started' 
-      });
+      if (profileId) {
+        await axios.post('/api/start', { profileId });
+        setMessage({
+          type: 'success',
+          text: 'Automation started for profile'
+        });
+      } else {
+        const profileIds = [...selectedForRun];
+        if (profileIds.length === 0) {
+          setMessage({ type: 'error', text: 'Chọn ít nhất một profile (checkbox) để chạy song song.' });
+          setIsLoading(false);
+          return;
+        }
+        await axios.post('/api/start', { profileIds });
+        setMessage({
+          type: 'success',
+          text: `Đã bật upload song song cho ${profileIds.length} profile đã chọn`
+        });
+      }
       setTimeout(() => setMessage(null), 5000);
     } catch (err) {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to start' });
     }
     setIsLoading(false);
+  };
+
+  const toggleProfileSelectedForRun = (id) => {
+    setSelectedForRun((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allFilteredSelected =
+    filteredProfiles.length > 0 && filteredProfiles.every((p) => selectedForRun.has(p.id));
+
+  const toggleSelectAllFiltered = () => {
+    setSelectedForRun((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        filteredProfiles.forEach((p) => next.delete(p.id));
+      } else {
+        filteredProfiles.forEach((p) => next.add(p.id));
+      }
+      return next;
+    });
   };
 
   const openProfile = async (profileId) => {
@@ -257,25 +330,35 @@ const App = () => {
     }
   };
 
-  const handleSelectFolder = async (id = null) => {
-    setIsSelectingFolder(true);
+  const selectFolderPath = async () => {
     try {
       const res = await axios.post('/api/select-folder');
-      if (res.data.path) {
-        if (id) {
-          await updateProfileFolder(id, res.data.path);
-        } else {
-          const newConfig = { ...config, videoFolder: res.data.path };
-          setConfig(newConfig);
-          await axios.post('/api/config', newConfig);
-          setMessage({ type: 'success', text: 'Default folder updated' });
-          setTimeout(() => setMessage(null), 3000);
-          // Auto-hide settings and go back to profiles dashboard
-          setActiveTab('profiles');
-        }
-      }
+      return res.data?.path || null;
     } catch (err) {
       console.error('Folder selection cancelled or failed');
+      return null;
+    }
+  };
+
+  const handleSelectFolder = async (id) => {
+    setIsSelectingFolder(true);
+    try {
+      const selectedPath = await selectFolderPath();
+      if (selectedPath) {
+        await updateProfileFolder(id, selectedPath);
+      }
+    } finally {
+      setIsSelectingFolder(false);
+    }
+  };
+
+  const handleSelectFolderForCreateProfile = async () => {
+    setIsSelectingFolder(true);
+    try {
+      const selectedPath = await selectFolderPath();
+      if (selectedPath) {
+        setNewProfileVideoFolder(selectedPath);
+      }
     } finally {
       setIsSelectingFolder(false);
     }
@@ -443,48 +526,38 @@ const App = () => {
                         ))}
                       </select>
                     </label>
+                    {filteredProfiles.length > 0 && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={allFilteredSelected}
+                          onChange={toggleSelectAllFiltered}
+                          style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                        />
+                        Chọn tất cả (danh sách đang hiển thị)
+                      </label>
+                    )}
+                    {selectedForRun.size > 0 && (
+                      <span style={{ fontSize: '0.85rem', color: 'var(--accent)' }}>
+                        Đã chọn {selectedForRun.size} profile để chạy song song
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '16px' }}>
-                  <div className="input-group">
-                    <label>Video Source Folder</label>
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <input 
-                        className="input"
-                        placeholder="/path/to/videos"
-                        value={config.videoFolder}
-                        onChange={(e) => setConfig({ ...config, videoFolder: e.target.value })}
-                        style={{ flex: 1 }}
-                      />
-                      <button 
-                        onClick={() => handleSelectFolder()}
-                        className="btn-secondary"
-                        style={{ padding: '0 15px' }}
-                      >
-                        <FolderOpen size={18} style={{ marginRight: '8px' }} />
-                        Browse
-                      </button>
-                    </div>
-                    <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
-                      Default location to look for .mp4 files if a profile doesn't have its own folder set.
-                    </p>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '12px' }}>
-                    <input 
-                      className="input" 
-                      placeholder="New Profile Name..." 
-                      value={newProfileName}
-                      onChange={(e) => setNewProfileName(e.target.value)}
-                      style={{ width: '180px' }}
-                    />
-                    <button className="btn btn-secondary" onClick={addProfile} style={{ padding: '10px' }}>
-                      <Plus size={20} />
-                    </button>
-                  </div>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => setIsCreateProfileModalOpen(true)}
+                    style={{ gap: '10px' }}
+                  >
+                    <Plus size={18} />
+                    Thêm mới
+                  </button>
                   <button 
                     className="btn btn-primary"
                     onClick={() => startAutomation()}
-                    disabled={isLoading || profiles.length === 0}
+                    disabled={isLoading || selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần upload' : undefined}
                     style={{ gap: '10px' }}
                   >
                     {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
@@ -506,6 +579,17 @@ const App = () => {
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <label
+                            style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', flexShrink: 0 }}
+                            title="Chọn để đưa vào lượt Run All Parallel (profile đang upload sẽ được server bỏ qua nếu vẫn chạy)"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedForRun.has(profile.id)}
+                              onChange={() => toggleProfileSelectedForRun(profile.id)}
+                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
+                          </label>
                           <div style={{ 
                             background: 'rgba(56, 189, 248, 0.1)', 
                             width: '44px',
@@ -746,6 +830,129 @@ const App = () => {
                   <p style={{ fontSize: '0.9rem' }}>Change the group filter above to see profiles.</p>
                 </div>
               )}
+
+              <AnimatePresence>
+                {isCreateProfileModalOpen && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    style={{
+                      position: 'fixed',
+                      inset: 0,
+                      background: 'rgba(15, 23, 42, 0.7)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      zIndex: 1000,
+                      padding: '24px'
+                    }}
+                    onClick={() => closeCreateProfileModal()}
+                  >
+                    <motion.div
+                      initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                      className="glass"
+                      style={{ width: '100%', maxWidth: '460px', padding: '24px', borderRadius: '20px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <div>
+                          <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Create Profile</h3>
+                          <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Add a new TikTok profile and assign a group</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => closeCreateProfileModal()}
+                          disabled={isCreatingProfile || isSelectingFolder}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: isCreatingProfile || isSelectingFolder ? 'not-allowed' : 'pointer',
+                            opacity: isCreatingProfile || isSelectingFolder ? 0.45 : 1
+                          }}
+                          aria-label="Close create profile modal"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: '16px' }}>
+                        <div className="input-group">
+                          <label>Profile Name</label>
+                          <input
+                            autoFocus
+                            className="input"
+                            placeholder="Nhập tên profile"
+                            value={newProfileName}
+                            onChange={(e) => setNewProfileName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') addProfile();
+                              if (e.key === 'Escape') closeCreateProfileModal();
+                            }}
+                            disabled={isCreatingProfile || isSelectingFolder}
+                          />
+                        </div>
+
+                        <div className="input-group">
+                          <label>Group</label>
+                          <select
+                            className="input"
+                            value={newProfileGroupId}
+                            onChange={(e) => setNewProfileGroupId(e.target.value)}
+                            disabled={isCreatingProfile || isSelectingFolder}
+                          >
+                            <option value="">No group</option>
+                            {groups.map((g) => (
+                              <option key={g.id} value={g.id}>
+                                {g.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="input-group">
+                          <label>Source Folder</label>
+                          <div style={{ display: 'flex', gap: '10px' }}>
+                            <input
+                              className="input"
+                              placeholder="/path/to/videos"
+                              value={newProfileVideoFolder}
+                              onChange={(e) => setNewProfileVideoFolder(e.target.value)}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ flex: 1 }}
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={handleSelectFolderForCreateProfile}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ padding: '0 15px' }}
+                            >
+                              <FolderOpen size={18} style={{ marginRight: '8px' }} />
+                              Browse
+                            </button>
+                          </div>
+                          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
+                            Optional. Leave empty to use the global Video Source Folder.
+                          </p>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+                          <button type="button" className="btn btn-secondary" onClick={() => closeCreateProfileModal()} disabled={isCreatingProfile || isSelectingFolder}>
+                            Cancel
+                          </button>
+                          <button className="btn btn-primary" onClick={addProfile} disabled={isCreatingProfile || isSelectingFolder || !newProfileName.trim()}>
+                            {isCreatingProfile ? 'Creating...' : 'Create'}
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </section>
           ) : activeTab === 'groups' ? (
             <section>

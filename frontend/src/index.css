@@ -48,6 +48,15 @@ body {
   box-shadow: 0 6px 20px rgba(255, 63, 182, 0.45);
 }
 
+.btn-primary:disabled,
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  filter: none;
+}
+
 .btn-secondary {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text);
