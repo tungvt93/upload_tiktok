@@ -332,7 +332,7 @@ app.post('/api/select-folder', (req, res) => {
     if (process.platform === 'darwin') {
         script = `osascript -e 'tell application (path to frontmost application as text) to POSIX path of (choose folder with prompt "Select Video Folder")'`;
     } else if (process.platform === 'win32') {
-        script = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.ShowDialog() | Out-Null; $f.SelectedPath"`;
+        script = `powershell -Command "$app = New-Object -ComObject Shell.Application; $folder = $app.BrowseForFolder(0, 'Select Folder', 64); if ($folder) { $folder.Self.Path }"`;
     } else {
         return res.status(501).json({ error: 'Folder picker not supported on this platform' });
     }
