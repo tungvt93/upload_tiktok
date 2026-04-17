@@ -39,7 +39,6 @@ const OLD_DB_PATH = path.join(DB_DIR, 'db.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const EXTENSIONS_DIR = path.join(__dirname, '..', 'extensions');
-const URBAN_EXTENSION_PATH = path.join(EXTENSIONS_DIR, 'urban-vpn');
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR);
@@ -458,17 +457,6 @@ app.post('/api/open-profile', async (req, res) => {
             ]
         };
 
-        const manifestPath = path.join(URBAN_EXTENSION_PATH, 'manifest.json');
-        if (fs.existsSync(manifestPath)) {
-            browserOptions.args.push(
-                `--disable-extensions-except=${URBAN_EXTENSION_PATH}`,
-                `--load-extension=${URBAN_EXTENSION_PATH}`
-            );
-            console.log(`[${profile.name}] Loading Urban VPN extension...`);
-        } else {
-            console.log(`[${profile.name}] Urban VPN extension not found or invalid (missing manifest.json). Skipping.`);
-        }
-
         if (profile.proxy) {
             const proxyConfig = parseProxy(profile.proxy);
             if (proxyConfig) {
@@ -675,17 +663,6 @@ async function uploadVideo(profile, videoFolder, videos) {
             '--disable-blink-features=AutomationControlled'
         ]
     };
-
-    const manifestPath = path.join(URBAN_EXTENSION_PATH, 'manifest.json');
-    if (fs.existsSync(manifestPath)) {
-        browserOptions.args.push(
-            `--disable-extensions-except=${URBAN_EXTENSION_PATH}`,
-            `--load-extension=${URBAN_EXTENSION_PATH}`
-        );
-        console.log(`[${profile.name}] Loading Urban VPN extension for automation...`);
-    } else {
-        console.log(`[${profile.name}] Urban VPN extension not found or invalid for automation. Skipping.`);
-    }
 
     if (profile.proxy) {
         const proxyConfig = parseProxy(profile.proxy);
