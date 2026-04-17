@@ -168,6 +168,42 @@ function normalizeGroupId(value) {
     return trimmed.length === 0 ? null : trimmed;
 }
 
+function parseProxy(proxyStr) {
+    if (!proxyStr) return null;
+    let server, username, password;
+
+    // Remove protocol first if present
+    let raw = proxyStr;
+    const protocolMatch = proxyStr.match(/^(\w+):\/\//);
+    let protocol = 'http';
+    if (protocolMatch) {
+        protocol = protocolMatch[1];
+        raw = proxyStr.slice(protocolMatch[0].length);
+    }
+
+    // Handle user:pass@host:port
+    if (raw.includes('@')) {
+        const [auth, hostPort] = raw.split('@');
+        const [user, pass] = auth.split(':');
+        username = user;
+        password = pass;
+        server = `${protocol}://${hostPort}`;
+    } 
+    // Handle host:port:user:pass
+    else if (raw.split(':').length === 4) {
+        const parts = raw.split(':');
+        server = `${protocol}://${parts[0]}:${parts[1]}`;
+        username = parts[2];
+        password = parts[3];
+    } 
+    // Handle host:port or protocol://host:port
+    else {
+        server = proxyStr.includes('://') ? proxyStr : `http://${proxyStr}`;
+    }
+
+    return { server, username, password };
+}
+
 // API Routes
 app.get('/api/profiles', (req, res) => {
     const profiles = db
@@ -434,7 +470,11 @@ app.post('/api/open-profile', async (req, res) => {
         }
 
         if (profile.proxy) {
-            browserOptions.proxy = { server: profile.proxy };
+            const proxyConfig = parseProxy(profile.proxy);
+            if (proxyConfig) {
+                browserOptions.proxy = proxyConfig;
+                console.log(`[${profile.name}] Using proxy: ${proxyConfig.server}${proxyConfig.username ? ' (with auth)' : ''}`);
+            }
         }
 
         const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
@@ -648,8 +688,11 @@ async function uploadVideo(profile, videoFolder, videos) {
     }
 
     if (profile.proxy) {
-        console.log(`[${profile.name}] Using proxy: ${profile.proxy}`);
-        browserOptions.proxy = { server: profile.proxy };
+        const proxyConfig = parseProxy(profile.proxy);
+        if (proxyConfig) {
+            browserOptions.proxy = proxyConfig;
+            console.log(`[${profile.name}] Using proxy: ${proxyConfig.server}${proxyConfig.username ? ' (with auth)' : ''}`);
+        }
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
