@@ -290,8 +290,8 @@ const ProfileCard = ({
                     style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Lên lịch nối tiếp (5p)</span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>V1: Public, V2: Mặc định, V3+: +5 phút</span>
+                    <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Lên lịch nối tiếp (10p)</span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>V1: Public, V2: Mặc định, V3+: +10 phút</span>
                   </div>
                 </label>
               </div>

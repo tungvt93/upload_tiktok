@@ -1,4 +1,4 @@
-const FIVE_MINUTES_IN_MS = 5 * 60 * 1000;
+const TEN_MINUTES_IN_MS = 10 * 60 * 1000;
 const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 
 const pad = (value) => String(value).padStart(2, '0');
@@ -8,19 +8,19 @@ export function computeNextScheduledTime({ index, lastScheduledTime, now = new D
 
     const baseTime = index === 3 || !lastScheduledTime
         ? new Date(now.getTime() + TWENTY_MINUTES_IN_MS)
-        : new Date(lastScheduledTime.getTime() + FIVE_MINUTES_IN_MS);
+        : new Date(lastScheduledTime.getTime() + TEN_MINUTES_IN_MS);
 
-    return new Date(Math.ceil(baseTime.getTime() / FIVE_MINUTES_IN_MS) * FIVE_MINUTES_IN_MS);
+    return new Date(Math.ceil(baseTime.getTime() / TEN_MINUTES_IN_MS) * TEN_MINUTES_IN_MS);
 }
 
 export function computeAutoIncrementTime({ lastScheduledTime, now = new Date() }) {
     // If we have a last time, just add 5 minutes
     // If not, we start from now + 20 minutes (conservative default)
     const baseTime = lastScheduledTime 
-        ? new Date(lastScheduledTime.getTime() + FIVE_MINUTES_IN_MS)
+        ? new Date(lastScheduledTime.getTime() + TEN_MINUTES_IN_MS)
         : new Date(now.getTime() + TWENTY_MINUTES_IN_MS);
 
-    return new Date(Math.ceil(baseTime.getTime() / FIVE_MINUTES_IN_MS) * FIVE_MINUTES_IN_MS);
+    return new Date(Math.ceil(baseTime.getTime() / TEN_MINUTES_IN_MS) * TEN_MINUTES_IN_MS);
 }
 
 export function getScheduleHintText(meta = {}) {
