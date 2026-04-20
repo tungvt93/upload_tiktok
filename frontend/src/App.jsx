@@ -335,6 +335,20 @@ const App = () => {
     }
   };
 
+  const updateProfileSchedules = async (id, timesStr) => {
+    // timesStr is comma-separated e.g. "08:00, 18:00"
+    const times = timesStr.split(',').map(t => t.trim()).filter(t => /^\d{2}:\d{2}$/.test(t));
+    
+    try {
+      await axios.post(`/api/profiles/${id}/schedules`, { times });
+      await fetchData();
+      setMessage({ type: 'success', text: 'Schedule times updated' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to update schedule times' });
+    }
+  };
+
   const updateProfileSetMusic = async (id, enabled) => {
     if (processingIds.has(id)) return;
     setProfiles((prev) =>
@@ -772,6 +786,31 @@ const App = () => {
                             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Lên lịch công khai video</span>
                           </div>
                         </label>
+
+                        {profile.is_scheduled === 1 && (
+                          <div style={{ marginTop: '12px', paddingLeft: '38px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                              <Clock size={14} color="var(--text-muted)" />
+                              <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Daily Times (HH:mm, HH:mm)</span>
+                            </div>
+                            <input 
+                              className="input"
+                              style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                              placeholder="e.g. 08:00, 18:00, 22:00"
+                              defaultValue={profile.schedules?.join(', ') || ''}
+                              onBlur={(e) => updateProfileSchedules(profile.id, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  updateProfileSchedules(profile.id, e.target.value);
+                                  e.target.blur();
+                                }
+                              }}
+                            />
+                            <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                              System will auto-start at these times daily.
+                            </p>
+                          </div>
+                        )}
                       </div>
 
                       <div style={{ marginBottom: '20px' }}>

@@ -66,6 +66,12 @@ db.exec(`
         key TEXT PRIMARY KEY,
         value TEXT
     );
+    CREATE TABLE IF NOT EXISTS profile_schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id TEXT,
+        time TEXT,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+    );
 `);
 
 // Migration: Add proxy column if not exists
@@ -210,14 +216,18 @@ app.get('/api/profiles', (req, res) => {
             `
             SELECT
                 p.*,
-                g.name AS group_name
+                g.name AS group_name,
+                (SELECT group_concat(time) FROM profile_schedules WHERE profile_id = p.id) as schedules
             FROM profiles p
             LEFT JOIN groups g ON g.id = p.group_id
             ORDER BY p.created_at DESC
         `
         )
         .all();
-    res.json(profiles);
+    res.json(profiles.map(p => ({
+        ...p,
+        schedules: p.schedules ? p.schedules.split(',') : []
+    })));
 });
 
 app.post('/api/profiles', (req, res) => {
@@ -347,6 +357,35 @@ app.delete('/api/groups/:id', (req, res) => {
         res.json({ success: true });
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+app.get('/api/profiles/:id/schedules', (req, res) => {
+    try {
+        const schedules = db.prepare('SELECT time FROM profile_schedules WHERE profile_id = ? ORDER BY time ASC').all(req.params.id);
+        res.json(schedules.map(s => s.time));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/profiles/:id/schedules', (req, res) => {
+    const { times } = req.body; // Array of "HH:mm"
+    if (!Array.isArray(times)) return res.status(400).json({ error: 'times must be an array' });
+
+    try {
+        db.transaction(() => {
+            db.prepare('DELETE FROM profile_schedules WHERE profile_id = ?').run(req.params.id);
+            const insert = db.prepare('INSERT INTO profile_schedules (profile_id, time) VALUES (?, ?)');
+            for (const time of times) {
+                if (/^\d{2}:\d{2}$/.test(time)) {
+                    insert.run(req.params.id, time);
+                }
+            }
+        })();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -1107,5 +1146,38 @@ const dismissPopups = async (page) => {
     }
     return false;
 };
+
+// Background Scheduler
+function checkAndRunSchedules() {
+    const now = new Date();
+    const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    
+    try {
+        // Find all profiles that have a schedule matching the current time
+        const scheduledProfiles = db.prepare(`
+            SELECT DISTINCT p.* 
+            FROM profiles p
+            JOIN profile_schedules ps ON p.id = ps.profile_id
+            WHERE ps.time = ?
+        `).all(currentTime);
+
+        if (scheduledProfiles.length > 0) {
+            console.log(`[Scheduler] Found ${scheduledProfiles.length} profiles to run at ${currentTime}`);
+            scheduledProfiles.forEach(profile => {
+                if (!runningProfiles.has(profile.id)) {
+                    console.log(`[Scheduler] Triggering automation for: ${profile.name}`);
+                    runSingleProfile(profile).catch(err => console.error(`[Scheduler] Error running ${profile.name}:`, err));
+                } else {
+                    console.log(`[Scheduler] Profile ${profile.name} is already running, skipping scheduled trigger.`);
+                }
+            });
+        }
+    } catch (err) {
+        console.error('[Scheduler] Database error:', err);
+    }
+}
+
+// Run every minute (offset by a few seconds to avoid missing the boundary if execution is slow)
+setInterval(checkAndRunSchedules, 60000);
 
 app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
