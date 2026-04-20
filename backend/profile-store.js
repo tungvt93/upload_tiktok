@@ -43,13 +43,14 @@ export function createProfileRecord(db, { id, name, group_id, video_folder }) {
     try {
         db.prepare(
             `
-            INSERT INTO profiles (id, name, status, is_scheduled, group_id, video_folder, set_music)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, group_id, video_folder, set_music)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `
         ).run(
             id,
             trimmedName,
             'idle',
+            0,
             0,
             normalizedGroupId ?? null,
             normalizedVideoFolder,

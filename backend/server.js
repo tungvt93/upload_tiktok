@@ -8,6 +8,8 @@ import Database from 'better-sqlite3';
 import { exec } from 'child_process';
 import {
     computeNextScheduledTime,
+    computeAutoIncrementTime,
+    parseScheduleValue,
     formatScheduleValue,
     getScheduleHintText,
     inferScheduleFieldKind,
@@ -123,6 +125,18 @@ try {
     }
 } catch (err) {
     console.error('Migration error (set_music column):', err);
+}
+
+// Migration: auto_increment_schedule — Lên lịch nối tiếp (+5 phút mỗi video)
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasAutoIncrement = tableInfo.some((col) => col.name === 'auto_increment_schedule');
+    if (!hasAutoIncrement) {
+        db.exec('ALTER TABLE profiles ADD COLUMN auto_increment_schedule INTEGER DEFAULT 0;');
+        console.log('Added auto_increment_schedule column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (auto_increment_schedule column):', err);
 }
 
 // Migration from db.json
@@ -255,7 +269,7 @@ app.delete('/api/profiles/:id', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, set_music } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -316,6 +330,10 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (set_music !== undefined) {
         const val = set_music ? 1 : 0;
         db.prepare('UPDATE profiles SET set_music = ? WHERE id = ?').run(val, profileId);
+    }
+    if (auto_increment_schedule !== undefined) {
+        const val = auto_increment_schedule ? 1 : 0;
+        db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
     }
     res.json({ success: true });
 });
@@ -991,7 +1009,55 @@ async function uploadVideo(profile, videoFolder, videos) {
             // --- END NEW TASKS ---
 
             // --- TASK 3: Scheduled Publishing ---
-            if (profile.is_scheduled && i >= 3) {
+            if (profile.auto_increment_schedule) {
+                try {
+                    log(`Auto-increment schedule: processing video ${i + 1}...`);
+                    if (i === 0) {
+                        log(`Video 1: Posting immediately (Public).`);
+                        // Public is usually default, but we can ensure it if needed
+                    } else {
+                        // 1. Click "Schedule" radio
+                        const scheduleRadio = 'input[value="schedule"]';
+                        const scheduleRadioInput = page.locator(scheduleRadio).first();
+                        await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
+                        await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
+                        log(`Selected "Schedule" option.`);
+                        await page.waitForTimeout(3000);
+
+                        // 2. Resolve inputs
+                        const scheduleInputs = await resolveScheduleInputs(page, log);
+
+                        if (i === 1) {
+                            // Video 2: Capture TikTok's default time
+                            const defaultDate = await page.locator('input.TUXTextInputCore-input:visible').nth(scheduleInputs.date.index).inputValue();
+                            const defaultTime = await page.locator('input.TUXTextInputCore-input:visible').nth(scheduleInputs.time.index).inputValue();
+                            log(`TikTok default schedule: ${defaultDate} ${defaultTime}`);
+                            
+                            lastScheduledTime = parseScheduleValue(defaultDate, defaultTime);
+                            if (lastScheduledTime) {
+                                log(`Captured base time: ${lastScheduledTime.toISOString()}`);
+                            } else {
+                                log(`Warning: Failed to parse default time. Using fallback.`);
+                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, now: new Date() });
+                            }
+                        } else {
+                            // Video 3+: Increment by 5 minutes
+                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime });
+                            const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
+                            const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
+                            
+                            log(`Setting incremented schedule: ${dateValue} ${timeValue}`);
+                            await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
+                            await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
+                            await page.waitForTimeout(2000);
+                        }
+                        
+                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i+1}.png`) }).catch(() => null);
+                    }
+                } catch (e) {
+                    log(`Auto-increment scheduling failed: ${e.message}`);
+                }
+            } else if (profile.is_scheduled && i >= 3) {
                 try {
                     log(`Task 3: Scheduling video ${i + 1}...`);
                     

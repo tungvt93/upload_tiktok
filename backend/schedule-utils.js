@@ -13,6 +13,16 @@ export function computeNextScheduledTime({ index, lastScheduledTime, now = new D
     return new Date(Math.ceil(baseTime.getTime() / FIVE_MINUTES_IN_MS) * FIVE_MINUTES_IN_MS);
 }
 
+export function computeAutoIncrementTime({ lastScheduledTime, now = new Date() }) {
+    // If we have a last time, just add 5 minutes
+    // If not, we start from now + 20 minutes (conservative default)
+    const baseTime = lastScheduledTime 
+        ? new Date(lastScheduledTime.getTime() + FIVE_MINUTES_IN_MS)
+        : new Date(now.getTime() + TWENTY_MINUTES_IN_MS);
+
+    return new Date(Math.ceil(baseTime.getTime() / FIVE_MINUTES_IN_MS) * FIVE_MINUTES_IN_MS);
+}
+
 export function getScheduleHintText(meta = {}) {
     return [
         meta.placeholder,
@@ -76,4 +86,53 @@ export function sortScheduleInputs(inputs = []) {
         if ((a.top ?? 0) !== (b.top ?? 0)) return (a.top ?? 0) - (b.top ?? 0);
         return (a.left ?? 0) - (b.left ?? 0);
     });
+}
+
+/**
+ * Attempts to parse a date and time string from TikTok inputs back into a Date object.
+ */
+export function parseScheduleValue(dateStr, timeStr) {
+    if (!dateStr || !timeStr) return null;
+
+    try {
+        // Try to parse date (expected YYYY-MM-DD or DD/MM/YYYY or MM/DD/YYYY)
+        let year, month, day;
+        if (dateStr.includes('-')) {
+            [year, month, day] = dateStr.split('-').map(Number);
+        } else if (dateStr.includes('/')) {
+            const parts = dateStr.split('/').map(Number);
+            if (parts[0] > 12) { // Likely DD/MM/YYYY
+                [day, month, year] = parts;
+            } else { // Likely MM/DD/YYYY
+                [month, day, year] = parts;
+            }
+        } else if (dateStr.includes('.')) {
+            [year, month, day] = dateStr.split('.').map(Number);
+        }
+
+        // Try to parse time (expected HH:mm or HH:mm AM/PM)
+        let hours, minutes;
+        const timeMatch = timeStr.match(/(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+        if (!timeMatch) return null;
+
+        hours = parseInt(timeMatch[1], 10);
+        minutes = parseInt(timeMatch[2], 10);
+        const meridiem = timeMatch[3];
+
+        if (meridiem) {
+            if (meridiem.toUpperCase() === 'PM' && hours < 12) hours += 12;
+            if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
+        }
+
+        const date = new Date();
+        if (year) date.setFullYear(year);
+        if (month) date.setMonth(month - 1);
+        if (day) date.setDate(day);
+        date.setHours(hours, minutes, 0, 0);
+
+        return date;
+    } catch (e) {
+        console.error('Error parsing schedule value:', e);
+        return null;
+    }
 }
