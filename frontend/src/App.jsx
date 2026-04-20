@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { 
   Plus, 
@@ -392,7 +392,7 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState(null);
   const [activeTab, setActiveTab] = useState('profiles');
-  const [processingIds, setProcessingIds] = useState(new Set());
+  const processingRef = useRef(new Set());
   const [isSelectingFolder, setIsSelectingFolder] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingValue, setEditingValue] = useState('');
@@ -438,7 +438,7 @@ const App = () => {
       setProfiles(prev => {
         // Don't overwrite profiles that are currently being updated
         return newProfiles.map(np => {
-          if (processingIds.has(np.id)) {
+          if (processingRef.current.has(np.id)) {
             const current = prev.find(p => p.id === np.id);
             return current || np;
           }
@@ -667,11 +667,11 @@ const App = () => {
   
   const updateProfileSchedule = async (id, is_scheduled) => {
     // Prevent multiple concurrent updates
-    if (processingIds.has(id)) return;
+    if (processingRef.current.has(id)) return;
 
     // Optimistic update
     setProfiles(prev => prev.map(p => p.id === id ? { ...p, is_scheduled: is_scheduled ? 1 : 0 } : p));
-    setProcessingIds(prev => new Set(prev).add(id));
+    processingRef.current.add(id);
 
     try {
       await axios.patch(`/api/profiles/${id}`, { is_scheduled });
@@ -682,11 +682,7 @@ const App = () => {
       console.error(err);
       await fetchData();
     } finally {
-      setProcessingIds(prev => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
+      processingRef.current.delete(id);
     }
   };
 
@@ -705,11 +701,11 @@ const App = () => {
   };
 
   const updateProfileSetMusic = async (id, enabled) => {
-    if (processingIds.has(id)) return;
+    if (processingRef.current.has(id)) return;
     setProfiles((prev) =>
       prev.map((p) => (p.id === id ? { ...p, set_music: enabled ? 1 : 0 } : p))
     );
-    setProcessingIds((prev) => new Set(prev).add(id));
+    processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { set_music: enabled });
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -718,20 +714,16 @@ const App = () => {
       console.error(err);
       await fetchData();
     } finally {
-      setProcessingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
+      processingRef.current.delete(id);
     }
   };
 
   const updateProfileAutoIncrementSchedule = async (id, enabled) => {
-    if (processingIds.has(id)) return;
+    if (processingRef.current.has(id)) return;
     setProfiles((prev) =>
       prev.map((p) => (p.id === id ? { ...p, auto_increment_schedule: enabled ? 1 : 0 } : p))
     );
-    setProcessingIds((prev) => new Set(prev).add(id));
+    processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { auto_increment_schedule: enabled });
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -740,11 +732,7 @@ const App = () => {
       console.error(err);
       await fetchData();
     } finally {
-      setProcessingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
+      processingRef.current.delete(id);
     }
   };
 

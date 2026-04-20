@@ -643,18 +643,46 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     log(`Setting ${label} using ${describeScheduleInput(inputMeta)} => ${value}`);
 
     await input.scrollIntoViewIfNeeded();
+    
+    // Bypassing 'readonly' attribute to allow filling
+    await input.evaluate(el => el.removeAttribute('readonly')).catch(() => null);
+    
     await input.click({ clickCount: 3 });
+    await page.waitForTimeout(500);
+
+    // Special handling for the TikTok Time Picker
+    if (label === 'Time') {
+        const pickerSelector = '.tiktok-timepicker-time-picker-container';
+        const picker = page.locator(pickerSelector);
+        
+        try {
+            if (await picker.isVisible({ timeout: 2000 })) {
+                log(`Time picker detected. Selecting items directly...`);
+                const [targetHour, targetMinute] = value.split(':');
+                
+                const hourEl = picker.locator(`.tiktok-timepicker-left:has-text("${targetHour}")`).first();
+                if (await hourEl.isVisible()) await hourEl.click({ force: true });
+
+                const minuteEl = picker.locator(`.tiktok-timepicker-right:has-text("${targetMinute}")`).first();
+                if (await minuteEl.isVisible()) await minuteEl.click({ force: true });
+
+                await input.click();
+                await page.waitForTimeout(500);
+                return;
+            }
+        } catch (e) {
+            log(`Time picker interaction failed: ${e.message}. Falling back to fill.`);
+        }
+    }
+
     await input.fill('');
     await input.type(value, { delay: 50 });
+    await input.press('Enter').catch(() => null);
     await input.press('Tab').catch(() => null);
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000);
 
     const actualValue = await input.inputValue().catch(() => '');
     log(`${label} input value after fill: ${actualValue || '<empty>'}`);
-
-    if (actualValue && actualValue.trim() !== value) {
-        log(`Warning: ${label} input mismatch after fill. Expected ${value}, got ${actualValue}`);
-    }
 }
 
 async function runSingleProfile(profile) {
@@ -1173,6 +1201,13 @@ async function uploadVideo(profile, videoFolder, videos) {
                     uploadedCount++;
                 } catch (err) { 
                     log(`ERROR moving file: ${err.message}`); 
+                }
+
+                // Navigate back to upload page for next video if not last
+                if (i < videos.length - 1) {
+                    log(`Preparing for next video...`);
+                    await page.goto('https://www.tiktok.com/tiktokstudio/upload', { waitUntil: 'domcontentloaded' }).catch(() => null);
+                    await page.waitForTimeout(5000);
                 }
             }
         }
