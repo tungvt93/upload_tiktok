@@ -675,6 +675,51 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
         }
     }
 
+    // Special handling for the TikTok Date Picker
+    if (label === 'Date') {
+        const pickerSelector = '.calendar-wrapper';
+        try {
+            // Click input once to open calendar if not already open
+            if (!(await page.locator(pickerSelector).isVisible({ timeout: 500 }).catch(() => false))) {
+                await input.click();
+            }
+            await page.waitForTimeout(1000);
+            
+            const picker = page.locator(pickerSelector).first();
+            if (await picker.isVisible({ timeout: 3000 })) {
+                log(`Calendar picker detected. Selecting day directly...`);
+                
+                // Parse the target day from value (expected YYYY-MM-DD or MM/DD/YYYY)
+                const parts = value.split(/[-/.]/).map(Number);
+                let targetDay = parts[2]; // Default for YYYY-MM-DD or YYYY.MM.DD
+                if (value.includes('/') && parts[0] <= 12) targetDay = parts[1]; // MM/DD/YYYY
+                else if (value.includes('/') && parts[0] > 12) targetDay = parts[0]; // DD/MM/YYYY
+                
+                log(`Extracted target day: ${targetDay}`);
+                
+                // Click the day span. Filter for 'valid' to stay in current month.
+                // We use :text-is to match exact text and avoid "2" matching "22"
+                const dayEl = picker.locator(`span.day.valid`).filter({ hasText: new RegExp(`^${targetDay}$`) }).first();
+                
+                if (await dayEl.isVisible()) {
+                    await dayEl.click({ force: true });
+                    log(`Successfully clicked day ${targetDay} in calendar.`);
+                    await page.waitForTimeout(1000);
+                    
+                    // Verify if picker closed or check if it stayed
+                    if (!(await picker.isVisible({ timeout: 1000 }).catch(() => false))) {
+                        return;
+                    }
+                } else {
+                    log(`Day ${targetDay} not visible/valid in current month view.`);
+                }
+            }
+        } catch (e) {
+            log(`Date picker interaction failed: ${e.message}. Falling back to manual fill.`);
+        }
+    }
+
+
     await input.fill('');
     await input.type(value, { delay: 50 });
     await input.press('Enter').catch(() => null);

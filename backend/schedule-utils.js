@@ -41,13 +41,23 @@ export function inferScheduleFieldKind(meta = {}) {
     const hint = getScheduleHintText(meta);
     if (!hint) return 'unknown';
 
+    // Priority 1: explicitly mentions date/time words
     if (/\b(date|day|ngay)\b/.test(hint)) return 'date';
     if (/\b(time|hour|minute|gio)\b/.test(hint)) return 'time';
-    if (/\b(am|pm)\b/.test(hint) || /:\d{2}/.test(hint)) return 'time'; // Match :XX for time
-    if (hint.includes('/') || /\b\d{4}-\d{2}-\d{2}\b/.test(hint) || hint.includes('.')) return 'date';
+
+    // Priority 2: Looks like a Date pattern (YYYY-MM-DD, MM/DD/YYYY, etc.)
+    if (/\d{4}[-.]\d{2}[-.]\d{2}/.test(hint) || /\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}/.test(hint)) {
+        return 'date';
+    }
+
+    // Priority 3: Looks like a Time pattern (HH:mm)
+    if (/\b(am|pm)\b/.test(hint) || /\b\d{1,2}:\d{2}\b/.test(hint)) {
+        return 'time';
+    }
 
     return 'unknown';
 }
+
 
 export function formatScheduleValue(date, kind, meta = {}) {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
