@@ -463,6 +463,7 @@ app.post('/api/config', (req, res) => {
 // Automation Trigger
 const runningProfiles = new Set();
 const manualBrowsers = new Map(); // profileId -> browserContext
+const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
 
 
 app.post('/api/start', async (req, res) => {
@@ -1240,6 +1241,498 @@ async function uploadVideo(profile, videoFolder, videos) {
         await browser.close().catch(() => null);
     }
 }
+
+// =============================================
+// AUTO ENGAGE FEATURE
+// =============================================
+
+// Comment templates để khen video (mix Anh-Việt tự nhiên)
+const ENGAGE_COMMENTS = [
+    '🔥🔥🔥',
+    'This is so good!',
+    'Love this content! 💯',
+    'Amazing! Keep it up! 👏',
+    'Bro really said no days off 💪',
+    'This made my day fr fr',
+    'Goated content right here 🐐',
+    'W video no cap',
+    'You never miss 🎯',
+    'So underrated omg',
+    'POV: quality content',
+    'Nailed it! 🙌',
+    'Literally obsessed with this 😍',
+    'Bro ate that up 🔥',
+    'Not me watching this 10 times',
+    'Câu này hay quá 🤩',
+    'Video hay vl 😭❤️',
+    'Content creator xịn sò 👑',
+    'Ủa hay v trời 🔥',
+    'Xem đi xem lại không chán',
+];
+
+function randomInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomItem(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// POST /api/engage — Bắt đầu auto engage session
+app.post('/api/engage', async (req, res) => {
+    const { profileId } = req.body;
+    if (!profileId) return res.status(400).json({ error: 'profileId is required' });
+
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+    if (runningProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently running upload automation' });
+    }
+    if (engagingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is already engaging' });
+    }
+
+    // Start engage session in background
+    runEngageSession(profile).catch(err =>
+        console.error(`[${profile.name}] Engage session error:`, err)
+    );
+
+    res.json({ status: 'started', profile: profile.name });
+});
+
+// POST /api/engage/stop — Dừng auto engage session
+app.post('/api/engage/stop', async (req, res) => {
+    const { profileId } = req.body;
+    if (!profileId) return res.status(400).json({ error: 'profileId is required' });
+
+    const session = engagingProfiles.get(profileId);
+    if (!session) {
+        return res.status(400).json({ error: 'Profile is not currently engaging' });
+    }
+
+    // Signal stop
+    session.stop = true;
+    res.json({ status: 'stopping', message: 'Engage session will stop shortly' });
+});
+
+// GET /api/engage/status/:profileId — Kiểm tra trạng thái engage
+app.get('/api/engage/status/:profileId', (req, res) => {
+    const profileId = req.params.profileId;
+    const session = engagingProfiles.get(profileId);
+    res.json({
+        engaging: !!session,
+        stats: session ? session.stats : null
+    });
+});
+
+async function runEngageSession(profile) {
+    const profileId = profile.id;
+    const userDataDir = path.join(PROFILES_DIR, profile.name);
+
+    const log = (msg) => {
+        const entry = `[${new Date().toISOString()}] [${profile.name}][ENGAGE] ${msg}\n`;
+        console.log(entry.trim());
+        try {
+            fs.appendFileSync(path.join(__dirname, 'automation.log'), entry);
+        } catch (e) {}
+    };
+
+    const browserOptions = {
+        headless: false,
+        args: ['--disable-blink-features=AutomationControlled']
+    };
+
+    if (profile.proxy) {
+        const proxyConfig = parseProxy(profile.proxy);
+        if (proxyConfig) {
+            browserOptions.proxy = proxyConfig;
+            log(`Using proxy: ${proxyConfig.server}`);
+        }
+    }
+
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+
+    const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
+    engagingProfiles.set(profileId, session);
+    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('engaging', profileId);
+
+    log('Engage session started');
+
+    try {
+        const page = await browser.newPage();
+
+        // Điều hướng đến trang For You
+        await page.goto('https://www.tiktok.com/foryou', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+        await page.waitForTimeout(3000);
+
+        // Dismiss any initial popups/login prompts
+        await engageDismissPopups(page, log);
+
+        let videosSinceLastChannelVisit = 0;
+        let nextChannelVisitAt = randomInt(10, 15);
+
+        while (!session.stop) {
+            try {
+                // === BƯỚC 1: Xem video hiện tại ===
+                const watchTime = randomInt(10000, 30000); // 10–30 giây (ms)
+                log(`Watching video for ${(watchTime / 1000).toFixed(1)}s...`);
+
+                // Chia watch time thành nhiều đoạn nhỏ để check stop signal
+                const checkInterval = 2000;
+                let elapsed = 0;
+                while (elapsed < watchTime && !session.stop) {
+                    await page.waitForTimeout(Math.min(checkInterval, watchTime - elapsed));
+                    elapsed += checkInterval;
+                }
+
+                if (session.stop) break;
+
+                session.stats.videosWatched++;
+                videosSinceLastChannelVisit++;
+
+                // === BƯỚC 2: Like (xác suất ~15%) ===
+                if (Math.random() < 0.15) {
+                    try {
+                        await engageLike(page, log);
+                        session.stats.likes++;
+                    } catch (e) {
+                        log(`Like failed: ${e.message}`);
+                    }
+                    await page.waitForTimeout(randomInt(800, 1500));
+                }
+
+                // === BƯỚC 3: Comment (xác suất ~5%) ===
+                if (!session.stop && Math.random() < 0.05) {
+                    try {
+                        await engageComment(page, log);
+                        session.stats.comments++;
+                    } catch (e) {
+                        log(`Comment failed: ${e.message}`);
+                    }
+                    await page.waitForTimeout(randomInt(1000, 2000));
+                }
+
+                if (session.stop) break;
+
+                // === BƯỚC 4: Visit channel sau mỗi 10–15 video ===
+                if (videosSinceLastChannelVisit >= nextChannelVisitAt) {
+                    try {
+                        log(`Visiting creator channel (after ${videosSinceLastChannelVisit} videos)...`);
+                        const visited = await engageVisitChannel(page, session, log);
+                        if (visited) {
+                            session.stats.channelVisits++;
+                        }
+                    } catch (e) {
+                        log(`Channel visit failed: ${e.message}`);
+                    }
+
+                    // Reset counter
+                    videosSinceLastChannelVisit = 0;
+                    nextChannelVisitAt = randomInt(10, 15);
+
+                    if (session.stop) break;
+
+                    // Quay lại trang chủ
+                    log('Returning to For You page...');
+                    await page.goto('https://www.tiktok.com/foryou', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+                    await page.waitForTimeout(randomInt(2000, 4000));
+                    await engageDismissPopups(page, log);
+                } else {
+                    // === BƯỚC 5: Scroll xuống video tiếp theo ===
+                    if (!session.stop) {
+                        await engageScrollToNext(page, log);
+                        await page.waitForTimeout(randomInt(1000, 2000));
+                    }
+                }
+
+                log(`Stats: watched=${session.stats.videosWatched}, likes=${session.stats.likes}, comments=${session.stats.comments}, channels=${session.stats.channelVisits}`);
+
+            } catch (loopErr) {
+                log(`Loop error (continuing): ${loopErr.message}`);
+                await page.waitForTimeout(3000);
+                // Cố gắng quay về For You nếu bị lạc
+                await page.goto('https://www.tiktok.com/foryou', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+                await page.waitForTimeout(2000);
+            }
+        }
+
+        log(`Engage session stopped. Final stats: ${JSON.stringify(session.stats)}`);
+
+    } catch (err) {
+        log(`Session critical error: ${err.message}`);
+    } finally {
+        engagingProfiles.delete(profileId);
+        await browser.close().catch(() => null);
+        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        log('Engage session ended, browser closed.');
+    }
+}
+
+// Like video hiện tại
+async function engageLike(page, log) {
+    const likeSelectors = [
+        '[data-e2e="like-icon"]',
+        'button[aria-label*="like" i]:not([aria-label*="comment" i])',
+        '[class*="LikeIcon"]',
+        'span[class*="like"] svg',
+    ];
+
+    for (const sel of likeSelectors) {
+        try {
+            const el = await page.$(sel);
+            if (el && await el.isVisible()) {
+                // Kiểm tra xem đã like chưa (tránh unlike)
+                const isLiked = await el.evaluate(node => {
+                    const btn = node.closest('button') || node;
+                    return btn.getAttribute('aria-pressed') === 'true'
+                        || btn.classList.toString().includes('active')
+                        || btn.classList.toString().includes('liked');
+                }).catch(() => false);
+
+                if (!isLiked) {
+                    await el.click({ force: true });
+                    log(`Liked video via ${sel}`);
+                    return true;
+                } else {
+                    log(`Video already liked, skipping`);
+                    return false;
+                }
+            }
+        } catch (e) {}
+    }
+    log(`Like button not found`);
+    return false;
+}
+
+// Comment vào video hiện tại
+async function engageComment(page, log) {
+    const comment = randomItem(ENGAGE_COMMENTS);
+
+    // Mở comment box
+    const commentBtnSelectors = [
+        '[data-e2e="comment-icon"]',
+        'button[aria-label*="comment" i]',
+        '[class*="CommentIcon"]',
+    ];
+
+    let opened = false;
+    for (const sel of commentBtnSelectors) {
+        try {
+            const el = await page.$(sel);
+            if (el && await el.isVisible()) {
+                await el.click({ force: true });
+                opened = true;
+                log(`Opened comment box via ${sel}`);
+                break;
+            }
+        } catch (e) {}
+    }
+
+    if (!opened) {
+        log('Could not open comment box');
+        return false;
+    }
+
+    await page.waitForTimeout(1500);
+
+    // Tìm input box comment
+    const inputSelectors = [
+        '[data-e2e="comment-input"]',
+        'div[contenteditable="true"][placeholder*="comment" i]',
+        'div[contenteditable="true"]',
+        'textarea[placeholder*="comment" i]',
+    ];
+
+    for (const sel of inputSelectors) {
+        try {
+            const input = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
+            if (input) {
+                await input.click();
+                await page.waitForTimeout(500);
+                await page.keyboard.type(comment, { delay: randomInt(50, 120) });
+                await page.waitForTimeout(randomInt(500, 1000));
+
+                // Submit comment
+                await page.keyboard.press('Enter');
+                log(`Commented: "${comment}"`);
+                await page.waitForTimeout(1000);
+
+                // Đóng comment panel bằng ESC hoặc click ngoài
+                await page.keyboard.press('Escape');
+                return true;
+            }
+        } catch (e) {}
+    }
+
+    log('Comment input not found, pressing Escape to close');
+    await page.keyboard.press('Escape');
+    return false;
+}
+
+// Visit kênh của creator video hiện tại, xem 1–3 video rồi quay về
+async function engageVisitChannel(page, session, log) {
+    // Click vào tên/avatar creator
+    const creatorSelectors = [
+        '[data-e2e="video-author-uniqueid"]',
+        'a[href*="/@"]',
+        '[class*="AuthorTitle"] a',
+        '[class*="author-uniqueId"] a',
+        'h3[class*="AuthorUniqueId"] a',
+    ];
+
+    let channelUrl = null;
+    for (const sel of creatorSelectors) {
+        try {
+            const el = await page.$(sel);
+            if (el && await el.isVisible()) {
+                const href = await el.getAttribute('href').catch(() => null);
+                if (href && href.includes('/@')) {
+                    channelUrl = href.startsWith('http') ? href : `https://www.tiktok.com${href}`;
+                    log(`Found creator link: ${channelUrl}`);
+                    break;
+                }
+            }
+        } catch (e) {}
+    }
+
+    if (!channelUrl) {
+        log('Creator link not found, skipping channel visit');
+        return false;
+    }
+
+    // Điều hướng đến kênh
+    await page.goto(channelUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+    await page.waitForTimeout(randomInt(2000, 3500));
+    await engageDismissPopups(page, log);
+
+    if (session.stop) return true;
+
+    // Tìm danh sách video trên kênh và click vào 1–3 video ngẫu nhiên
+    const numVideosToWatch = randomInt(1, 3);
+    log(`Will watch ${numVideosToWatch} video(s) on this channel`);
+
+    const videoLinkSelectors = [
+        '[data-e2e="user-post-item"] a',
+        'div[class*="DivWrapper"] a[href*="/video/"]',
+        'a[href*="/video/"]',
+    ];
+
+    let videoLinks = [];
+    for (const sel of videoLinkSelectors) {
+        try {
+            const els = await page.$$(sel);
+            if (els.length > 0) {
+                // Lấy href của từng video
+                const hrefs = [];
+                for (const el of els.slice(0, 12)) {
+                    const href = await el.getAttribute('href').catch(() => null);
+                    if (href && href.includes('/video/')) {
+                        const fullUrl = href.startsWith('http') ? href : `https://www.tiktok.com${href}`;
+                        if (!hrefs.includes(fullUrl)) hrefs.push(fullUrl);
+                    }
+                }
+                if (hrefs.length > 0) {
+                    videoLinks = hrefs;
+                    break;
+                }
+            }
+        } catch (e) {}
+    }
+
+    if (videoLinks.length === 0) {
+        log('No video links found on channel, returning');
+        return true;
+    }
+
+    // Chọn ngẫu nhiên các video để xem
+    const shuffled = videoLinks.sort(() => Math.random() - 0.5);
+    const toWatch = shuffled.slice(0, Math.min(numVideosToWatch, shuffled.length));
+
+    for (const videoUrl of toWatch) {
+        if (session.stop) break;
+
+        try {
+            log(`Watching channel video: ${videoUrl}`);
+            await page.goto(videoUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+            await page.waitForTimeout(randomInt(2000, 3000));
+            await engageDismissPopups(page, log);
+
+            // Xem video 10–25 giây
+            const watchTime = randomInt(10000, 25000);
+            log(`Watching for ${(watchTime / 1000).toFixed(1)}s...`);
+
+            let elapsed = 0;
+            const checkInterval = 2000;
+            while (elapsed < watchTime && !session.stop) {
+                await page.waitForTimeout(Math.min(checkInterval, watchTime - elapsed));
+                elapsed += checkInterval;
+            }
+
+            session.stats.videosWatched++;
+
+            // Like với xác suất 20% (cao hơn khi đang trong kênh)
+            if (!session.stop && Math.random() < 0.20) {
+                try {
+                    await engageLike(page, log);
+                    session.stats.likes++;
+                } catch (e) {}
+            }
+
+        } catch (e) {
+            log(`Error watching channel video: ${e.message}`);
+        }
+
+        await page.waitForTimeout(randomInt(1000, 2000));
+    }
+
+    return true;
+}
+
+// Scroll xuống video tiếp theo trên For You page
+async function engageScrollToNext(page, log) {
+    try {
+        // Phương án 1: Nhấn phím mũi tên xuống
+        await page.keyboard.press('ArrowDown');
+        log('Scrolled to next video (ArrowDown)');
+        return;
+    } catch (e) {}
+
+    try {
+        // Phương án 2: Scroll chuột
+        await page.mouse.wheel(0, 800);
+        log('Scrolled to next video (wheel)');
+    } catch (e) {
+        log(`Scroll failed: ${e.message}`);
+    }
+}
+
+// Dismiss popup nhẹ nhàng (phiên bản cho engage — không dùng lại dismissPopups upload)
+async function engageDismissPopups(page, log) {
+    const dismissSelectors = [
+        'button:has-text("Log in later")',
+        'button:has-text("Not now")',
+        'button:has-text("Skip")',
+        'button:has-text("Got it")',
+        'button:has-text("Allow")',
+        '[aria-label="Close"]',
+        'button[class*="close" i]',
+    ];
+    for (const sel of dismissSelectors) {
+        try {
+            const el = await page.$(sel);
+            if (el && await el.isVisible()) {
+                await el.click();
+                log(`Dismissed popup: ${sel}`);
+                await page.waitForTimeout(500);
+            }
+        } catch (e) {}
+    }
+}
+
+// =============================================
+// END AUTO ENGAGE FEATURE
+// =============================================
 
 const dismissPopups = async (page) => {
     if (!page) return false;

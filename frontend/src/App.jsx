@@ -23,7 +23,9 @@ import {
   Users,
   Music,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  Heart,
+  StopCircle
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -35,6 +37,9 @@ const ProfileCard = ({
   onDelete,
   onOpen,
   onStart,
+  onEngage,
+  onStopEngage,
+  isEngaging,
   onUpdateName,
   onUpdateGroup,
   onUpdateFolder,
@@ -351,7 +356,7 @@ const ProfileCard = ({
                   </span>
                 </div>
                 
-                <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                   <button 
                     className="btn"
                     onClick={() => onOpen(profile.id)}
@@ -359,7 +364,7 @@ const ProfileCard = ({
                       background: 'rgba(255, 255, 255, 0.05)',
                       color: 'white',
                       border: '1px solid var(--border)',
-                      padding: '6px 14px',
+                      padding: '6px 12px',
                       borderRadius: '8px',
                       gap: '6px'
                     }}
@@ -371,12 +376,12 @@ const ProfileCard = ({
                   <button 
                     className="btn"
                     onClick={() => onStart(profile.id)}
-                    disabled={profile.status === 'uploading'}
+                    disabled={profile.status === 'uploading' || isEngaging}
                     style={{
                       background: profile.status === 'uploading' ? 'transparent' : 'rgba(255, 255, 255, 0.05)',
                       color: profile.status === 'uploading' ? 'var(--accent)' : 'white',
                       border: '1px solid var(--border)',
-                      padding: '6px 14px',
+                      padding: '6px 12px',
                       borderRadius: '8px',
                       gap: '6px'
                     }}
@@ -387,6 +392,39 @@ const ProfileCard = ({
                       <Play size={14} fill="white" />
                     )}
                     {profile.status === 'uploading' ? 'ACTIVE' : 'START'}
+                  </button>
+
+                  {/* Auto Engage Button */}
+                  <button
+                    className="btn"
+                    onClick={() => isEngaging ? onStopEngage(profile.id) : onEngage(profile.id)}
+                    disabled={profile.status === 'uploading'}
+                    title={isEngaging ? 'Dừng Auto Engage' : 'Bắt đầu xem & tương tác TikTok tự động'}
+                    style={{
+                      background: isEngaging
+                        ? 'rgba(239, 68, 68, 0.12)'
+                        : 'rgba(236, 72, 153, 0.08)',
+                      color: isEngaging ? '#EF4444' : '#EC4899',
+                      border: `1px solid ${isEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.25)'}`,
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      gap: '6px',
+                      fontWeight: '700',
+                      transition: 'all 0.2s',
+                      cursor: profile.status === 'uploading' ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {isEngaging ? (
+                      <>
+                        <StopCircle size={14} className="animate-pulse" />
+                        STOP
+                      </>
+                    ) : (
+                      <>
+                        <Heart size={14} />
+                        ENGAGE
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -420,6 +458,7 @@ const App = () => {
   const [editingGroupValue, setEditingGroupValue] = useState('');
   const [selectedForRun, setSelectedForRun] = useState(() => new Set());
   const [bulkRunMode, setBulkRunMode] = useState('parallel');
+  const [engagingProfiles, setEngagingProfiles] = useState(() => new Set());
 
   const filteredProfiles = useMemo(() => {
     if (groupFilter === 'all') return profiles;
@@ -465,6 +504,16 @@ const App = () => {
       
       setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
       setGroups(gRes.data || []);
+
+      // Sync engaging status from profile status field
+      setEngagingProfiles(prev => {
+        const next = new Set(prev);
+        newProfiles.forEach(p => {
+          if (p.status === 'engaging') next.add(p.id);
+          else next.delete(p.id);
+        });
+        return next;
+      });
     } catch (err) {
       console.error('Fetch error:', err);
     }
@@ -646,6 +695,78 @@ const App = () => {
     }
   };
 
+  const startEngage = async (profileId) => {
+    try {
+      await axios.post('/api/engage', { profileId });
+      setEngagingProfiles(prev => new Set([...prev, profileId]));
+      setMessage({ type: 'success', text: 'Auto Engage started! ♥️ TikTok sẽ tự động xem video.' });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to start engage' });
+    }
+  };
+
+  const stopEngage = async (profileId) => {
+    try {
+      await axios.post('/api/engage/stop', { profileId });
+      setEngagingProfiles(prev => {
+        const next = new Set(prev);
+        next.delete(profileId);
+        return next;
+      });
+      setMessage({ type: 'success', text: 'Auto Engage dừng. Browser sẽ đóng sau vài giây.' });
+      setTimeout(() => setMessage(null), 4000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to stop engage' });
+    }
+  };
+
+  const startBulkEngage = async () => {
+    const profileIds = [...selectedForRun];
+    if (profileIds.length === 0) {
+      setMessage({ type: 'error', text: 'Chọn ít nhất một profile (checkbox) để Engage hàng loạt.' });
+      return;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+    const errors = [];
+
+    await Promise.all(
+      profileIds.map(async (profileId) => {
+        // Bỏ qua các profile đã đang engage hoặc đang upload
+        if (engagingProfiles.has(profileId)) return;
+        try {
+          await axios.post('/api/engage', { profileId });
+          setEngagingProfiles(prev => new Set([...prev, profileId]));
+          successCount++;
+        } catch (err) {
+          failCount++;
+          errors.push(err.response?.data?.error || `Profile ${profileId} failed`);
+        }
+      })
+    );
+
+    if (successCount > 0) {
+      setMessage({
+        type: 'success',
+        text: `♥️ Đã bật Auto Engage cho ${successCount} profile${failCount > 0 ? ` (${failCount} thất bại)` : ''}`
+      });
+    } else {
+      setMessage({ type: 'error', text: errors[0] || 'Không có profile nào được bật Engage' });
+    }
+    setTimeout(() => setMessage(null), 5000);
+  };
+
+  const stopBulkEngage = async () => {
+    const engagingSelected = [...selectedForRun].filter(id => engagingProfiles.has(id));
+    if (engagingSelected.length === 0) {
+      setMessage({ type: 'error', text: 'Không có profile nào đang engage trong danh sách đã chọn.' });
+      return;
+    }
+    await Promise.all(engagingSelected.map(id => stopEngage(id)));
+  };
+
 
   const updateProfileFolder = async (id, folder) => {
     try {
@@ -806,6 +927,7 @@ const App = () => {
   const getStatusColor = (status) => {
     switch (status) {
       case 'uploading': return 'var(--accent)';
+      case 'engaging': return '#EC4899';
       case 'success': return 'var(--success)';
       case 'error': return 'var(--error)';
       case 'no_videos': return '#EAB308';
@@ -984,7 +1106,7 @@ const App = () => {
                     )}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-secondary"
                     onClick={() => setIsCreateProfileModalOpen(true)}
@@ -993,7 +1115,7 @@ const App = () => {
                     <Plus size={18} />
                     Thêm mới
                   </button>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '160px' }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '140px' }}>
                     Kiểu chạy
                     <select
                       className="input"
@@ -1015,6 +1137,34 @@ const App = () => {
                     {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
                     Chạy đã chọn
                   </button>
+
+                  {/* Bulk Engage button */}
+                  {(() => {
+                    const selectedEngaging = [...selectedForRun].filter(id => engagingProfiles.has(id));
+                    const allSelectedEngaging = selectedForRun.size > 0 && selectedEngaging.length === selectedForRun.size;
+                    return (
+                      <button
+                        className="btn"
+                        onClick={() => allSelectedEngaging ? stopBulkEngage() : startBulkEngage()}
+                        disabled={selectedForRun.size === 0}
+                        title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần Engage' : (allSelectedEngaging ? 'Dừng Engage tất cả đã chọn' : 'Bật Auto Engage cho tất cả đã chọn')}
+                        style={{
+                          gap: '10px',
+                          background: allSelectedEngaging ? 'rgba(239,68,68,0.1)' : 'rgba(236,72,153,0.1)',
+                          color: allSelectedEngaging ? '#EF4444' : '#EC4899',
+                          border: `1px solid ${allSelectedEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.3)'}`,
+                          fontWeight: '700',
+                          opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                          cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                        }}
+                      >
+                        {allSelectedEngaging
+                          ? <><StopCircle size={18} className="animate-pulse" /> Stop Engage</>
+                          : <><Heart size={18} /> Engage đã chọn</>
+                        }
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -1029,6 +1179,9 @@ const App = () => {
                       onDelete={deleteProfile}
                       onOpen={openProfile}
                       onStart={startAutomation}
+                      onEngage={startEngage}
+                      onStopEngage={stopEngage}
+                      isEngaging={engagingProfiles.has(profile.id)}
                       onUpdateName={updateProfileName}
                       onUpdateGroup={updateProfileGroup}
                       onUpdateFolder={updateProfileFolder}
