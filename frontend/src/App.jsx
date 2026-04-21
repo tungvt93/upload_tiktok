@@ -44,6 +44,7 @@ const ProfileCard = ({
   onUpdateSchedules,
   onUpdateSetMusic,
   onUpdateAutoIncrementSchedule,
+  onUpdateUploadCount,
   groups,
   getStatusColor,
   editingId,
@@ -277,6 +278,22 @@ const ProfileCard = ({
                         }
                       }}
                     />
+
+                    <div style={{ marginTop: '12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                        <Video size={14} color="var(--text-muted)" />
+                        <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Số lượng video mỗi lần</span>
+                      </div>
+                      <input 
+                        type="number"
+                        className="input"
+                        style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                        min="1"
+                        placeholder="Default: 1"
+                        value={profile.upload_count || 1}
+                        onChange={(e) => onUpdateUploadCount(profile.id, parseInt(e.target.value) || 1)}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
@@ -736,6 +753,22 @@ const App = () => {
     }
   };
 
+  const updateProfileUploadCount = async (id, count) => {
+    // Optimistic update
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, upload_count: count } : p))
+    );
+    try {
+      await axios.patch(`/api/profiles/${id}`, { upload_count: count });
+      // Small delay to ensure DB consistency
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    }
+  };
+
   const selectFolderPath = async () => {
     try {
       const res = await axios.post('/api/select-folder');
@@ -1005,6 +1038,7 @@ const App = () => {
                       onUpdateSchedules={updateProfileSchedules}
                       onUpdateSetMusic={updateProfileSetMusic}
                       onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
+                      onUpdateUploadCount={updateProfileUploadCount}
                       groups={groups}
                       getStatusColor={getStatusColor}
                       editingId={editingId}

@@ -139,6 +139,18 @@ try {
     console.error('Migration error (auto_increment_schedule column):', err);
 }
 
+// Migration: upload_count — Số lượng video upload mỗi lần
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasUploadCount = tableInfo.some((col) => col.name === 'upload_count');
+    if (!hasUploadCount) {
+        db.exec('ALTER TABLE profiles ADD COLUMN upload_count INTEGER DEFAULT 1;');
+        console.log('Added upload_count column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (upload_count column):', err);
+}
+
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
     try {
@@ -269,7 +281,7 @@ app.delete('/api/profiles/:id', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -334,6 +346,9 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (auto_increment_schedule !== undefined) {
         const val = auto_increment_schedule ? 1 : 0;
         db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
+    }
+    if (upload_count !== undefined) {
+        db.prepare('UPDATE profiles SET upload_count = ? WHERE id = ?').run(upload_count, profileId);
     }
     res.json({ success: true });
 });
@@ -779,7 +794,12 @@ async function uploadVideo(profile, videoFolder, videos) {
             return 0;
         }
 
-        for (let i = 0; i < videos.length; i++) {
+        const maxUploads = (profile.is_scheduled === 1 && profile.upload_count > 0) 
+            ? profile.upload_count 
+            : videos.length;
+        const uploadLimit = Math.min(videos.length, maxUploads);
+
+        for (let i = 0; i < uploadLimit; i++) {
             const videoFileName = videos[i];
             const videoPath = path.join(videoFolder, videoFileName);
 
