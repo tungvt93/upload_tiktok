@@ -43,8 +43,8 @@ export function createProfileRecord(db, { id, name, group_id, video_folder }) {
     try {
         db.prepare(
             `
-            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, group_id, video_folder, set_music)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, group_id, video_folder, set_music, upload_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         ).run(
             id,
@@ -54,7 +54,8 @@ export function createProfileRecord(db, { id, name, group_id, video_folder }) {
             0,
             normalizedGroupId ?? null,
             normalizedVideoFolder,
-            0
+            0,
+            1
         );
     } catch (e) {
         if (e && e.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
