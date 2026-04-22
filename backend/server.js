@@ -847,25 +847,38 @@ async function uploadVideo(profile, videoFolder, videos) {
 
             log(`Processing video ${i + 1}/${videos.length}: ${videoFileName}`);
 
-            // Navigate to upload page
-            await page.goto('https://www.tiktok.com/tiktokstudio/upload', { waitUntil: 'domcontentloaded' });
-
-            // On first video, wait longer in case login is needed
-            if (i === 0) {
-                log(`Waiting for upload page components (up to 20s)...`);
+            // Navigate to upload page with retry
+            let initialized = false;
+            for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
+                    log(`Navigating to upload page (Attempt ${attempt}/3)...`);
+                    await page.goto('https://www.tiktok.com/tiktokstudio/upload', { 
+                        waitUntil: 'load', 
+                        timeout: 60000 
+                    });
+                    
+                    log(`Waiting for upload page components (up to 45s)...`);
                     await Promise.race([
-                        page.waitForSelector('input[type="file"]', { timeout: 20000 }),
-                        page.waitForSelector('button.upload-stage-btn, .upload-stage-btn', { timeout: 20000 })
+                        page.waitForSelector('input[type="file"]', { timeout: 45000 }),
+                        page.waitForSelector('button.upload-stage-btn, .upload-stage-btn', { timeout: 45000 })
                     ]);
+                    
+                    initialized = true;
                     log(`Upload page ready.`);
+                    break;
                 } catch (e) {
-                    log(`Page initialization slow or login needed. Checking...`);
-                    const debugPath = path.join(__dirname, `debug_${profile.name}_startup.png`);
-                    await page.screenshot({ path: debugPath }).catch(() => null);
+                    log(`Page initialization attempt ${attempt} failed: ${e.message}`);
+                    if (attempt < 3) {
+                        await page.reload({ waitUntil: 'load' }).catch(() => null);
+                        await page.waitForTimeout(5000);
+                    }
                 }
-            } else {
-                await page.waitForTimeout(3000);
+            }
+
+            if (!initialized) {
+                const debugPath = path.join(__dirname, `debug_${profile.name}_init_fail.png`);
+                await page.screenshot({ path: debugPath }).catch(() => null);
+                throw new Error('Failed to initialize upload page after 3 attempts');
             }
 
             log(`Selecting file...`);
@@ -879,7 +892,7 @@ async function uploadVideo(profile, videoFolder, videos) {
                     if (el) {
                         log(`Found upload button: ${sel}. Intercepting filechooser...`);
                         const [fileChooser] = await Promise.all([
-                            page.waitForEvent('filechooser', { timeout: 8000 }),
+                            page.waitForEvent('filechooser', { timeout: 15000 }),
                             el.click()
                         ]);
                         await fileChooser.setFiles(videoPath);
@@ -1265,10 +1278,9 @@ async function uploadVideo(profile, videoFolder, videos) {
                     log(`ERROR deleting file: ${err.message}`); 
                 }
 
-                // Navigate back to upload page for next video if not last
+                // Wait before next loop iteration to let things settle
                 if (i < videos.length - 1) {
                     log(`Preparing for next video...`);
-                    await page.goto('https://www.tiktok.com/tiktokstudio/upload', { waitUntil: 'domcontentloaded' }).catch(() => null);
                     await page.waitForTimeout(5000);
                 }
             }
