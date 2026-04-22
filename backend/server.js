@@ -796,12 +796,8 @@ async function runSingleProfile(profile) {
 
 async function uploadVideo(profile, videoFolder, videos) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
-    const doneDir = path.join(videoFolder, 'done');
     let uploadedCount = 0;
     let lastScheduledTime = null;
-
-    // Ensure done directory exists
-    if (videos.length > 0 && !fs.existsSync(doneDir)) fs.mkdirSync(doneDir);
 
     const browserOptions = {
         headless: false,
@@ -1261,12 +1257,12 @@ async function uploadVideo(profile, videoFolder, videos) {
                 log(`Finalizing upload for ${videoFileName}...`);
                 try {
                     if (fs.existsSync(videoPath)) {
-                        fs.renameSync(videoPath, path.join(doneDir, videoFileName));
-                        log(`SUCCESS: Moved ${videoFileName} to ${doneDir}`);
+                        fs.unlinkSync(videoPath);
+                        log(`SUCCESS: Deleted ${videoFileName} after upload.`);
                     }
                     uploadedCount++;
                 } catch (err) { 
-                    log(`ERROR moving file: ${err.message}`); 
+                    log(`ERROR deleting file: ${err.message}`); 
                 }
 
                 // Navigate back to upload page for next video if not last
