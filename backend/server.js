@@ -847,52 +847,69 @@ async function uploadVideo(profile, videoFolder, videos) {
 
             log(`Processing video ${i + 1}/${videos.length}: ${videoFileName}`);
 
-            // Navigate to upload page with retry
+            // Navigate to upload page with active polling
             let initialized = false;
             for (let attempt = 1; attempt <= 3; attempt++) {
                 try {
                     log(`Navigating to upload page (Attempt ${attempt}/3)...`);
                     await page.goto('https://www.tiktok.com/tiktokstudio/upload', { 
-                        waitUntil: 'load', 
-                        timeout: 60000 
+                        waitUntil: 'domcontentloaded', 
+                        timeout: 30000 
                     });
                     
-                    log(`Waiting for upload page components (up to 45s)...`);
-                    await Promise.race([
-                        page.waitForSelector('input[type="file"]', { timeout: 45000 }),
-                        page.waitForSelector('button.upload-stage-btn, .upload-stage-btn', { timeout: 45000 })
-                    ]);
-                    
-                    initialized = true;
-                    log(`Upload page ready.`);
-                    break;
+                    log(`Active polling for upload components...`);
+                    // Smart polling loop: check every 1s for up to 30s
+                    for (let poll = 0; poll < 30; poll++) {
+                        const [hasInput, hasButton, isLogin] = await Promise.all([
+                            page.$('input[type="file"]'),
+                            page.$('button.upload-stage-btn, .upload-stage-btn, [data-e2e="upload-video-button"]'),
+                            page.evaluate(() => window.location.href.includes('login'))
+                        ]);
+
+                        if (hasButton || hasInput) {
+                            log(`Components detected via polling.`);
+                            initialized = true;
+                            break;
+                        }
+                        if (isLogin) {
+                            log(`Redirected to login page. Please log in.`);
+                            initialized = true; // Still "initialized" in terms of navigation, but with warning
+                            break;
+                        }
+                        await page.waitForTimeout(1000);
+                    }
+
+                    if (initialized) break;
                 } catch (e) {
-                    log(`Page initialization attempt ${attempt} failed: ${e.message}`);
+                    log(`Attempt ${attempt} failed: ${e.message}`);
                     if (attempt < 3) {
-                        await page.reload({ waitUntil: 'load' }).catch(() => null);
-                        await page.waitForTimeout(5000);
+                        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null);
                     }
                 }
             }
 
             if (!initialized) {
-                const debugPath = path.join(__dirname, `debug_${profile.name}_init_fail.png`);
-                await page.screenshot({ path: debugPath }).catch(() => null);
-                throw new Error('Failed to initialize upload page after 3 attempts');
+                throw new Error('Upload page components not found. Page might be too slow or blocked.');
             }
 
             log(`Selecting file...`);
             let uploaded = false;
 
-            // Strategy 1: Intercept filechooser
-            const uploadButtonSelectors = ['button.upload-stage-btn', 'button:has-text("Select videos")', '.upload-stage-btn', 'button[class*="upload"]'];
+            // Strategy 1: Intercept filechooser with resilient waiting
+            const uploadButtonSelectors = [
+                '[data-e2e="upload-video-button"]',
+                'button.upload-stage-btn', 
+                'button:has-text("Select videos")', 
+                '.upload-stage-btn', 
+                'button[class*="upload"]'
+            ];
             for (const sel of uploadButtonSelectors) {
                 try {
-                    const el = await page.$(sel);
+                    const el = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
                     if (el) {
                         log(`Found upload button: ${sel}. Intercepting filechooser...`);
                         const [fileChooser] = await Promise.all([
-                            page.waitForEvent('filechooser', { timeout: 15000 }),
+                            page.waitForEvent('filechooser', { timeout: 20000 }),
                             el.click()
                         ]);
                         await fileChooser.setFiles(videoPath);
