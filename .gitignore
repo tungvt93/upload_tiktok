@@ -8,3 +8,7 @@ build/
 .env
 *.log
 docs
+uploads/
+video_download_api/downloads/
+backend/debug_*
+uploads/

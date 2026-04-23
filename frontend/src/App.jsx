@@ -46,6 +46,7 @@ const ProfileCard = ({
   onSelectFolder,
   onUpdateProxy,
   onUpdateSchedule,
+  onUpdateScheduleChannelUrl,
   onUpdateSchedules,
   onUpdateSetMusic,
   onUpdateAutoIncrementSchedule,
@@ -266,6 +267,28 @@ const ProfileCard = ({
 
                 {profile.is_scheduled === 1 && (
                   <div style={{ marginTop: '12px', paddingLeft: '38px' }}>
+                    <div style={{ marginBottom: '16px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                        <Link size={14} color="var(--text-muted)" />
+                        <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Link kênh (YouTube / TikTok)</span>
+                      </div>
+                      <input
+                        className="input"
+                        style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                        placeholder="https://www.youtube.com/@... hoặc https://www.tiktok.com/@..."
+                        value={profile.schedule_channel_url || ''}
+                        onChange={(e) => onUpdateScheduleChannelUrl(profile.id, e.target.value)}
+                        onBlur={(e) =>
+                          onUpdateScheduleChannelUrl(profile.id, e.target.value, { flush: true })
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            onUpdateScheduleChannelUrl(profile.id, e.target.value, { flush: true });
+                            e.target.blur();
+                          }
+                        }}
+                      />
+                    </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                       <Clock size={14} color="var(--text-muted)" />
                       <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Daily Times (HH:mm, HH:mm)</span>
@@ -448,6 +471,9 @@ const App = () => {
   const [message, setMessage] = useState(null);
   const [activeTab, setActiveTab] = useState('profiles');
   const processingRef = useRef(new Set());
+  /** Giá trị link kênh mới nhất theo profile (dùng khi debounce PATCH fire). */
+  const scheduleChannelPendingRef = useRef({});
+  const scheduleChannelSaveTimersRef = useRef({});
   const [isSelectingFolder, setIsSelectingFolder] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingValue, setEditingValue] = useState('');
@@ -475,6 +501,39 @@ const App = () => {
   }, []);
 
   useEffect(() => {
+    const clearDebounceTimers = () => {
+      Object.keys(scheduleChannelSaveTimersRef.current).forEach((id) => {
+        clearTimeout(scheduleChannelSaveTimersRef.current[id]);
+        delete scheduleChannelSaveTimersRef.current[id];
+      });
+    };
+    const flushPendingChannelPatches = () => {
+      const ids = Object.keys(scheduleChannelSaveTimersRef.current);
+      if (ids.length === 0) return;
+      for (const id of ids) {
+        clearTimeout(scheduleChannelSaveTimersRef.current[id]);
+        delete scheduleChannelSaveTimersRef.current[id];
+        const sid = String(id);
+        const v = scheduleChannelPendingRef.current[sid];
+        axios
+          .patch(`/api/profiles/${sid}`, { schedule_channel_url: v })
+          .then(() => fetchData())
+          .catch(() => fetchData());
+      }
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') flushPendingChannelPatches();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pagehide', flushPendingChannelPatches);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pagehide', flushPendingChannelPatches);
+      clearDebounceTimers();
+    };
+  }, []);
+
+  useEffect(() => {
     const validIds = new Set(profiles.map((p) => p.id));
     setSelectedForRun((prev) => {
       const next = new Set([...prev].filter((id) => validIds.has(id)));
@@ -494,9 +553,29 @@ const App = () => {
       setProfiles(prev => {
         // Don't overwrite profiles that are currently being updated
         return newProfiles.map(np => {
-          if (processingRef.current.has(np.id)) {
-            const current = prev.find(p => p.id === np.id);
+          const sid = String(np.id);
+          if (processingRef.current.has(sid)) {
+            const current = prev.find((p) => String(p.id) === sid);
             return current || np;
+          }
+          const prevP = prev.find((p) => String(p.id) === sid);
+          const pending = scheduleChannelPendingRef.current[sid];
+          const serverCh = np.schedule_channel_url;
+          const serverChannelEmpty =
+            serverCh === undefined ||
+            serverCh === null ||
+            (typeof serverCh === 'string' && serverCh.trim() === '');
+          // Tránh fetch định kỳ (trước khi PATCH link kênh xong) ghi đè state và làm ô input bị trống sau blur
+          if (
+            serverChannelEmpty &&
+            typeof pending === 'string' &&
+            pending.trim() !== ''
+          ) {
+            return { ...np, schedule_channel_url: pending.trim() };
+          }
+          // Giữ link kênh khi API chưa trả field (backend cũ / lỗi serialize)
+          if (prevP && np.schedule_channel_url === undefined) {
+            return { ...np, schedule_channel_url: prevP.schedule_channel_url };
           }
           return np;
         });
@@ -786,6 +865,44 @@ const App = () => {
     }
   };
 
+  const updateProfileScheduleChannelUrl = async (id, schedule_channel_url, opts = {}) => {
+    const flush = opts.flush === true;
+    const pid = String(id);
+    scheduleChannelPendingRef.current[pid] = schedule_channel_url;
+    setProfiles((prev) =>
+      prev.map((p) => (String(p.id) === pid ? { ...p, schedule_channel_url } : p))
+    );
+
+    const patchToServer = async () => {
+      const v = scheduleChannelPendingRef.current[pid];
+      try {
+        await axios.patch(`/api/profiles/${pid}`, { schedule_channel_url: v });
+        delete scheduleChannelPendingRef.current[pid];
+        await fetchData();
+      } catch (err) {
+        console.error(err);
+        await fetchData();
+      }
+    };
+
+    if (flush) {
+      if (scheduleChannelSaveTimersRef.current[pid]) {
+        clearTimeout(scheduleChannelSaveTimersRef.current[pid]);
+        delete scheduleChannelSaveTimersRef.current[pid];
+      }
+      await patchToServer();
+      return;
+    }
+
+    if (scheduleChannelSaveTimersRef.current[pid]) {
+      clearTimeout(scheduleChannelSaveTimersRef.current[pid]);
+    }
+    scheduleChannelSaveTimersRef.current[pid] = setTimeout(() => {
+      delete scheduleChannelSaveTimersRef.current[pid];
+      patchToServer();
+    }, 450);
+  };
+
   const updateProfileName = async (id, newName) => {
     if (!newName.trim()) {
       setEditingId(null);
@@ -804,15 +921,20 @@ const App = () => {
   };
   
   const updateProfileSchedule = async (id, is_scheduled) => {
+    const pid = String(id);
     // Prevent multiple concurrent updates
-    if (processingRef.current.has(id)) return;
+    if (processingRef.current.has(pid)) return;
 
     // Optimistic update
-    setProfiles(prev => prev.map(p => p.id === id ? { ...p, is_scheduled: is_scheduled ? 1 : 0 } : p));
-    processingRef.current.add(id);
+    setProfiles((prev) =>
+      prev.map((p) =>
+        String(p.id) === pid ? { ...p, is_scheduled: is_scheduled ? 1 : 0 } : p
+      )
+    );
+    processingRef.current.add(pid);
 
     try {
-      await axios.patch(`/api/profiles/${id}`, { is_scheduled });
+      await axios.patch(`/api/profiles/${pid}`, { is_scheduled });
       // Small delay to ensure DB is written and GET will find it
       await new Promise(resolve => setTimeout(resolve, 500));
       await fetchData();
@@ -820,7 +942,7 @@ const App = () => {
       console.error(err);
       await fetchData();
     } finally {
-      processingRef.current.delete(id);
+      processingRef.current.delete(pid);
     }
   };
 
@@ -839,38 +961,44 @@ const App = () => {
   };
 
   const updateProfileSetMusic = async (id, enabled) => {
-    if (processingRef.current.has(id)) return;
+    const pid = String(id);
+    if (processingRef.current.has(pid)) return;
     setProfiles((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, set_music: enabled ? 1 : 0 } : p))
+      prev.map((p) =>
+        String(p.id) === pid ? { ...p, set_music: enabled ? 1 : 0 } : p
+      )
     );
-    processingRef.current.add(id);
+    processingRef.current.add(pid);
     try {
-      await axios.patch(`/api/profiles/${id}`, { set_music: enabled });
+      await axios.patch(`/api/profiles/${pid}`, { set_music: enabled });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
       console.error(err);
       await fetchData();
     } finally {
-      processingRef.current.delete(id);
+      processingRef.current.delete(pid);
     }
   };
 
   const updateProfileAutoIncrementSchedule = async (id, enabled) => {
-    if (processingRef.current.has(id)) return;
+    const pid = String(id);
+    if (processingRef.current.has(pid)) return;
     setProfiles((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, auto_increment_schedule: enabled ? 1 : 0 } : p))
+      prev.map((p) =>
+        String(p.id) === pid ? { ...p, auto_increment_schedule: enabled ? 1 : 0 } : p
+      )
     );
-    processingRef.current.add(id);
+    processingRef.current.add(pid);
     try {
-      await axios.patch(`/api/profiles/${id}`, { auto_increment_schedule: enabled });
+      await axios.patch(`/api/profiles/${pid}`, { auto_increment_schedule: enabled });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
       console.error(err);
       await fetchData();
     } finally {
-      processingRef.current.delete(id);
+      processingRef.current.delete(pid);
     }
   };
 
@@ -1188,6 +1316,7 @@ const App = () => {
                       onSelectFolder={handleSelectFolder}
                       onUpdateProxy={updateProfileProxy}
                       onUpdateSchedule={updateProfileSchedule}
+                      onUpdateScheduleChannelUrl={updateProfileScheduleChannelUrl}
                       onUpdateSchedules={updateProfileSchedules}
                       onUpdateSetMusic={updateProfileSetMusic}
                       onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
