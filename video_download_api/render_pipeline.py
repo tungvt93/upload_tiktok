@@ -7,6 +7,16 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
+# Pillow 10+ gỡ Image.ANTIALIAS; moviepy 1.x vẫn dùng (tránh ghim pillow<10 — không có wheel Py3.12).
+try:
+    from PIL import Image as _PILImage
+
+    if not hasattr(_PILImage, "ANTIALIAS"):
+        _Resampling = getattr(_PILImage, "Resampling", _PILImage)
+        _PILImage.ANTIALIAS = getattr(_Resampling, "LANCZOS", getattr(_PILImage, "LANCZOS", 1))
+except ImportError:
+    pass
+
 from moviepy.editor import ColorClip, CompositeVideoClip, VideoFileClip, vfx
 
 MAX_DURATION = 59

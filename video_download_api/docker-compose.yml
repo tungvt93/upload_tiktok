@@ -1,0 +1,20 @@
+services:
+  video-download-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: video-download-api
+    ports:
+      - "${VIDEO_DOWNLOAD_API_PORT:-8000}:8000"
+    volumes:
+      # Cùng thư mục uploads với backend — backend map host → /data/uploads khi gọi API
+      - ../uploads:/data/uploads
+      # File tạm yt-dlp (merge) trên host uploads/_api_downloads — khớp download_folders từ backend
+      - ../uploads/_api_downloads:/app/downloads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

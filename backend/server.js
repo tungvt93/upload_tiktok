@@ -49,18 +49,78 @@ const VIDEO_CMS_BASE_URL = String(process.env.VIDEO_CMS_BASE_URL || 'http://loca
 const VIDEO_DOWNLOAD_API_BASE_URL = String(
     process.env.VIDEO_DOWNLOAD_API_BASE_URL || 'http://127.0.0.1:8000'
 ).replace(/\/+$/, '');
+/** Khi FastAPI chạy trong Docker với mount `uploads` → `/data/uploads`, đặt `/data/uploads` (start-all.sh đã export). */
+const VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT = String(
+    process.env.VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT || ''
+).replace(/\/+$/, '');
+/** Trong container, thư mục download mặc định của API (khớp docker-compose). */
+const VIDEO_DOWNLOAD_API_CONTAINER_DL = String(
+    process.env.VIDEO_DOWNLOAD_API_CONTAINER_DL || '/app/downloads'
+).replace(/\/+$/, '');
 
 console.log(
     '[config] VIDEO_CMS_BASE_URL =',
     VIDEO_CMS_BASE_URL,
     '| VIDEO_DOWNLOAD_API_BASE_URL =',
-    VIDEO_DOWNLOAD_API_BASE_URL
+    VIDEO_DOWNLOAD_API_BASE_URL,
+    '| VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT =',
+    VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT || '(tắt — gửi đường dẫn host thẳng cho API)'
 );
+
+function isResolvedSubpath(parentDir, maybeChild) {
+    const p = path.resolve(parentDir);
+    const c = path.resolve(maybeChild);
+    return c === p || c.startsWith(p + path.sep);
+}
+
+/** Host → đường dẫn trong container cho body `render_folders` / tương tự. */
+function mapUploadsHostPathToContainer(hostAbsPath) {
+    if (!VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT) return hostAbsPath;
+    const base = path.resolve(UPLOADS_DIR);
+    const abs = path.resolve(hostAbsPath);
+    if (!isResolvedSubpath(base, abs)) return hostAbsPath;
+    const rel = path.relative(base, abs);
+    if (rel.startsWith(`..${path.sep}`) || rel === '..') return hostAbsPath;
+    const posixRel = rel.split(path.sep).join('/');
+    return path.posix.join(VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT, posixRel);
+}
+
+/** Phản hồi API (đường dẫn POSIX trong container) → đường dẫn thật trên máy host. */
+function mapContainerUploadsPathToHost(containerPathStr) {
+    if (!VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT) return containerPathStr;
+    const cp = String(containerPathStr).replace(/\\/g, '/');
+    const mount = VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT.replace(/\\/g, '/');
+    if (cp !== mount && !cp.startsWith(`${mount}/`)) return containerPathStr;
+    const rel = path.posix.relative(mount, cp);
+    if (!rel || rel === '.') return path.resolve(UPLOADS_DIR);
+    return path.resolve(UPLOADS_DIR, ...rel.split('/'));
+}
+
+/** `/app/downloads/...` trong container → host `uploads/_api_downloads/...` */
+function mapContainerDownloadPathToHost(containerPathStr) {
+    if (!VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT) return containerPathStr;
+    const cp = String(containerPathStr).replace(/\\/g, '/');
+    const dl = VIDEO_DOWNLOAD_API_CONTAINER_DL.replace(/\\/g, '/');
+    if (cp !== dl && !cp.startsWith(`${dl}/`)) return containerPathStr;
+    const rel = path.posix.relative(dl, cp);
+    const hostDl = path.join(UPLOADS_DIR, '_api_downloads');
+    if (!rel || rel === '.') return path.resolve(hostDl);
+    return path.resolve(hostDl, ...rel.split('/'));
+}
+
+/** saved_path có thể là /app/downloads/... hoặc (tương lai) dưới /data/uploads/... */
+function mapAnyContainerOutputPathToHost(containerPathStr) {
+    const mappedDl = mapContainerDownloadPathToHost(containerPathStr);
+    if (mappedDl !== containerPathStr) return mappedDl;
+    return mapContainerUploadsPathToHost(containerPathStr);
+}
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR);
 if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+const UPLOADS_API_DOWNLOAD_DIR = path.join(UPLOADS_DIR, '_api_downloads');
+if (!fs.existsSync(UPLOADS_API_DOWNLOAD_DIR)) fs.mkdirSync(UPLOADS_API_DOWNLOAD_DIR, { recursive: true });
 if (!fs.existsSync(EXTENSIONS_DIR)) fs.mkdirSync(EXTENSIONS_DIR);
 
 // Init SQLite DB
@@ -323,20 +383,27 @@ async function fetchNextHoldedVideoFromCms(channelLink, log) {
 
 async function downloadAndRenderViaVideoApi(videoUrl, renderFoldersAbs, log) {
     const endpoint = `${VIDEO_DOWNLOAD_API_BASE_URL}/download/video`;
+    const renderForApi = mapUploadsHostPathToContainer(renderFoldersAbs);
+    const useDockerPaths = Boolean(VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT);
     log?.(
-        `[Bước 2/4] POST download/render — ${endpoint} | render_folders=${renderFoldersAbs} | url=${String(videoUrl).slice(0, 90)}…`
+        `[Bước 2/4] POST download/render — ${endpoint} | render_folders=${renderForApi} | url=${String(videoUrl).slice(0, 90)}…`
     );
-    const { data, status } = await axios.post(
-        endpoint,
-        {
-            url: videoUrl,
-            render_folders: renderFoldersAbs
-        },
-        {
-            timeout: 600000,
-            validateStatus: () => true
-        }
-    );
+    if (useDockerPaths) {
+        log?.(
+            '[Bước 2/4] Đang chờ Download API (yt-dlp + merge + render thường 2–10+ phút; không có log trung gian từ container)…'
+        );
+        log?.(
+            '[Bước 2/4] Docker: file tạm yt-dlp ở /app/downloads (trên máy: uploads/_api_downloads); MP4 render nằm trong thư mục profile dưới uploads/.'
+        );
+    }
+    const body = {
+        url: videoUrl,
+        render_folders: renderForApi
+    };
+    const { data, status } = await axios.post(endpoint, body, {
+        timeout: 600000,
+        validateStatus: () => true
+    });
     log?.(`[Bước 2/4] Download API HTTP ${status}`);
     if (status >= 400) {
         const detail = data?.detail ?? data?.message ?? JSON.stringify(data);
@@ -345,12 +412,16 @@ async function downloadAndRenderViaVideoApi(videoUrl, renderFoldersAbs, log) {
     if (!data?.ok || !data.rendered_path) {
         throw new Error(`Video download API: thiếu rendered_path — ${JSON.stringify(data)?.slice(0, 400)}`);
     }
+    const renderedHost = path.resolve(mapContainerUploadsPathToHost(String(data.rendered_path)));
+    const savedHost = data.saved_path
+        ? path.resolve(mapAnyContainerOutputPathToHost(String(data.saved_path)))
+        : null;
     log?.(
-        `[Bước 2/4] Hoàn tất — rendered_path=${data.rendered_path}${data.saved_path ? ` | saved_path=${data.saved_path}` : ''}`
+        `[Bước 2/4] Hoàn tất — rendered_path=${renderedHost}${savedHost ? ` | saved_path=${savedHost}` : ''}`
     );
     return {
-        rendered_path: path.resolve(String(data.rendered_path)),
-        saved_path: data.saved_path ? path.resolve(String(data.saved_path)) : null
+        rendered_path: renderedHost,
+        saved_path: savedHost
     };
 }
 

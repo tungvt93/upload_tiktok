@@ -5,3 +5,5 @@ pydantic>=2.0.0
 yt-dlp>=2025.1.15
 moviepy>=1.0.3,<2
 imageio-ffmpeg>=0.4.9
+# moviepy 1.x thường không tương thích numpy 2.x
+numpy>=1.23,<2
