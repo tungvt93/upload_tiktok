@@ -22,6 +22,7 @@ import {
   X,
   Users,
   Music,
+  List,
   ChevronDown,
   ChevronRight,
   Heart,
@@ -30,6 +31,25 @@ import {
 
 import { motion, AnimatePresence } from 'framer-motion';
 
+const formatChannelShortLabel = (channel) => {
+  const rawUrl = String(channel?.url || '').trim();
+  const rawName = String(channel?.name || '').trim();
+  if (!rawUrl) return rawName || 'unknown-channel';
+
+  try {
+    const parsed = new URL(rawUrl);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    let key = parts[parts.length - 1] || parsed.hostname;
+    if (parts[0]?.startsWith('@')) key = parts[0];
+    if (parts[0] === 'shorts' && parts[1]) key = parts[1];
+    if (rawName) return `${rawName} (${key})`;
+    return key;
+  } catch (_) {
+    if (rawName) return rawName;
+    return rawUrl.length > 36 ? `${rawUrl.slice(0, 36)}...` : rawUrl;
+  }
+};
+
 const ProfileCard = ({
   profile,
   isSelected,
@@ -37,6 +57,7 @@ const ProfileCard = ({
   onDelete,
   onOpen,
   onStart,
+  onStartScheduled,
   onEngage,
   onStopEngage,
   isEngaging,
@@ -51,14 +72,21 @@ const ProfileCard = ({
   onUpdateSetMusic,
   onUpdateAutoIncrementSchedule,
   onUpdateUploadCount,
+  channels,
   groups,
   getStatusColor,
   editingId,
   setEditingId,
   editingValue,
-  setEditingValue
+  setEditingValue,
+  forceExpanded = false
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const expanded = forceExpanded || isExpanded;
+
+  useEffect(() => {
+    if (forceExpanded) setIsExpanded(true);
+  }, [forceExpanded]);
 
   return (
     <motion.div
@@ -67,7 +95,12 @@ const ProfileCard = ({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
       className="glass card"
-      style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+      style={{
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        border: forceExpanded ? '1px solid rgba(56, 189, 248, 0.25)' : undefined
+      }}
     >
       {/* Header - Always Visible */}
       <div 
@@ -79,7 +112,10 @@ const ProfileCard = ({
           padding: '4px',
           borderRadius: '8px'
         }}
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={() => {
+          if (forceExpanded) return;
+          setIsExpanded(!isExpanded);
+        }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <label 
@@ -176,15 +212,17 @@ const ProfileCard = ({
           >
             <Trash2 size={18} />
           </button>
-          <div style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
-            {isExpanded ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
-          </div>
+          {!forceExpanded && (
+            <div style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+              {isExpanded ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Expanded Content */}
       <AnimatePresence>
-        {isExpanded && (
+        {expanded && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
@@ -252,6 +290,34 @@ const ProfileCard = ({
               </div>
 
               <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <List size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Channel Topic</span>
+                </div>
+                <select
+                  className="input"
+                  style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                  value={profile.schedule_channel_url || ''}
+                  onChange={(e) =>
+                    onUpdateScheduleChannelUrl(profile.id, e.target.value, { flush: true })
+                  }
+                >
+                  <option value="">Chọn channel...</option>
+                  {profile.schedule_channel_url &&
+                    !channels.some((c) => c.url === profile.schedule_channel_url) && (
+                      <option value={profile.schedule_channel_url}>
+                        {profile.schedule_channel_url}
+                      </option>
+                    )}
+                  {channels.map((ch) => (
+                    <option key={String(ch.id)} value={ch.url}>
+                      {formatChannelShortLabel(ch)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                   <input 
                     type="checkbox"
@@ -267,28 +333,6 @@ const ProfileCard = ({
 
                 {profile.is_scheduled === 1 && (
                   <div style={{ marginTop: '12px', paddingLeft: '38px' }}>
-                    <div style={{ marginBottom: '16px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                        <Link size={14} color="var(--text-muted)" />
-                        <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Link kênh (YouTube / TikTok)</span>
-                      </div>
-                      <input
-                        className="input"
-                        style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
-                        placeholder="https://www.youtube.com/@... hoặc https://www.tiktok.com/@..."
-                        value={profile.schedule_channel_url || ''}
-                        onChange={(e) => onUpdateScheduleChannelUrl(profile.id, e.target.value)}
-                        onBlur={(e) =>
-                          onUpdateScheduleChannelUrl(profile.id, e.target.value, { flush: true })
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            onUpdateScheduleChannelUrl(profile.id, e.target.value, { flush: true });
-                            e.target.blur();
-                          }
-                        }}
-                      />
-                    </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                       <Clock size={14} color="var(--text-muted)" />
                       <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Daily Times (HH:mm, HH:mm)</span>
@@ -306,24 +350,49 @@ const ProfileCard = ({
                         }
                       }}
                     />
-
-                    <div style={{ marginTop: '12px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                        <Video size={14} color="var(--text-muted)" />
-                        <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Số lượng video mỗi lần</span>
-                      </div>
-                      <input 
-                        type="number"
-                        className="input"
-                        style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
-                        min="1"
-                        placeholder="Default: 1"
-                        value={profile.upload_count || 1}
-                        onChange={(e) => onUpdateUploadCount(profile.id, parseInt(e.target.value) || 1)}
-                      />
-                    </div>
                   </div>
                 )}
+              </div>
+
+              <div style={{ marginBottom: '20px', padding: '12px', borderRadius: '12px', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <Clock size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)' }}>NEW START</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px', alignItems: 'end' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                      <Video size={14} color="var(--text-muted)" />
+                      <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Số video chạy mỗi lượt</span>
+                    </div>
+                    <input
+                      type="number"
+                      className="input"
+                      style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                      min="1"
+                      placeholder="Default: 1"
+                      value={profile.upload_count || 1}
+                      onChange={(e) => onUpdateUploadCount(profile.id, parseInt(e.target.value) || 1)}
+                    />
+                  </div>
+                  <button
+                    className="btn"
+                    onClick={() => onStartScheduled(profile.id)}
+                    disabled={profile.status === 'uploading' || isEngaging}
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      color: 'white',
+                      border: '1px solid var(--border)',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      gap: '6px',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <Clock size={14} />
+                    NEW START
+                  </button>
+                </div>
               </div>
 
               <div style={{ marginBottom: '20px' }}>
@@ -483,8 +552,18 @@ const App = () => {
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editingGroupValue, setEditingGroupValue] = useState('');
   const [selectedForRun, setSelectedForRun] = useState(() => new Set());
+  const [activeProfileId, setActiveProfileId] = useState(null);
   const [bulkRunMode, setBulkRunMode] = useState('parallel');
+  const [bulkUploadCount, setBulkUploadCount] = useState(1);
   const [engagingProfiles, setEngagingProfiles] = useState(() => new Set());
+  const [channels, setChannels] = useState([]);
+  const [newChannelUrl, setNewChannelUrl] = useState('');
+  const [isAddingChannel, setIsAddingChannel] = useState(false);
+  const [renderChannelUrl, setRenderChannelUrl] = useState('');
+  const [renderMaxVideos, setRenderMaxVideos] = useState(5);
+  const [renderOutputFolder, setRenderOutputFolder] = useState('');
+  const [renderJob, setRenderJob] = useState({ status: 'idle', logs: [] });
+  const [isStartingRenderJob, setIsStartingRenderJob] = useState(false);
 
   const filteredProfiles = useMemo(() => {
     if (groupFilter === 'all') return profiles;
@@ -494,9 +573,14 @@ const App = () => {
     return profiles.filter((p) => p.group_id === groupFilter);
   }, [profiles, groupFilter]);
 
+  const activeProfile = useMemo(() => {
+    if (!filteredProfiles.length) return null;
+    return filteredProfiles.find((p) => String(p.id) === String(activeProfileId)) || filteredProfiles[0];
+  }, [filteredProfiles, activeProfileId]);
+
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
+    fetchData({ includeChannels: true });
+    const interval = setInterval(() => fetchData({ includeChannels: false }), 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -541,13 +625,38 @@ const App = () => {
     });
   }, [profiles]);
 
-  const fetchData = async () => {
+  useEffect(() => {
+    if (!filteredProfiles.length) {
+      setActiveProfileId(null);
+      return;
+    }
+    if (!filteredProfiles.some((p) => String(p.id) === String(activeProfileId))) {
+      setActiveProfileId(filteredProfiles[0].id);
+    }
+  }, [filteredProfiles, activeProfileId]);
+
+  useEffect(() => {
+    if (renderJob?.status !== 'running' && renderJob?.status !== 'queued') return;
+    const t = setInterval(async () => {
+      try {
+        const res = await axios.get('/api/render-videos/status');
+        setRenderJob(res.data || { status: 'idle', logs: [] });
+      } catch (_) {}
+    }, 2000);
+    return () => clearInterval(t);
+  }, [renderJob?.status]);
+
+  const fetchData = async (opts = {}) => {
+    const includeChannels = opts.includeChannels !== false;
     try {
       const [pRes, cRes, gRes] = await Promise.all([
         axios.get('/api/profiles'),
         axios.get('/api/config'),
         axios.get('/api/groups')
       ]);
+      const chRes = includeChannels
+        ? await axios.get('/api/channels').catch(() => ({ data: [] }))
+        : null;
       
       const newProfiles = pRes.data || [];
       setProfiles(prev => {
@@ -583,6 +692,9 @@ const App = () => {
       
       setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
       setGroups(gRes.data || []);
+      if (includeChannels) {
+        setChannels(Array.isArray(chRes?.data) ? chRes.data : []);
+      }
 
       // Sync engaging status from profile status field
       setEngagingProfiles(prev => {
@@ -724,13 +836,17 @@ const App = () => {
           setIsLoading(false);
           return;
         }
-        await axios.post('/api/start', { profileIds, runMode: bulkRunMode });
+        await axios.post('/api/start', {
+          profileIds,
+          runMode: bulkRunMode,
+          uploadCountOverride: Math.max(1, Number(bulkUploadCount) || 1)
+        });
         setMessage({
           type: 'success',
           text:
             bulkRunMode === 'sequential'
-              ? `Đã bật chạy tuần tự cho ${profileIds.length} profile (theo thứ tự đã chọn)`
-              : `Đã bật chạy cùng lúc cho ${profileIds.length} profile đã chọn`
+              ? `Đã bật chạy tuần tự theo vòng cho ${profileIds.length} profile (${Math.max(1, Number(bulkUploadCount) || 1)} vòng, mỗi profile 1 video/vòng)`
+              : `Đã bật chạy cùng lúc cho ${profileIds.length} profile đã chọn (${Math.max(1, Number(bulkUploadCount) || 1)} video/profile)`
         });
       }
       setTimeout(() => setMessage(null), 5000);
@@ -738,6 +854,23 @@ const App = () => {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to start' });
     }
     setIsLoading(false);
+  };
+
+  const startScheduledAutomation = async (profileId) => {
+    const current = profiles.find((p) => p.id === profileId);
+    if (current?.status === 'uploading') {
+      setMessage({ type: 'error', text: 'Profile đang uploading, chưa thể NEW START.' });
+      setTimeout(() => setMessage(null), 2500);
+      return;
+    }
+    try {
+      await axios.post(`/api/profiles/${profileId}/start-scheduled`);
+      setMessage({ type: 'success', text: 'Scheduled-style run started for profile' });
+      setTimeout(() => setMessage(null), 4000);
+      await fetchData();
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to start scheduled run' });
+    }
   };
 
   const toggleProfileSelectedForRun = (id) => {
@@ -866,6 +999,44 @@ const App = () => {
   };
 
   const updateProfileScheduleChannelUrl = async (id, schedule_channel_url, opts = {}) => {
+    if (opts.addTopic === true) {
+      const url = String(schedule_channel_url || '').trim();
+      if (!url || isAddingChannel) return;
+      setIsAddingChannel(true);
+      const optimisticId = `local-${Date.now()}`;
+      setChannels((prev) => {
+        if (prev.some((c) => c.url === url)) return prev;
+        return [
+          {
+            id: optimisticId,
+            url,
+            name: null,
+            platform: null,
+            scraping_status: null
+          },
+          ...prev
+        ];
+      });
+      try {
+        const res = await axios.post('/api/channels', { url });
+        setNewChannelUrl('');
+        await fetchData();
+        const warning = res?.data?.channel_sync_warning;
+        if (warning) {
+          setMessage({ type: 'error', text: `Đã lưu local, cảnh báo sync: ${warning}` });
+        } else {
+          setMessage({ type: 'success', text: 'Channel added successfully' });
+        }
+        setTimeout(() => setMessage(null), 3000);
+      } catch (err) {
+        setChannels((prev) => prev.filter((c) => c.id !== optimisticId));
+        setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to add channel' });
+      } finally {
+        setIsAddingChannel(false);
+      }
+      return;
+    }
+
     const flush = opts.flush === true;
     const pid = String(id);
     scheduleChannelPendingRef.current[pid] = schedule_channel_url;
@@ -1018,6 +1189,72 @@ const App = () => {
     }
   };
 
+  const deleteLocalChannel = async (url) => {
+    const v = String(url || '').trim();
+    if (!v) return;
+    try {
+      await axios.delete('/api/channels/local', { data: { url: v } });
+      setChannels((prev) => prev.filter((c) => c.url !== v));
+      setMessage({ type: 'success', text: 'Đã xóa channel local' });
+      setTimeout(() => setMessage(null), 2500);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Không thể xóa channel local' });
+    }
+  };
+
+  const startRenderVideosJob = async () => {
+    const channel = String(renderChannelUrl || '').trim();
+    const out = String(renderOutputFolder || '').trim();
+    const max = Math.max(1, parseInt(String(renderMaxVideos), 10) || 1);
+    if (!channel) {
+      setMessage({ type: 'error', text: 'Chọn channel trước khi Render.' });
+      return;
+    }
+    if (!out) {
+      setMessage({ type: 'error', text: 'Chọn thư mục output trước khi Render.' });
+      return;
+    }
+
+    setIsStartingRenderJob(true);
+    try {
+      await axios.post('/api/render-videos/start', {
+        channel_url: channel,
+        output_folder: out,
+        max_videos: max
+      });
+      const st = await axios.get('/api/render-videos/status');
+      setRenderJob(st.data || { status: 'queued', logs: [] });
+      setMessage({ type: 'success', text: 'Đã bắt đầu render videos.' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Không thể bắt đầu render job' });
+    } finally {
+      setIsStartingRenderJob(false);
+    }
+  };
+
+  const stopRenderVideosJob = async () => {
+    try {
+      await axios.post('/api/render-videos/stop');
+      const st = await axios.get('/api/render-videos/status');
+      setRenderJob(st.data || { status: 'idle', logs: [] });
+      setMessage({ type: 'success', text: 'Đã gửi lệnh dừng render job.' });
+      setTimeout(() => setMessage(null), 2500);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Không thể dừng render job' });
+    }
+  };
+
+  const handleSelectRenderFolder = async () => {
+    setIsSelectingFolder(true);
+    try {
+      const selectedPath = await selectFolderPath();
+      if (selectedPath) setRenderOutputFolder(selectedPath);
+    } finally {
+      setIsSelectingFolder(false);
+    }
+  };
+
   const selectFolderPath = async () => {
     try {
       const res = await axios.post('/api/select-folder');
@@ -1130,6 +1367,46 @@ const App = () => {
               <Users size={20} /> Groups
             </button>
             <button 
+              onClick={() => setActiveTab('topics')}
+              style={{ 
+                width: '100%', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '12px', 
+                padding: '12px 16px', 
+                borderRadius: '12px',
+                background: activeTab === 'topics' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
+                color: activeTab === 'topics' ? 'var(--primary)' : 'var(--text-muted)',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: '600',
+                marginTop: '8px',
+                transition: 'all 0.2s'
+              }}
+            >
+              <List size={20} /> List Topics
+            </button>
+            <button 
+              onClick={() => setActiveTab('renderVideos')}
+              style={{ 
+                width: '100%', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '12px', 
+                padding: '12px 16px', 
+                borderRadius: '12px',
+                background: activeTab === 'renderVideos' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
+                color: activeTab === 'renderVideos' ? 'var(--primary)' : 'var(--text-muted)',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: '600',
+                marginTop: '8px',
+                transition: 'all 0.2s'
+              }}
+            >
+              <Video size={20} /> Render videos
+            </button>
+            <button 
               onClick={() => setActiveTab('settings')}
               style={{ 
                 width: '100%', 
@@ -1216,15 +1493,17 @@ const App = () => {
                       </select>
                     </label>
                     {filteredProfiles.length > 0 && (
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={allFilteredSelected}
-                          onChange={toggleSelectAllFiltered}
-                          style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
-                        />
-                        Chọn tất cả (danh sách đang hiển thị)
-                      </label>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={allFilteredSelected}
+                            onChange={toggleSelectAllFiltered}
+                            style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          />
+                          Chọn tất cả (danh sách đang hiển thị)
+                        </label>
+                      </div>
                     )}
                     {selectedForRun.size > 0 && (
                       <span style={{ fontSize: '0.85rem', color: 'var(--accent)' }}>
@@ -1232,6 +1511,42 @@ const App = () => {
                         {bulkRunMode === 'sequential' ? ' (chạy tuần tự)' : ' (chạy cùng lúc)'}
                       </span>
                     )}
+                  </div>
+                  <div style={{ marginTop: '12px', display: 'flex', gap: '10px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '150px' }}>
+                      Số video / profile
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={bulkUploadCount}
+                        onChange={(e) => setBulkUploadCount(Math.max(1, Number(e.target.value) || 1))}
+                        style={{ padding: '10px 12px' }}
+                      />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '140px' }}>
+                      Kiểu chạy
+                      <select
+                        className="input"
+                        value={bulkRunMode}
+                        onChange={(e) => setBulkRunMode(e.target.value === 'sequential' ? 'sequential' : 'parallel')}
+                        style={{ padding: '10px 12px', cursor: 'pointer' }}
+                      >
+                        <option value="parallel">Chạy cùng lúc</option>
+                        <option value="sequential">Chạy tuần tự</option>
+                      </select>
+                    </label>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => startAutomation()}
+                      disabled={isLoading || selectedForRun.size === 0}
+                      title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần upload' : undefined}
+                      style={{ gap: '10px' }}
+                    >
+                      {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
+                      Chạy đã chọn
+                    </button>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1243,29 +1558,6 @@ const App = () => {
                     <Plus size={18} />
                     Thêm mới
                   </button>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '140px' }}>
-                    Kiểu chạy
-                    <select
-                      className="input"
-                      value={bulkRunMode}
-                      onChange={(e) => setBulkRunMode(e.target.value === 'sequential' ? 'sequential' : 'parallel')}
-                      style={{ padding: '10px 12px', cursor: 'pointer' }}
-                    >
-                      <option value="parallel">Chạy cùng lúc</option>
-                      <option value="sequential">Chạy tuần tự</option>
-                    </select>
-                  </label>
-                  <button 
-                    className="btn btn-primary"
-                    onClick={() => startAutomation()}
-                    disabled={isLoading || selectedForRun.size === 0}
-                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần upload' : undefined}
-                    style={{ gap: '10px' }}
-                  >
-                    {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
-                    Chạy đã chọn
-                  </button>
-
                   {/* Bulk Engage button */}
                   {(() => {
                     const selectedEngaging = [...selectedForRun].filter(id => engagingProfiles.has(id));
@@ -1296,41 +1588,130 @@ const App = () => {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
-                <AnimatePresence mode="popLayout">
-                  {filteredProfiles.map((profile) => (
-                    <ProfileCard
-                      key={profile.id}
-                      profile={profile}
-                      isSelected={selectedForRun.has(profile.id)}
-                      onToggleSelected={toggleProfileSelectedForRun}
-                      onDelete={deleteProfile}
-                      onOpen={openProfile}
-                      onStart={startAutomation}
-                      onEngage={startEngage}
-                      onStopEngage={stopEngage}
-                      isEngaging={engagingProfiles.has(profile.id)}
-                      onUpdateName={updateProfileName}
-                      onUpdateGroup={updateProfileGroup}
-                      onUpdateFolder={updateProfileFolder}
-                      onSelectFolder={handleSelectFolder}
-                      onUpdateProxy={updateProfileProxy}
-                      onUpdateSchedule={updateProfileSchedule}
-                      onUpdateScheduleChannelUrl={updateProfileScheduleChannelUrl}
-                      onUpdateSchedules={updateProfileSchedules}
-                      onUpdateSetMusic={updateProfileSetMusic}
-                      onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
-                      onUpdateUploadCount={updateProfileUploadCount}
-                      groups={groups}
-                      getStatusColor={getStatusColor}
-                      editingId={editingId}
-                      setEditingId={setEditingId}
-                      editingValue={editingValue}
-                      setEditingValue={setEditingValue}
-                    />
-                  ))}
-                </AnimatePresence>
-              </div>
+              {filteredProfiles.length > 0 && (
+                <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <div className="glass" style={{ flex: '1 1 320px', maxWidth: '420px', minWidth: '280px', padding: '12px', borderRadius: '18px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', marginBottom: '8px' }}>
+                      <h3 style={{ fontSize: '0.95rem', fontWeight: '700' }}>Danh sách profile</h3>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{filteredProfiles.length} items</span>
+                    </div>
+                    <div style={{ display: 'grid', gap: '10px', maxHeight: '68vh', overflowY: 'auto', paddingRight: '4px' }}>
+                      {filteredProfiles.map((profile) => {
+                        const isActive = String(activeProfile?.id) === String(profile.id);
+                        const isEngaging = engagingProfiles.has(profile.id);
+                        const isUploading = profile.status === 'uploading';
+                        return (
+                          <div
+                            key={profile.id}
+                            onClick={() => setActiveProfileId(profile.id)}
+                            className="glass"
+                            style={{
+                              padding: '12px',
+                              borderRadius: '14px',
+                              cursor: 'pointer',
+                              border: isActive ? '1px solid rgba(56, 189, 248, 0.45)' : '1px solid var(--border)',
+                              background: isActive ? 'rgba(56, 189, 248, 0.08)' : 'rgba(255,255,255,0.02)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: '0.95rem', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {profile.name}
+                                </div>
+                                <div style={{ marginTop: '4px', fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <Clock size={12} />
+                                  {profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}
+                                </div>
+                              </div>
+                              <input
+                                type="checkbox"
+                                checked={selectedForRun.has(profile.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={() => toggleProfileSelectedForRun(profile.id)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', marginTop: '2px' }}
+                              />
+                            </div>
+                            <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ fontSize: '0.72rem', fontWeight: '700', color: getStatusColor(profile.status), textTransform: 'uppercase' }}>
+                                {profile.status}
+                              </span>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  className="btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    startAutomation(profile.id);
+                                  }}
+                                  disabled={isUploading || isEngaging}
+                                  style={{ padding: '4px 8px', borderRadius: '8px', fontSize: '0.72rem', gap: '4px' }}
+                                >
+                                  <Play size={12} />
+                                  Start
+                                </button>
+                                <button
+                                  className="btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    isEngaging ? stopEngage(profile.id) : startEngage(profile.id);
+                                  }}
+                                  disabled={isUploading}
+                                  style={{
+                                    padding: '4px 8px',
+                                    borderRadius: '8px',
+                                    fontSize: '0.72rem',
+                                    gap: '4px',
+                                    color: isEngaging ? '#EF4444' : '#EC4899'
+                                  }}
+                                >
+                                  {isEngaging ? <StopCircle size={12} /> : <Heart size={12} />}
+                                  {isEngaging ? 'Stop' : 'Engage'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div style={{ flex: '2 1 560px', minWidth: '320px' }}>
+                    {activeProfile && (
+                      <ProfileCard
+                        key={activeProfile.id}
+                        profile={activeProfile}
+                        isSelected={selectedForRun.has(activeProfile.id)}
+                        onToggleSelected={toggleProfileSelectedForRun}
+                        onDelete={deleteProfile}
+                        onOpen={openProfile}
+                        onStart={startAutomation}
+                        onStartScheduled={startScheduledAutomation}
+                        onEngage={startEngage}
+                        onStopEngage={stopEngage}
+                        isEngaging={engagingProfiles.has(activeProfile.id)}
+                        onUpdateName={updateProfileName}
+                        onUpdateGroup={updateProfileGroup}
+                        onUpdateFolder={updateProfileFolder}
+                        onSelectFolder={handleSelectFolder}
+                        onUpdateProxy={updateProfileProxy}
+                        onUpdateSchedule={updateProfileSchedule}
+                        onUpdateScheduleChannelUrl={updateProfileScheduleChannelUrl}
+                        onUpdateSchedules={updateProfileSchedules}
+                        onUpdateSetMusic={updateProfileSetMusic}
+                        onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
+                        onUpdateUploadCount={updateProfileUploadCount}
+                        channels={channels}
+                        groups={groups}
+                        getStatusColor={getStatusColor}
+                        editingId={editingId}
+                        setEditingId={setEditingId}
+                        editingValue={editingValue}
+                        setEditingValue={setEditingValue}
+                        forceExpanded={true}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
 
               {profiles.length === 0 && (
                 <div style={{ 
@@ -1606,6 +1987,197 @@ const App = () => {
                   ))}
                 </div>
               )}
+            </section>
+          ) : activeTab === 'topics' ? (
+            <section>
+              <div style={{ marginBottom: '28px' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '8px' }}>List Topics</h2>
+                <p style={{ color: 'var(--text-muted)', maxWidth: '680px', lineHeight: 1.5 }}>
+                  Quản lý danh sách channel để chọn nhanh trong từng profile.
+                </p>
+              </div>
+
+              <div className="glass" style={{ padding: '20px 24px', borderRadius: '20px', marginBottom: '24px' }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    className="input"
+                    placeholder="https://www.youtube.com/@... hoặc https://www.tiktok.com/@..."
+                    value={newChannelUrl}
+                    onChange={(e) => setNewChannelUrl(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && updateProfileScheduleChannelUrl(profiles[0]?.id ?? '', newChannelUrl, { addTopic: true })}
+                    style={{ flex: '1 1 320px', minWidth: '260px' }}
+                    disabled={isAddingChannel}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => updateProfileScheduleChannelUrl(profiles[0]?.id ?? '', newChannelUrl, { addTopic: true })}
+                    disabled={isAddingChannel || !newChannelUrl.trim()}
+                    style={{ gap: '8px' }}
+                  >
+                    <Plus size={18} />
+                    {isAddingChannel ? 'Adding...' : 'Add'}
+                  </button>
+                </div>
+              </div>
+
+              {channels.length === 0 ? (
+                <div className="glass" style={{ padding: '28px', borderRadius: '16px', color: 'var(--text-muted)' }}>
+                  Chưa có channel nào.
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: '10px' }}>
+                  {channels.map((ch) => (
+                    <div
+                      key={String(ch.id)}
+                      className="glass"
+                      style={{
+                        padding: '14px 16px',
+                        borderRadius: '14px',
+                        border: '1px solid var(--border)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: '12px',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <span style={{ color: 'white', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                        {formatChannelShortLabel(ch)}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', textTransform: 'uppercase' }}>
+                        {ch.platform || 'unknown'}
+                      </span>
+                      {ch.is_local_only && (
+                        <button
+                          type="button"
+                          onClick={() => deleteLocalChannel(ch.url)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'rgba(239, 68, 68, 0.85)',
+                            cursor: 'pointer',
+                            padding: '4px'
+                          }}
+                          title="Xóa channel local"
+                          aria-label="Delete local channel"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : activeTab === 'renderVideos' ? (
+            <section>
+              <div style={{ marginBottom: '28px' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '8px' }}>Render videos</h2>
+                <p style={{ color: 'var(--text-muted)', maxWidth: '680px', lineHeight: 1.5 }}>
+                  Lấy link theo channel, download + render và lưu vào thư mục chỉ định (không upload TikTok).
+                </p>
+              </div>
+
+              <div className="glass" style={{ padding: '20px 24px', borderRadius: '20px', marginBottom: '20px', display: 'grid', gap: '16px' }}>
+                <div className="input-group">
+                  <label>Channel</label>
+                  <select
+                    className="input"
+                    value={renderChannelUrl}
+                    onChange={(e) => setRenderChannelUrl(e.target.value)}
+                  >
+                    <option value="">Chọn channel...</option>
+                    {channels.map((ch) => (
+                      <option key={String(ch.id)} value={ch.url}>
+                        {formatChannelShortLabel(ch)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="input-group">
+                  <label>Số lượng video tối đa</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    value={renderMaxVideos}
+                    onChange={(e) => setRenderMaxVideos(parseInt(e.target.value || '1', 10))}
+                  />
+                </div>
+
+                <div className="input-group">
+                  <label>Thư mục lưu sau render</label>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <input
+                      className="input"
+                      placeholder="/path/output"
+                      value={renderOutputFolder}
+                      onChange={(e) => setRenderOutputFolder(e.target.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <button type="button" className="btn btn-secondary" onClick={handleSelectRenderFolder}>
+                      <FolderOpen size={16} style={{ marginRight: '8px' }} />
+                      Browse
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={startRenderVideosJob}
+                    disabled={isStartingRenderJob || renderJob?.status === 'running' || renderJob?.status === 'queued'}
+                    style={{ gap: '8px' }}
+                  >
+                    {isStartingRenderJob ? <RefreshCw size={16} className="animate-pulse" /> : <Play size={16} fill="white" />}
+                    Render
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={stopRenderVideosJob}
+                    disabled={!(renderJob?.status === 'running' || renderJob?.status === 'queued' || renderJob?.status === 'stopping')}
+                    style={{
+                      gap: '8px',
+                      marginLeft: '10px',
+                      background: 'rgba(239,68,68,0.1)',
+                      color: '#EF4444',
+                      border: '1px solid rgba(239,68,68,0.35)'
+                    }}
+                  >
+                    <StopCircle size={16} />
+                    Stop
+                  </button>
+                </div>
+              </div>
+
+              <div className="glass" style={{ padding: '18px 20px', borderRadius: '16px' }}>
+                <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong>Render logs</strong>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                    Status: {renderJob?.status || 'idle'}{typeof renderJob?.processed_count === 'number' ? ` | Processed: ${renderJob.processed_count}` : ''}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    background: 'rgba(15, 23, 42, 0.6)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '10px',
+                    padding: '12px',
+                    maxHeight: '320px',
+                    overflow: 'auto',
+                    fontFamily: 'monospace',
+                    fontSize: '0.8rem',
+                    whiteSpace: 'pre-wrap'
+                  }}
+                >
+                  {(renderJob?.logs && renderJob.logs.length > 0)
+                    ? renderJob.logs.join('\n')
+                    : 'Chưa có log.'}
+                </div>
+              </div>
             </section>
           ) : (
             <section>

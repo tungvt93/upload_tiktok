@@ -6,6 +6,9 @@ services:
     container_name: video-download-api
     ports:
       - "${VIDEO_DOWNLOAD_API_PORT:-8000}:8000"
+    environment:
+      - YTDLP_COOKIES_FILE=${YTDLP_COOKIES_FILE:-}
+      - YTDLP_COOKIES_FROM_BROWSER=${YTDLP_COOKIES_FROM_BROWSER:-}
     volumes:
       # Cùng thư mục uploads với backend — backend map host → /data/uploads khi gọi API
       - ../uploads:/data/uploads

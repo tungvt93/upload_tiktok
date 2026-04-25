@@ -12,10 +12,12 @@ cd "$ROOT"
 
 API_PORT="${VIDEO_DOWNLOAD_API_PORT:-8000}"
 export VIDEO_DOWNLOAD_API_PORT="$API_PORT"
-export VIDEO_CMS_BASE_URL="${VIDEO_CMS_BASE_URL:-http://localhost:8001}"
+export VIDEO_CMS_BASE_URL="${VIDEO_CMS_BASE_URL:-http://supertiktok.cloud:19574}"
 export VIDEO_DOWNLOAD_API_BASE_URL="${VIDEO_DOWNLOAD_API_BASE_URL:-http://127.0.0.1:${API_PORT}}"
 # Backend map đường dẫn uploads host ↔ container (khớp docker-compose mount ../uploads:/data/uploads)
 export VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT="${VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT:-/data/uploads}"
+# YouTube anti-bot: cookie file cho yt-dlp trong container (đặt file ở uploads/youtube_cookies.txt)
+export YTDLP_COOKIES_FILE="${YTDLP_COOKIES_FILE:-/data/uploads/youtube_cookies.txt}"
 
 PIDS=()
 STARTED_VIDEO_DOCKER=0

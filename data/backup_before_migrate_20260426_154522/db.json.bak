@@ -1,0 +1,12 @@
+{
+  "profiles": [
+    {
+      "id": "1775896513092",
+      "name": "test",
+      "status": "idle"
+    }
+  ],
+  "config": {
+    "videoFolder": "/Users/its/Documents/Codes/Code_labs/uploads"
+  }
+}

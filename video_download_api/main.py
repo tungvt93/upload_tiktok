@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 import uuid
@@ -128,7 +129,16 @@ def _ytdlp_download_sync(url: str, download_dir: Path) -> str:
         "outtmpl": outtmpl,
         "quiet": True,
         "no_warnings": True,
+        "noplaylist": True,
     }
+    cookies_file = (os.getenv("YTDLP_COOKIES_FILE") or "").strip()
+    print(f"cookies_file: {cookies_file}")
+    cookies_from_browser = (os.getenv("YTDLP_COOKIES_FROM_BROWSER") or "").strip()
+    if cookies_file:
+        base["cookiefile"] = cookies_file
+    if cookies_from_browser:
+        # Định dạng yt-dlp: "chrome", "firefox", "safari", ...
+        base["cookiesfrombrowser"] = (cookies_from_browser,)
     # bv*+ba/b: video+audio tách hoặc một file; merge -> mp4 nếu có ffmpeg
     format_attempts: list[dict] = [
         {
@@ -141,6 +151,9 @@ def _ytdlp_download_sync(url: str, download_dir: Path) -> str:
         },
         {
             "format": "best",
+        },
+        {
+            # Fallback cuối: để yt-dlp tự chọn format mặc định.
         },
     ]
     last_err: Exception | None = None

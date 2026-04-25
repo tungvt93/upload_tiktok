@@ -43,15 +43,15 @@ const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const EXTENSIONS_DIR = path.join(__dirname, '..', 'extensions');
 
-/** Base URL backend quản lý video (GET/PATCH /api/videos). Mặc định localhost:8001 — override bằng VIDEO_CMS_BASE_URL */
-const VIDEO_CMS_BASE_URL = String(process.env.VIDEO_CMS_BASE_URL || 'http://localhost:8001').replace(/\/+$/, '');
+/** Base URL backend quản lý video (GET/PATCH /api/videos). Mặc định supertiktok.cloud:19574 — override bằng VIDEO_CMS_BASE_URL */
+const VIDEO_CMS_BASE_URL = String(process.env.VIDEO_CMS_BASE_URL || 'http://supertiktok.cloud:19574').replace(/\/+$/, '');
 /** Base URL service FastAPI download+render. Mặc định khớp start-all.sh (8000) — override VIDEO_DOWNLOAD_API_BASE_URL */
 const VIDEO_DOWNLOAD_API_BASE_URL = String(
     process.env.VIDEO_DOWNLOAD_API_BASE_URL || 'http://127.0.0.1:8000'
 ).replace(/\/+$/, '');
 /** Khi FastAPI chạy trong Docker với mount `uploads` → `/data/uploads`, đặt `/data/uploads` (start-all.sh đã export). */
 const VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT = String(
-    process.env.VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT || ''
+    process.env.VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT || '/data/uploads'
 ).replace(/\/+$/, '');
 /** Trong container, thư mục download mặc định của API (khớp docker-compose). */
 const VIDEO_DOWNLOAD_API_CONTAINER_DL = String(
@@ -148,6 +148,16 @@ db.exec(`
         profile_id TEXT,
         time TEXT,
         FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS local_channels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT UNIQUE,
+        platform TEXT,
+        name TEXT,
+        scraping_status TEXT,
+        source TEXT DEFAULT 'manual',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 `);
 
@@ -279,6 +289,46 @@ const setConfig = (key, value) => {
 if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
 if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
 
+function detectPlatformFromUrl(url) {
+    const v = String(url || '').toLowerCase();
+    if (v.includes('youtube.com') || v.includes('youtu.be')) return 'youtube';
+    if (v.includes('tiktok.com')) return 'tiktok';
+    return null;
+}
+
+function saveLocalChannel(channel, source = 'manual') {
+    const url = String(channel?.url || '').trim();
+    if (!url) return;
+    const platform = channel?.platform || detectPlatformFromUrl(url);
+    const name = channel?.name || null;
+    const scrapingStatus = channel?.scraping_status || null;
+    db.prepare(
+        `
+        INSERT INTO local_channels (url, platform, name, scraping_status, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(url) DO UPDATE SET
+            platform = COALESCE(excluded.platform, local_channels.platform),
+            name = COALESCE(excluded.name, local_channels.name),
+            scraping_status = COALESCE(excluded.scraping_status, local_channels.scraping_status),
+            source = excluded.source,
+            updated_at = CURRENT_TIMESTAMP
+    `
+    ).run(url, platform, name, scrapingStatus, source);
+}
+
+function listLocalChannels() {
+    return db
+        .prepare(
+            `
+            SELECT id, url, platform, name, scraping_status
+            FROM local_channels
+            WHERE url IS NOT NULL AND TRIM(url) != ''
+            ORDER BY updated_at DESC, created_at DESC
+        `
+        )
+        .all();
+}
+
 // Cleanup: Reset any stuck "uploading" profiles to "idle" on startup
 db.prepare("UPDATE profiles SET status = 'idle' WHERE status = 'uploading'").run();
 console.log('Reset stuck "uploading" profiles to "idle"');
@@ -343,7 +393,18 @@ function pickHoldedVideoRecord(items) {
     return holded[0] || null;
 }
 
-async function fetchNextHoldedVideoFromCms(channelLink, log) {
+function buildVideoSkipKey(video) {
+    if (!video) return null;
+    if (video.id != null && String(video.id).trim() !== '') {
+        return `id:${String(video.id).trim()}`;
+    }
+    if (video.url != null && String(video.url).trim() !== '') {
+        return `url:${String(video.url).trim()}`;
+    }
+    return null;
+}
+
+async function fetchNextHoldedVideoFromCms(channelLink, log, skipKeys = null) {
     const url = `${VIDEO_CMS_BASE_URL}/api/videos`;
     const previewLink = channelLink.length > 120 ? `${channelLink.slice(0, 120)}…` : channelLink;
     log?.(
@@ -372,7 +433,19 @@ async function fetchNextHoldedVideoFromCms(channelLink, log) {
     log?.(
         `[Bước 1/4] CMS parse được ${rows.length} bản ghi${statusSample ? ` (mẫu status: ${statusSample})` : ''}`
     );
-    const picked = pickHoldedVideoRecord(rows);
+    let picked = pickHoldedVideoRecord(rows);
+    if (picked && skipKeys instanceof Set && skipKeys.size > 0) {
+        const holdedRows = rows.filter((v) => String(v?.status || '').toLowerCase() === 'holded');
+        picked = holdedRows.find((item) => {
+            const key = buildVideoSkipKey(item);
+            return !key || !skipKeys.has(key);
+        }) || null;
+        if (!picked) {
+            log?.(
+                `[Bước 1/4] Tất cả video holded hiện có đang nằm trong danh sách lỗi (${skipKeys.size} mục), sẽ bỏ qua.`
+            );
+        }
+    }
     if (!picked) {
         log?.(`CMS videos: không có bản ghi status=holded (tổng ${rows.length} bản ghi).`);
     } else {
@@ -383,7 +456,21 @@ async function fetchNextHoldedVideoFromCms(channelLink, log) {
 
 async function downloadAndRenderViaVideoApi(videoUrl, renderFoldersAbs, log) {
     const endpoint = `${VIDEO_DOWNLOAD_API_BASE_URL}/download/video`;
-    const renderForApi = mapUploadsHostPathToContainer(renderFoldersAbs);
+    const requestedRenderDir = path.resolve(renderFoldersAbs);
+    let effectiveRenderDir = requestedRenderDir;
+    let needsCopyBackToRequestedDir = false;
+    if (
+        VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT &&
+        !isResolvedSubpath(UPLOADS_DIR, requestedRenderDir)
+    ) {
+        effectiveRenderDir = path.join(UPLOADS_DIR, '_render_external');
+        fs.mkdirSync(effectiveRenderDir, { recursive: true });
+        needsCopyBackToRequestedDir = true;
+        log?.(
+            `[Bước 2/4] Output ngoài uploads mount. Render tạm tại ${effectiveRenderDir} rồi copy về ${requestedRenderDir}`
+        );
+    }
+    const renderForApi = mapUploadsHostPathToContainer(effectiveRenderDir);
     const useDockerPaths = Boolean(VIDEO_DOWNLOAD_API_DOCKER_UPLOADS_MOUNT);
     log?.(
         `[Bước 2/4] POST download/render — ${endpoint} | render_folders=${renderForApi} | url=${String(videoUrl).slice(0, 90)}…`
@@ -412,7 +499,14 @@ async function downloadAndRenderViaVideoApi(videoUrl, renderFoldersAbs, log) {
     if (!data?.ok || !data.rendered_path) {
         throw new Error(`Video download API: thiếu rendered_path — ${JSON.stringify(data)?.slice(0, 400)}`);
     }
-    const renderedHost = path.resolve(mapContainerUploadsPathToHost(String(data.rendered_path)));
+    let renderedHost = path.resolve(mapContainerUploadsPathToHost(String(data.rendered_path)));
+    if (needsCopyBackToRequestedDir) {
+        fs.mkdirSync(requestedRenderDir, { recursive: true });
+        const copiedPath = path.join(requestedRenderDir, path.basename(renderedHost));
+        fs.copyFileSync(renderedHost, copiedPath);
+        log?.(`[Bước 2/4] Đã copy file render về thư mục chỉ định: ${copiedPath}`);
+        renderedHost = copiedPath;
+    }
     const savedHost = data.saved_path
         ? path.resolve(mapAnyContainerOutputPathToHost(String(data.saved_path)))
         : null;
@@ -425,12 +519,12 @@ async function downloadAndRenderViaVideoApi(videoUrl, renderFoldersAbs, log) {
     };
 }
 
-async function patchCmsVideoDone(videoId, log) {
+async function patchCmsVideoStatus(videoId, statusValue, log) {
     const url = `${VIDEO_CMS_BASE_URL}/api/videos/${videoId}`;
-    log?.(`[Bước 4/4] PATCH CMS — ${url} body={status:done}`);
+    log?.(`[Bước 4/4] PATCH CMS — ${url} body={status:${statusValue}}`);
     const { status, data } = await axios.patch(
         url,
-        { status: 'done' },
+        { status: statusValue },
         {
             timeout: 60000,
             validateStatus: () => true
@@ -441,8 +535,12 @@ async function patchCmsVideoDone(videoId, log) {
         log?.(`PATCH CMS video ${videoId} thất bại ${status}: ${JSON.stringify(data)?.slice(0, 300)}`);
         return false;
     }
-    log?.(`[Bước 4/4] Đã cập nhật CMS video id=${videoId} -> done`);
+    log?.(`[Bước 4/4] Đã cập nhật CMS video id=${videoId} -> ${statusValue}`);
     return true;
+}
+
+async function patchCmsVideoDone(videoId, log) {
+    return patchCmsVideoStatus(videoId, 'done', log);
 }
 
 /** Đồng bộ kênh với CMS (cùng VIDEO_CMS_BASE_URL, ví dụ :8001). Gọi sau khi DB lưu schedule_channel_url. */
@@ -468,6 +566,23 @@ async function postCmsChannelsApi(channelUrl) {
     }
     console.log(`[CMS channels] OK — đã đăng ký/sync kênh qua CMS`);
     return { status, data };
+}
+
+async function getCmsChannelsApi() {
+    const endpoint = `${VIDEO_CMS_BASE_URL}/api/channels`;
+    console.log(`[CMS channels] → GET ${endpoint}`);
+    const { status, data } = await axios.get(endpoint, {
+        timeout: 120000,
+        validateStatus: () => true
+    });
+    const dataPreview =
+        data == null ? '(null)' : JSON.stringify(data).slice(0, 400);
+    console.log(`[CMS channels] ← HTTP ${status} phản hồi (mẫu): ${dataPreview}`);
+    if (status >= 400) {
+        const detail = data?.detail ?? data?.message ?? JSON.stringify(data);
+        throw new Error(`GET /api/channels ${status}: ${detail}`);
+    }
+    return Array.isArray(data) ? data : [];
 }
 
 function safeUnlink(p, log) {
@@ -664,6 +779,72 @@ app.get('/api/groups', (req, res) => {
     }
 });
 
+app.get('/api/channels', async (req, res) => {
+    const localChannels = listLocalChannels().map((ch) => ({
+        id: ch.id,
+        url: String(ch.url).trim(),
+        platform: ch.platform || null,
+        name: ch.name || null,
+        scraping_status: ch.scraping_status || null,
+        source: 'local'
+    }));
+    try {
+        const channels = await getCmsChannelsApi();
+        const remoteChannels = channels
+            .map((ch) => {
+                const rawUrl = ch?.url;
+                const url = rawUrl == null ? '' : String(rawUrl).trim();
+                if (!url) return null;
+                return {
+                    id: ch?.id ?? url,
+                    url,
+                    platform: ch?.platform ?? null,
+                    name: ch?.name ?? null,
+                    scraping_status: ch?.scraping_status ?? null,
+                    source: 'remote'
+                };
+            })
+            .filter(Boolean);
+        remoteChannels.forEach((ch) => saveLocalChannel(ch, 'remote_sync'));
+        const remoteByUrl = new Map(remoteChannels.map((ch) => [ch.url, ch]));
+        const merged = [
+            ...remoteChannels.map((ch) => ({ ...ch, is_local_only: false })),
+            ...localChannels
+                .filter((ch) => !remoteByUrl.has(ch.url))
+                .map((ch) => ({ ...ch, is_local_only: true }))
+        ];
+        res.json(merged);
+    } catch (err) {
+        console.error('[channels] get remote failed, fallback local only:', err.message || err);
+        res.json(localChannels.map((ch) => ({ ...ch, is_local_only: true })));
+    }
+});
+
+app.post('/api/channels', async (req, res) => {
+    const rawUrl = req.body?.url;
+    const url = rawUrl == null ? '' : String(rawUrl).trim();
+    if (!url) return res.status(400).json({ error: 'url is required' });
+    // Bypass tạm: luôn lưu local trước, không để lỗi remote làm fail UI.
+    saveLocalChannel({ url }, 'manual');
+    res.json({ success: true, url, local_saved: true, remote_sync: 'queued' });
+
+    postCmsChannelsApi(url)
+        .then(() => {
+            saveLocalChannel({ url }, 'remote_sync');
+        })
+        .catch((err) => {
+            console.error('[channels] async remote sync failed:', err.message || err);
+        });
+});
+
+app.delete('/api/channels/local', (req, res) => {
+    const rawUrl = req.body?.url;
+    const url = rawUrl == null ? '' : String(rawUrl).trim();
+    if (!url) return res.status(400).json({ error: 'url is required' });
+    const result = db.prepare('DELETE FROM local_channels WHERE url = ?').run(url);
+    res.json({ success: true, deleted: result.changes > 0 });
+});
+
 app.post('/api/groups', (req, res) => {
     try {
         const rawId = req.body.id;
@@ -767,17 +948,126 @@ app.post('/api/config', (req, res) => {
 const runningProfiles = new Set();
 const manualBrowsers = new Map(); // profileId -> browserContext
 const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
+let renderVideosJob = null; // { id, status, logs, ... }
+const renderFailedSkipKeys = new Set();
+
+function createRenderVideosLogger(job) {
+    return (line) => {
+        const entry = `[${new Date().toISOString()}] ${line}`;
+        job.logs.push(entry);
+        if (job.logs.length > 500) {
+            job.logs = job.logs.slice(-500);
+        }
+        console.log(`[RenderJob ${job.id}] ${line}`);
+    };
+}
+
+async function runRenderVideosJob(job) {
+    const log = createRenderVideosLogger(job);
+    job.status = 'running';
+    job.started_at = new Date().toISOString();
+    job.processed_count = 0;
+    job.finished_at = null;
+
+    try {
+        const limit = Math.max(1, Number(job.max_videos) || 1);
+        const channelLink = String(job.channel_url || '').trim();
+        const outDir = path.resolve(String(job.output_folder || '').trim());
+        const failedVideoSkipKeys = new Set(renderFailedSkipKeys);
+        fs.mkdirSync(outDir, { recursive: true });
+
+        log(`Bắt đầu render-only job. channel=${channelLink} | max_videos=${limit} | output=${outDir}`);
+
+        for (let i = 0; i < limit; i++) {
+            if (job.stop_requested) {
+                log('Nhận lệnh dừng. Kết thúc job render theo yêu cầu người dùng.');
+                break;
+            }
+            log(`--- Render lượt ${i + 1}/${limit} ---`);
+            const row = await fetchNextHoldedVideoFromCms(channelLink, log, failedVideoSkipKeys);
+            if (!row) {
+                log('Không còn video holded phù hợp, dừng job.');
+                break;
+            }
+
+            let dl = null;
+            try {
+                dl = await downloadAndRenderViaVideoApi(String(row.url), outDir, log);
+            } catch (err) {
+                log(`Render thất bại cho video id=${row.id}: ${err.message || err}`);
+                const failedKey = buildVideoSkipKey(row);
+                if (failedKey) {
+                    failedVideoSkipKeys.add(failedKey);
+                    renderFailedSkipKeys.add(failedKey);
+                    log(`Đánh dấu bỏ qua video lỗi: ${failedKey}`);
+                }
+                if (row.id != null) {
+                    try {
+                        // Link lỗi ở render-only: đánh dấu done để lần chạy sau không bị lấy lại.
+                        await patchCmsVideoDone(row.id, log);
+                    } catch (patchErr) {
+                        log(`PATCH status=done thất bại cho video id=${row.id}. ${patchErr.message || patchErr}`);
+                        await patchCmsVideoDone(row.id, log).catch((e) =>
+                            log(`PATCH fallback done cũng lỗi cho id=${row.id}: ${e.message || e}`)
+                        );
+                    }
+                }
+                continue;
+            }
+            if (job.stop_requested) {
+                log('Nhận lệnh dừng sau khi render xong video hiện tại.');
+                if (dl?.saved_path) safeUnlink(dl.saved_path, log);
+                break;
+            }
+
+            job.processed_count += 1;
+            log(`Render xong video id=${row.id} -> ${dl.rendered_path}`);
+
+            // Đánh dấu done để CMS chuyển sang video holded tiếp theo.
+            if (row.id != null) {
+                try {
+                    await patchCmsVideoDone(row.id, log);
+                } catch (err) {
+                    log(`Cảnh báo: PATCH done lỗi cho video id=${row.id}: ${err.message || err}`);
+                }
+            }
+
+            if (dl.saved_path) {
+                safeUnlink(dl.saved_path, log);
+            }
+        }
+
+        job.status = job.stop_requested ? 'stopped' : 'success';
+        job.finished_at = new Date().toISOString();
+        log(
+            job.stop_requested
+                ? `Đã dừng render-only job. processed=${job.processed_count}`
+                : `Hoàn tất render-only job. processed=${job.processed_count}`
+        );
+    } catch (err) {
+        job.status = 'error';
+        job.error = err.message || String(err);
+        job.finished_at = new Date().toISOString();
+        log(`Job lỗi: ${job.error}`);
+    }
+}
 
 
 app.post('/api/start', async (req, res) => {
-    const { profileId, profileIds, runMode } = req.body;
+    const { profileId, profileIds, runMode, uploadCountOverride } = req.body;
+    const parsedUploadCount = Number(uploadCountOverride);
+    const mode = runMode === 'sequential' ? 'sequential' : 'parallel';
+    const runtimeOptions =
+        Number.isFinite(parsedUploadCount) && parsedUploadCount > 0
+            ? { uploadCountOverride: Math.max(1, Math.floor(parsedUploadCount)) }
+            : {};
 
     if (profileId) {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) return res.status(404).json({ error: 'Profile not found' });
         if (runningProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running' });
 
-        runSingleProfile(profile);
+        runSingleProfile(profile, runtimeOptions);
         return res.json({ status: 'started', profile: profile.name });
     } else {
         const allRows = db.prepare('SELECT * FROM profiles').all();
@@ -799,14 +1089,87 @@ app.post('/api/start', async (req, res) => {
             });
         }
 
-        const mode = runMode === 'sequential' ? 'sequential' : 'parallel';
         if (mode === 'sequential') {
-            runAllSequential(idleProfiles).catch((err) => console.error('Sequential execution error:', err));
+            runAllSequential(idleProfiles, { ...runtimeOptions, preferLocalFirst: true }).catch((err) =>
+                console.error('Sequential execution error:', err)
+            );
         } else {
-            runAllParallel(idleProfiles);
+            runAllParallel(idleProfiles, runtimeOptions);
         }
         return res.json({ status: 'started', count: idleProfiles.length, runMode: mode });
     }
+});
+
+app.post('/api/profiles/:id/start-scheduled', async (req, res) => {
+    const profileId = req.params.id;
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    if (runningProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile already running' });
+    }
+
+    // NEW START: ưu tiên upload file local trong Upload Folder; nếu không có thì fallback CMS.
+    runSingleProfile(profile, { preferLocalFirst: true }).catch((err) =>
+        console.error(`[Manual Scheduled Trigger] Error running ${profile.name}:`, err)
+    );
+    return res.json({ success: true, status: 'started', mode: 'scheduled', profile: profile.name });
+});
+
+app.post('/api/render-videos/start', async (req, res) => {
+    const channelUrl = String(req.body?.channel_url || '').trim();
+    const outputFolder = String(req.body?.output_folder || '').trim();
+    const maxVideos = Math.max(1, Number(req.body?.max_videos) || 1);
+    if (!channelUrl) return res.status(400).json({ error: 'channel_url is required' });
+    if (!outputFolder) return res.status(400).json({ error: 'output_folder is required' });
+
+    if (renderVideosJob && renderVideosJob.status === 'running') {
+        return res.status(400).json({ error: 'A render job is already running' });
+    }
+
+    renderVideosJob = {
+        id: Date.now().toString(),
+        status: 'queued',
+        logs: [],
+        channel_url: channelUrl,
+        output_folder: outputFolder,
+        max_videos: maxVideos,
+        processed_count: 0,
+        stop_requested: false,
+        started_at: null,
+        finished_at: null,
+        error: null
+    };
+
+    runRenderVideosJob(renderVideosJob).catch((err) => {
+        renderVideosJob.status = 'error';
+        renderVideosJob.error = err.message || String(err);
+        renderVideosJob.finished_at = new Date().toISOString();
+    });
+
+    res.json({ success: true, job_id: renderVideosJob.id });
+});
+
+app.get('/api/render-videos/status', (req, res) => {
+    if (!renderVideosJob) {
+        return res.json({ status: 'idle', logs: [] });
+    }
+    res.json(renderVideosJob);
+});
+
+app.post('/api/render-videos/stop', (req, res) => {
+    if (!renderVideosJob || (renderVideosJob.status !== 'running' && renderVideosJob.status !== 'queued')) {
+        return res.status(400).json({ error: 'No running render job to stop' });
+    }
+    renderVideosJob.stop_requested = true;
+    if (renderVideosJob.status === 'queued') {
+        renderVideosJob.status = 'stopped';
+        renderVideosJob.finished_at = new Date().toISOString();
+        renderVideosJob.logs.push(`[${new Date().toISOString()}] Job bị dừng trước khi bắt đầu.`);
+    } else {
+        renderVideosJob.status = 'stopping';
+        renderVideosJob.logs.push(`[${new Date().toISOString()}] Đã gửi lệnh dừng, chờ bước hiện tại hoàn tất...`);
+    }
+    return res.json({ success: true, status: renderVideosJob.status });
 });
 
 app.post('/api/open-profile', async (req, res) => {
@@ -860,7 +1223,7 @@ app.post('/api/open-profile', async (req, res) => {
 });
 
 
-async function runAllParallel(profilesToRun) {
+async function runAllParallel(profilesToRun, options = {}) {
     const maxConcurrency = Number(getConfig('maxConcurrency', 2));
     const queue = [...profilesToRun];
     const active = [];
@@ -872,7 +1235,7 @@ async function runAllParallel(profilesToRun) {
                 continue;
             }
             const profile = queue.shift();
-            const promise = runSingleProfile(profile).finally(() => {
+            const promise = runSingleProfile(profile, options).finally(() => {
                 active.splice(active.indexOf(promise), 1);
             });
             active.push(promise);
@@ -883,10 +1246,23 @@ async function runAllParallel(profilesToRun) {
     processQueue().catch(err => console.error('Parallel execution error:', err));
 }
 
-async function runAllSequential(profilesToRun) {
-    for (const profile of profilesToRun) {
-        if (runningProfiles.has(profile.id)) continue;
-        await runSingleProfile(profile);
+async function runAllSequential(profilesToRun, options = {}) {
+    const parsedRounds = Number(options?.uploadCountOverride);
+    const rounds =
+        Number.isFinite(parsedRounds) && parsedRounds > 0
+            ? Math.max(1, Math.floor(parsedRounds))
+            : 1;
+
+    for (let round = 1; round <= rounds; round++) {
+        console.log(`[Sequential] Round ${round}/${rounds} started`);
+        for (const profile of profilesToRun) {
+            if (runningProfiles.has(profile.id)) continue;
+            await runSingleProfile(profile, {
+                ...options,
+                // Sequential mode now means "round robin": each profile uploads 1 video per round.
+                uploadCountOverride: 1
+            });
+        }
     }
 }
 
@@ -1049,7 +1425,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     log(`${label} input value after fill: ${actualValue || '<empty>'}`);
 }
 
-async function runSingleProfile(profile) {
+async function runSingleProfile(profile, options = {}) {
     if (runningProfiles.has(profile.id)) return;
     runningProfiles.add(profile.id);
 
@@ -1060,14 +1436,39 @@ async function runSingleProfile(profile) {
         const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
         const channelUrl =
             typeof profile.schedule_channel_url === 'string' ? profile.schedule_channel_url.trim() : '';
-        const useCmsPipeline = Number(profile.is_scheduled) === 1 && channelUrl.length > 0;
+        const baseUseCmsPipeline = Number(profile.is_scheduled) === 1 && channelUrl.length > 0;
+        const preferLocalFirst = options?.preferLocalFirst === true;
 
         console.log(
             `[${profile.name}][Pipeline] is_scheduled=${profile.is_scheduled} (cần 1), ` +
                 `schedule_channel_url=${channelUrl ? `${channelUrl.length} ký tự, bắt đầu: ${channelUrl.slice(0, 72)}…` : '(trống)'}`
         );
+        let videos = [];
+        try {
+            if (!fs.existsSync(videoFolder)) {
+                if (baseUseCmsPipeline) {
+                    fs.mkdirSync(videoFolder, { recursive: true });
+                } else {
+                    console.error(`[${profile.name}] Video folder does not exist: ${videoFolder}`);
+                    db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
+                    return;
+                }
+            }
+            videos = fs.readdirSync(videoFolder).filter((file) => {
+                const ext = path.extname(file).toLowerCase();
+                return ext === '.mp4' || ext === '.mov' || ext === '.webm';
+            });
+        } catch (e) {
+            console.error(`[${profile.name}] Folder error:`, e.message);
+            videos = [];
+        }
+
+        const useCmsPipeline = preferLocalFirst
+            ? !(videos.length > 0) && baseUseCmsPipeline
+            : baseUseCmsPipeline;
+
         console.log(
-            `[${profile.name}][Pipeline] useCmsPipeline=${useCmsPipeline} | CMS=${VIDEO_CMS_BASE_URL} | DownloadAPI=${VIDEO_DOWNLOAD_API_BASE_URL}`
+            `[${profile.name}][Pipeline] useCmsPipeline=${useCmsPipeline} | preferLocalFirst=${preferLocalFirst} | localVideos=${videos.length} | CMS=${VIDEO_CMS_BASE_URL} | DownloadAPI=${VIDEO_DOWNLOAD_API_BASE_URL}`
         );
         if (!useCmsPipeline) {
             if (Number(profile.is_scheduled) !== 1) {
@@ -1078,25 +1479,18 @@ async function runSingleProfile(profile) {
                 console.log(
                     `[${profile.name}][Pipeline] Không gọi CMS: thiếu "Schedule channel URL" — cần link kênh trong profile.`
                 );
+            } else if (preferLocalFirst && videos.length > 0) {
+                console.log(
+                    `[${profile.name}][Pipeline] NEW START: tìm thấy ${videos.length} video local trong Upload Folder, sẽ upload local trước.`
+                );
+            } else if (preferLocalFirst && videos.length === 0) {
+                console.log(
+                    `[${profile.name}][Pipeline] NEW START: không có video local, fallback sang CMS download/render.`
+                );
             }
         }
-
-        let videos = [];
         if (!useCmsPipeline) {
-            try {
-                if (!fs.existsSync(videoFolder)) {
-                    console.error(`[${profile.name}] Video folder does not exist: ${videoFolder}`);
-                    db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
-                    return;
-                }
-                videos = fs.readdirSync(videoFolder).filter((file) => {
-                    const ext = path.extname(file).toLowerCase();
-                    return ext === '.mp4' || ext === '.mov' || ext === '.webm';
-                });
-                console.log(`[${profile.name}] Found ${videos.length} videos in ${videoFolder}`);
-            } catch (e) {
-                console.error(`[${profile.name}] Folder error:`, e.message);
-            }
+            console.log(`[${profile.name}] Found ${videos.length} videos in ${videoFolder}`);
         } else {
             try {
                 if (!fs.existsSync(videoFolder)) {
@@ -1112,7 +1506,10 @@ async function runSingleProfile(profile) {
             );
         }
 
-        const uploadedCount = await uploadVideo(profile, videoFolder, videos, { cmsMode: useCmsPipeline });
+        const uploadedCount = await uploadVideo(profile, videoFolder, videos, {
+            cmsMode: useCmsPipeline,
+            uploadCountOverride: options?.uploadCountOverride
+        });
 
         if (uploadedCount > 0) {
             db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('success', profile.id);
@@ -1194,12 +1591,17 @@ async function uploadVideo(profile, videoFolder, videos, options = {}) {
             );
         }
 
-        const maxUploads = cmsMode
+        const overrideLimit =
+            Number.isFinite(Number(options?.uploadCountOverride)) && Number(options?.uploadCountOverride) > 0
+                ? Math.max(1, Math.floor(Number(options.uploadCountOverride)))
+                : null;
+        const maxUploads = overrideLimit ?? (cmsMode
             ? Math.max(1, Number(profile.upload_count) || 1)
             : profile.is_scheduled === 1 && profile.upload_count > 0
               ? profile.upload_count
-              : videos.length;
+              : videos.length);
         const uploadLimit = cmsMode ? maxUploads : Math.min(videos.length, maxUploads);
+        const cmsFailedSkipKeys = new Set(renderFailedSkipKeys);
         const totalLabel = cmsMode ? String(uploadLimit) : String(videos.length);
 
         for (let i = 0; i < uploadLimit; i++) {
@@ -1210,7 +1612,7 @@ async function uploadVideo(profile, videoFolder, videos, options = {}) {
 
             if (cmsMode) {
                 log(`--- CMS lượt ${i + 1}/${uploadLimit} ---`);
-                const row = await fetchNextHoldedVideoFromCms(channelLink, log);
+                const row = await fetchNextHoldedVideoFromCms(channelLink, log, cmsFailedSkipKeys);
                 if (!row) {
                     log(`Hết video status=holded từ CMS (vòng ${i + 1}/${uploadLimit}).`);
                     break;
@@ -1224,7 +1626,18 @@ async function uploadVideo(profile, videoFolder, videos, options = {}) {
                     cmsSavedPath = dl.saved_path;
                 } catch (e) {
                     log(`Download/render thất bại: ${e.message}`);
-                    throw e;
+                    const failedKey = buildVideoSkipKey(row);
+                    if (failedKey) {
+                        cmsFailedSkipKeys.add(failedKey);
+                        renderFailedSkipKeys.add(failedKey);
+                        log(`Đánh dấu bỏ qua video lỗi: ${failedKey}`);
+                    }
+                    if (cmsVideoId != null) {
+                        await patchCmsVideoDone(cmsVideoId, log).catch((patchErr) =>
+                            log(`PATCH done lỗi cho video id=${cmsVideoId}: ${patchErr.message || patchErr}`)
+                        );
+                    }
+                    continue;
                 }
             } else {
                 videoFileName = videos[i];
@@ -1675,16 +2088,22 @@ async function uploadVideo(profile, videoFolder, videos, options = {}) {
             if (clickedPost) {
                 log(`Finalizing upload for ${videoFileName}...`);
                 if (cmsMode) {
-                    log('[Bước 4/4] Xóa file MP4 đã đăng (render) và file gốc download (nếu có)…');
+                    log('[Bước 4/4] Lưu file render vào thư mục done và dọn file gốc download (nếu có)…');
                 }
                 try {
                     if (fs.existsSync(videoPath)) {
-                        fs.unlinkSync(videoPath);
-                        log(
-                            cmsMode
-                                ? `[Bước 4/4] Đã xóa file render: ${videoFileName}`
-                                : `SUCCESS: Deleted ${videoFileName} after upload.`
-                        );
+                        if (cmsMode) {
+                            const doneDir = path.join(videoFolder, 'done');
+                            if (!fs.existsSync(doneDir)) {
+                                fs.mkdirSync(doneDir, { recursive: true });
+                            }
+                            const donePath = path.join(doneDir, videoFileName);
+                            fs.renameSync(videoPath, donePath);
+                            log(`[Bước 4/4] Đã chuyển file render vào done: ${donePath}`);
+                        } else {
+                            fs.unlinkSync(videoPath);
+                            log(`SUCCESS: Deleted ${videoFileName} after upload.`);
+                        }
                     }
                 } catch (err) {
                     log(`ERROR deleting file: ${err.message}`);
