@@ -54,7 +54,7 @@ Mở một terminal khác:
 cd frontend
 npm run dev
 ```
-*Frontend sẽ chạy tại: `http://localhost:5173` (hoặc cổng được hiển thị trong terminal)*
+*Frontend sẽ chạy tại: `http://localhost:3000` (hoặc cổng được hiển thị trong terminal)*
 
 ## 📂 Cấu trúc thư mục
 - `/backend`: Mã nguồn server Node.js và Playwright automation.

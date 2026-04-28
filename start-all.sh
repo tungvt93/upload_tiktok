@@ -51,6 +51,18 @@ docker compose version >/dev/null 2>&1 || {
   exit 1
 }
 
+echo "Dừng backend cũ của repo này trên cổng 3001 (nếu có, tránh bản server.js cũ không có route Drive)..."
+for pid in $(lsof -ti tcp:3001 -sTCP:LISTEN 2>/dev/null || true); do
+  cmd=$(ps -p "$pid" -o args= 2>/dev/null || echo "")
+  if echo "$cmd" | grep -qE 'node( |/)'; then
+    if echo "$cmd" | grep -qE 'server\.js(\s|$)'; then
+      echo "  → kill PID $pid (node … server.js)"
+      kill "$pid" 2>/dev/null || true
+    fi
+  fi
+done
+sleep 0.4
+
 echo "Khởi động backend (http://127.0.0.1:3001)..."
 (cd "$ROOT/backend" && node server.js) &
 PIDS+=($!)

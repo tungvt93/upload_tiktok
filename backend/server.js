@@ -25,6 +25,7 @@ import {
     assertGroupExists
 } from './group-store.js';
 import { createProfileRecord } from './profile-store.js';
+import { syncGoogleDriveToUploads, normalizeDriveFolderId } from './google-drive-sync.js';
 import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -909,11 +910,16 @@ app.post('/api/profiles/:id/schedules', (req, res) => {
 app.get('/api/config', (req, res) => {
     const rows = db.prepare('SELECT * FROM config').all();
     const config = {};
-    rows.forEach(r => {
-        // Convert to number if possible
+    rows.forEach((r) => {
         const val = r.value;
-        config[r.key] = isNaN(val) ? val : Number(val);
+        if (r.key === 'maxConcurrency' && val !== '' && val != null && !Number.isNaN(Number(val))) {
+            config[r.key] = Number(val);
+        } else {
+            config[r.key] = val;
+        }
     });
+    /** Giúp debug: bản backend có route Drive (GET /api/drive-sync). */
+    config._server = { driveSync: true, driveSyncCheckUrl: '/api/drive-sync' };
     res.json(config);
 });
 
@@ -940,9 +946,59 @@ app.post('/api/select-folder', (req, res) => {
 });
 
 app.post('/api/config', (req, res) => {
-    Object.entries(req.body).forEach(([k, v]) => setConfig(k, v));
+    Object.entries(req.body).forEach(([k, v]) => {
+        if (k === 'googleDriveRootFolderId' && typeof v === 'string') {
+            setConfig(k, normalizeDriveFolderId(v) || String(v).trim());
+        } else {
+            setConfig(k, v);
+        }
+    });
     res.json({ success: true });
 });
+
+/**
+ * Tải video từ Google Drive (thư mục gốc public: mỗi subfolder trùng tên profile → uploads/<tên>/).
+ * API key: GOOGLE_DRIVE_API_KEY hoặc config googleDriveApiKey.
+ * ID thư mục gốc: GOOGLE_DRIVE_ROOT_FOLDER_ID hoặc config googleDriveRootFolderId (chấp nhận link Drive).
+ * Đăng ký cả `/api/drive-sync` (URL ngắn, ít lỗi proxy) và `/api/google-drive/sync` (tương thích).
+ */
+async function handleGoogleDriveSync(req, res) {
+    try {
+        const apiKey =
+            String(process.env.GOOGLE_DRIVE_API_KEY || '').trim() ||
+            String(getConfig('googleDriveApiKey', '') || '').trim();
+        const rootRaw =
+            String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '').trim() ||
+            String(getConfig('googleDriveRootFolderId', '') || '').trim();
+        const rootFolderId = normalizeDriveFolderId(rootRaw) || rootRaw.trim();
+
+        const profileIds = Array.isArray(req.body?.profileIds) ? req.body.profileIds : null;
+        const profiles = db.prepare('SELECT id, name FROM profiles ORDER BY name').all();
+
+        const result = await syncGoogleDriveToUploads({
+            apiKey,
+            rootFolderId,
+            profiles,
+            uploadsDir: UPLOADS_DIR,
+            profileIds
+        });
+        res.json({ ok: true, ...result });
+    } catch (err) {
+        const status = Number(err.status) || 500;
+        res.status(status).json({ error: err.message || 'Drive sync failed' });
+    }
+}
+
+app.get('/api/drive-sync', (req, res) => {
+    res.json({
+        ok: true,
+        hint: 'Backend đã có route Drive. Dùng POST /api/drive-sync để đồng bộ.',
+        postEndpoints: ['/api/drive-sync', '/api/google-drive/sync']
+    });
+});
+
+app.post('/api/drive-sync', handleGoogleDriveSync);
+app.post('/api/google-drive/sync', handleGoogleDriveSync);
 
 // Automation Trigger
 const runningProfiles = new Set();
@@ -2686,4 +2742,7 @@ function checkAndRunSchedules() {
 // Run every minute (offset by a few seconds to avoid missing the boundary if execution is slow)
 setInterval(checkAndRunSchedules, 60000);
 
-app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Backend running on http://localhost:${PORT}`);
+    console.log('[routes] Google Drive sync: POST /api/drive-sync (alias POST /api/google-drive/sync)');
+});

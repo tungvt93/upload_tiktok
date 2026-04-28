@@ -26,7 +26,8 @@ import {
   ChevronDown,
   ChevronRight,
   Heart,
-  StopCircle
+  StopCircle,
+  CloudDownload
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -530,7 +531,12 @@ const ProfileCard = ({
 
 const App = () => {
   const [profiles, setProfiles] = useState([]);
-  const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2 });
+  const [config, setConfig] = useState({
+    videoFolder: '',
+    maxConcurrency: 2,
+    googleDriveApiKey: '',
+    googleDriveRootFolderId: ''
+  });
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileGroupId, setNewProfileGroupId] = useState('');
   const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
@@ -564,6 +570,7 @@ const App = () => {
   const [renderOutputFolder, setRenderOutputFolder] = useState('');
   const [renderJob, setRenderJob] = useState({ status: 'idle', logs: [] });
   const [isStartingRenderJob, setIsStartingRenderJob] = useState(false);
+  const [isDriveSyncing, setIsDriveSyncing] = useState(false);
 
   const filteredProfiles = useMemo(() => {
     if (groupFilter === 'all') return profiles;
@@ -580,7 +587,10 @@ const App = () => {
 
   useEffect(() => {
     fetchData({ includeChannels: true });
-    const interval = setInterval(() => fetchData({ includeChannels: false }), 5000);
+    const interval = setInterval(
+      () => fetchData({ includeChannels: false, includeConfig: false }),
+      5000
+    );
     return () => clearInterval(interval);
   }, []);
 
@@ -648,12 +658,13 @@ const App = () => {
 
   const fetchData = async (opts = {}) => {
     const includeChannels = opts.includeChannels !== false;
+    const includeConfig = opts.includeConfig !== false;
     try {
-      const [pRes, cRes, gRes] = await Promise.all([
+      const [pRes, gRes] = await Promise.all([
         axios.get('/api/profiles'),
-        axios.get('/api/config'),
         axios.get('/api/groups')
       ]);
+      const cRes = includeConfig ? await axios.get('/api/config') : null;
       const chRes = includeChannels
         ? await axios.get('/api/channels').catch(() => ({ data: [] }))
         : null;
@@ -690,7 +701,15 @@ const App = () => {
         });
       });
       
-      setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
+      if (includeConfig && cRes) {
+        setConfig({
+          videoFolder: '',
+          maxConcurrency: 2,
+          googleDriveApiKey: '',
+          googleDriveRootFolderId: '',
+          ...(cRes.data || {})
+        });
+      }
       setGroups(gRes.data || []);
       if (includeChannels) {
         setChannels(Array.isArray(chRes?.data) ? chRes.data : []);
@@ -817,6 +836,37 @@ const App = () => {
       setTimeout(() => setMessage(null), 3000);
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const syncVideosFromGoogleDrive = async () => {
+    if (isDriveSyncing) return;
+    setIsDriveSyncing(true);
+    try {
+      const body =
+        selectedForRun.size > 0 ? { profileIds: [...selectedForRun] } : {};
+      const res = await axios.post('/api/drive-sync', body, { timeout: 0 });
+      const summary = res.data?.summary || [];
+      const totalDl = summary.reduce((n, r) => n + (r.downloaded?.length || 0), 0);
+      const errs = summary.filter((r) => (r.errors?.length || 0) > 0).length;
+      setMessage({
+        type: errs > 0 && totalDl === 0 ? 'error' : 'success',
+        text:
+          `Drive: đã tải ${totalDl} file.` +
+          (errs > 0 ? ` ${errs} profile có lỗi/thiếu thư mục — xem console network hoặc log server.` : '') +
+          (selectedForRun.size > 0 ? ` (chỉ ${selectedForRun.size} profile đã chọn)` : ' (tất cả profile)')
+      });
+      setTimeout(() => setMessage(null), 8000);
+    } catch (err) {
+      const raw = err.response?.data?.error || err.message || 'Đồng bộ Drive thất bại';
+      const text = String(raw).length > 900 ? `${String(raw).slice(0, 900)}…` : String(raw);
+      setMessage({
+        type: 'error',
+        text
+      });
+      setTimeout(() => setMessage(null), String(raw).length > 200 ? 25000 : 8000);
+    } finally {
+      setIsDriveSyncing(false);
     }
   };
 
@@ -1547,6 +1597,27 @@ const App = () => {
                       {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
                       Chạy đã chọn
                     </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={syncVideosFromGoogleDrive}
+                      disabled={isDriveSyncing || profiles.length === 0}
+                      title={
+                        profiles.length === 0
+                          ? 'Chưa có profile'
+                          : selectedForRun.size > 0
+                            ? 'Tải video từ Drive cho các profile đã tick'
+                            : 'Tải video từ Drive cho mọi profile (cấu hình API key + ID thư mục gốc trong System Settings)'
+                      }
+                      style={{ gap: '10px' }}
+                    >
+                      {isDriveSyncing ? (
+                        <RefreshCw className="animate-pulse" size={18} />
+                      ) : (
+                        <CloudDownload size={18} />
+                      )}
+                      Tải từ Google Drive
+                    </button>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2204,6 +2275,46 @@ const App = () => {
                     </div>
                     <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
                       Specify the absolute path where your .mp4 files are located.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '10px', fontSize: '0.95rem', fontWeight: '600' }}>
+                      Google Drive — API key
+                    </label>
+                    <input
+                      type="text"
+                      className="input"
+                      style={{ width: '100%' }}
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={config.googleDriveApiKey ?? ''}
+                      onChange={(e) =>
+                        setConfig({ ...config, googleDriveApiKey: e.target.value })
+                      }
+                      placeholder="Hoặc dùng biến môi trường GOOGLE_DRIVE_API_KEY"
+                    />
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                      Bật Google Drive API trên Google Cloud, tạo API key, giới hạn chỉ Drive API. Thư mục Drive cần chia sẻ “Anyone with the link can view”. Nhập xong nhớ bấm{' '}
+                      <strong>Save Changes</strong> bên dưới.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '10px', fontSize: '0.95rem', fontWeight: '600' }}>
+                      Google Drive — ID / link thư mục gốc
+                    </label>
+                    <input
+                      className="input"
+                      style={{ width: '100%' }}
+                      value={config.googleDriveRootFolderId ?? ''}
+                      onChange={(e) =>
+                        setConfig({ ...config, googleDriveRootFolderId: e.target.value })
+                      }
+                      placeholder="https://drive.google.com/drive/folders/..."
+                    />
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                      Trong thư mục này tạo subfolder trùng từng profile; video (.mp4, .mov, …) sẽ tải về <code style={{ fontSize: '0.75rem' }}>uploads/&lt;tên_profile&gt;/</code>. Dán cả URL Drive hoặc chỉ ID folder.
                     </p>
                   </div>
 
