@@ -1007,6 +1007,14 @@ const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
 let renderVideosJob = null; // { id, status, logs, ... }
 const renderFailedSkipKeys = new Set();
 
+function isManualBrowserOpen(profileId) {
+    const target = String(profileId);
+    for (const key of manualBrowsers.keys()) {
+        if (String(key) === target) return true;
+    }
+    return false;
+}
+
 function createRenderVideosLogger(job) {
     return (line) => {
         const entry = `[${new Date().toISOString()}] ${line}`;
@@ -1122,8 +1130,14 @@ app.post('/api/start', async (req, res) => {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) return res.status(404).json({ error: 'Profile not found' });
         if (runningProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running' });
+        if (isManualBrowserOpen(profileId)) {
+            return res.status(400).json({
+                error: 'Profile browser is open in manual mode. Close it before starting automation.'
+            });
+        }
 
-        runSingleProfile(profile, runtimeOptions);
+        // Đồng bộ với "scheduled-style run": ưu tiên video local trong Upload Folder trước khi fallback CMS.
+        runSingleProfile(profile, { ...runtimeOptions, preferLocalFirst: true });
         return res.json({ status: 'started', profile: profile.name });
     } else {
         const allRows = db.prepare('SELECT * FROM profiles').all();
@@ -1135,13 +1149,13 @@ app.post('/api/start', async (req, res) => {
                 return res.status(400).json({ error: 'No matching profiles for the given selection' });
             }
         }
-        const idleProfiles = profiles.filter((p) => !runningProfiles.has(p.id));
+        const idleProfiles = profiles.filter((p) => !runningProfiles.has(p.id) && !isManualBrowserOpen(p.id));
         if (idleProfiles.length === 0) {
             return res.status(400).json({
                 error:
                     Array.isArray(profileIds) && profileIds.length > 0
-                        ? 'No idle profiles in selection (they may already be running)'
-                        : 'No idle profiles'
+                        ? 'No idle profiles in selection (they may already be running or open in manual mode)'
+                        : 'No idle profiles (they may already be running or open in manual mode)'
             });
         }
 
@@ -1150,7 +1164,8 @@ app.post('/api/start', async (req, res) => {
                 console.error('Sequential execution error:', err)
             );
         } else {
-            runAllParallel(idleProfiles, runtimeOptions);
+            // Đồng bộ với sequential & scheduler: luôn ưu tiên local trước, tránh gọi CMS khi đã có file trong uploads/.
+            runAllParallel(idleProfiles, { ...runtimeOptions, preferLocalFirst: true });
         }
         return res.json({ status: 'started', count: idleProfiles.length, runMode: mode });
     }
@@ -1162,6 +1177,11 @@ app.post('/api/profiles/:id/start-scheduled', async (req, res) => {
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
     if (runningProfiles.has(profileId)) {
         return res.status(400).json({ error: 'Profile already running' });
+    }
+    if (isManualBrowserOpen(profileId)) {
+        return res.status(400).json({
+            error: 'Profile browser is open in manual mode. Close it before starting scheduled run.'
+        });
     }
 
     // NEW START: ưu tiên upload file local trong Upload Folder; nếu không có thì fallback CMS.
@@ -1483,13 +1503,23 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
 
 async function runSingleProfile(profile, options = {}) {
     if (runningProfiles.has(profile.id)) return;
+    if (isManualBrowserOpen(profile.id)) {
+        console.log(
+            `[${profile.name}] Skip automation: manual browser is still open for this profile (would conflict with Chromium SingletonLock).`
+        );
+        return;
+    }
     runningProfiles.add(profile.id);
 
     console.log(`[${profile.name}] Starting automation...`);
     db.prepare('UPDATE profiles SET status = ?, last_run = ? WHERE id = ?').run('uploading', new Date().toISOString(), profile.id);
 
     try {
-        const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        const rawVideoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        // Normalize relative paths so "uploads/xxx" works regardless of process cwd.
+        const videoFolder = path.isAbsolute(String(rawVideoFolder))
+            ? String(rawVideoFolder)
+            : path.resolve(path.join(__dirname, '..', String(rawVideoFolder)));
         const channelUrl =
             typeof profile.schedule_channel_url === 'string' ? profile.schedule_channel_url.trim() : '';
         const baseUseCmsPipeline = Number(profile.is_scheduled) === 1 && channelUrl.length > 0;
@@ -1499,6 +1529,11 @@ async function runSingleProfile(profile, options = {}) {
             `[${profile.name}][Pipeline] is_scheduled=${profile.is_scheduled} (cần 1), ` +
                 `schedule_channel_url=${channelUrl ? `${channelUrl.length} ký tự, bắt đầu: ${channelUrl.slice(0, 72)}…` : '(trống)'}`
         );
+        if (String(rawVideoFolder) !== String(videoFolder)) {
+            console.log(
+                `[${profile.name}][Pipeline] video_folder relative -> resolved: raw=${JSON.stringify(String(rawVideoFolder))} | resolved=${JSON.stringify(videoFolder)}`
+            );
+        }
         let videos = [];
         try {
             if (!fs.existsSync(videoFolder)) {
@@ -2727,8 +2762,17 @@ function checkAndRunSchedules() {
             console.log(`[Scheduler] Found ${scheduledProfiles.length} profiles to run at ${currentTime}`);
             scheduledProfiles.forEach(profile => {
                 if (!runningProfiles.has(profile.id)) {
+                    if (isManualBrowserOpen(profile.id)) {
+                        console.log(
+                            `[Scheduler] Skip ${profile.name}: manual browser is open, waiting until it is closed.`
+                        );
+                        return;
+                    }
                     console.log(`[Scheduler] Triggering automation for: ${profile.name}`);
-                    runSingleProfile(profile).catch(err => console.error(`[Scheduler] Error running ${profile.name}:`, err));
+                    // Đồng bộ logic với nút "Start"/"Chạy đã chọn": ưu tiên video local trong Upload Folder trước.
+                    runSingleProfile(profile, { preferLocalFirst: true }).catch(err =>
+                        console.error(`[Scheduler] Error running ${profile.name}:`, err)
+                    );
                 } else {
                     console.log(`[Scheduler] Profile ${profile.name} is already running, skipping scheduled trigger.`);
                 }

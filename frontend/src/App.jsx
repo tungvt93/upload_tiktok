@@ -555,6 +555,8 @@ const App = () => {
   const [groups, setGroups] = useState([]);
   const [newGroupName, setNewGroupName] = useState('');
   const [groupFilter, setGroupFilter] = useState('all');
+  const [profileSearch, setProfileSearch] = useState('');
+  const [topicFilter, setTopicFilter] = useState('all'); // 'all' | 'none' | channelUrl
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editingGroupValue, setEditingGroupValue] = useState('');
   const [selectedForRun, setSelectedForRun] = useState(() => new Set());
@@ -572,13 +574,40 @@ const App = () => {
   const [isStartingRenderJob, setIsStartingRenderJob] = useState(false);
   const [isDriveSyncing, setIsDriveSyncing] = useState(false);
 
+  const normalizeForSearch = (value) => {
+    if (value === null || value === undefined) return '';
+    return String(value)
+      .trim()
+      .toLowerCase()
+      // normalize dấu tiếng Việt: á/à/ả... => a, v.v.
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      // đ/Đ không thuộc combining marks
+      .replace(/đ/g, 'd');
+  };
+
   const filteredProfiles = useMemo(() => {
-    if (groupFilter === 'all') return profiles;
-    if (groupFilter === 'ungrouped') {
-      return profiles.filter((p) => !p.group_id);
+    let base;
+    if (groupFilter === 'all') base = profiles;
+    else if (groupFilter === 'ungrouped') base = profiles.filter((p) => !p.group_id);
+    else base = profiles.filter((p) => p.group_id === groupFilter);
+
+    if (topicFilter !== 'all') {
+      if (topicFilter === 'none') {
+        base = base.filter((p) => {
+          const v = String(p?.schedule_channel_url ?? '').trim();
+          return v === '';
+        });
+      } else {
+        const wanted = String(topicFilter ?? '').trim();
+        base = base.filter((p) => String(p?.schedule_channel_url ?? '').trim() === wanted);
+      }
     }
-    return profiles.filter((p) => p.group_id === groupFilter);
-  }, [profiles, groupFilter]);
+
+    const q = normalizeForSearch(profileSearch);
+    if (!q) return base;
+    return base.filter((p) => normalizeForSearch(p?.name).includes(q));
+  }, [profiles, groupFilter, profileSearch, topicFilter]);
 
   const activeProfile = useMemo(() => {
     if (!filteredProfiles.length) return null;
@@ -1659,12 +1688,83 @@ const App = () => {
                 </div>
               </div>
 
-              {filteredProfiles.length > 0 && (
+              {profiles.length > 0 && (
                 <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                   <div className="glass" style={{ flex: '1 1 320px', maxWidth: '420px', minWidth: '280px', padding: '12px', borderRadius: '18px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', marginBottom: '8px' }}>
                       <h3 style={{ fontSize: '0.95rem', fontWeight: '700' }}>Danh sách profile</h3>
                       <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{filteredProfiles.length} items</span>
+                    </div>
+                    <div style={{ padding: '0 10px 10px' }}>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          value={profileSearch}
+                          onChange={(e) => setProfileSearch(e.target.value)}
+                          placeholder="Tìm tên profile..."
+                          style={{
+                            width: '100%',
+                            boxSizing: 'border-box',
+                            padding: '10px 34px 10px 12px',
+                            borderRadius: '12px',
+                            border: '1px solid var(--border)',
+                            background: 'rgba(255,255,255,0.03)',
+                            color: 'var(--text)',
+                            outline: 'none',
+                            fontSize: '0.9rem'
+                          }}
+                        />
+                        {profileSearch?.trim() ? (
+                          <button
+                            type="button"
+                            onClick={() => setProfileSearch('')}
+                            title="Xoá"
+                            style={{
+                              position: 'absolute',
+                              right: '8px',
+                              top: '50%',
+                              transform: 'translateY(-50%)',
+                              width: '22px',
+                              height: '22px',
+                              borderRadius: '8px',
+                              border: '1px solid var(--border)',
+                              background: 'rgba(255,255,255,0.04)',
+                              color: 'var(--text-muted)',
+                              cursor: 'pointer',
+                              display: 'grid',
+                              placeItems: 'center',
+                              lineHeight: 1,
+                              padding: 0
+                            }}
+                          >
+                            ×
+                          </button>
+                        ) : null}
+                      </div>
+                      <div style={{ marginTop: '10px' }}>
+                        <select
+                          value={topicFilter}
+                          onChange={(e) => setTopicFilter(e.target.value)}
+                          style={{
+                            width: '100%',
+                            boxSizing: 'border-box',
+                            padding: '10px 12px',
+                            borderRadius: '12px',
+                            border: '1px solid var(--border)',
+                            background: 'rgba(255,255,255,0.03)',
+                            color: 'var(--text)',
+                            outline: 'none',
+                            fontSize: '0.9rem'
+                          }}
+                        >
+                          <option value="all">Tất cả Channel topic</option>
+                          <option value="none">Chưa chọn Channel topic</option>
+                          {channels.map((ch) => (
+                            <option key={String(ch.id)} value={ch.url}>
+                              {formatChannelShortLabel(ch)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
                     <div style={{ display: 'grid', gap: '10px', maxHeight: '68vh', overflowY: 'auto', paddingRight: '4px' }}>
                       {filteredProfiles.map((profile) => {
@@ -1812,8 +1912,16 @@ const App = () => {
                     marginTop: '24px'
                   }}
                 >
-                  <p style={{ color: 'white', marginBottom: '8px', fontWeight: '600' }}>No profiles match this filter</p>
-                  <p style={{ fontSize: '0.9rem' }}>Change the group filter above to see profiles.</p>
+                  <p style={{ color: 'white', marginBottom: '8px', fontWeight: '600' }}>
+                    {profileSearch?.trim()
+                      ? 'Không tìm thấy profile nào khớp từ khoá'
+                      : 'No profiles match this filter'}
+                  </p>
+                  <p style={{ fontSize: '0.9rem' }}>
+                    {profileSearch?.trim()
+                      ? 'Hãy thử xoá từ khoá tìm kiếm hoặc đổi bộ lọc nhóm phía trên.'
+                      : 'Change the group filter above to see profiles.'}
+                  </p>
                 </div>
               )}
 

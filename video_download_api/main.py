@@ -120,8 +120,8 @@ def _resolve_saved_path_after_ytdlp(info: dict, ydl: YoutubeDL) -> str:
 
 def _ytdlp_download_sync(url: str, download_dir: Path) -> str:
     """
-    Tải qua yt-dlp (YouTube, TikTok, ...). Thử format linh hoạt rồi fallback `best`
-    vì Shorts / một số kênh không có bản mp4+m4a đúng như chuỗi format cũ.
+    Tải qua yt-dlp (YouTube, TikTok, ...). Thử lần lượt nhiều chuỗi format + mux mp4/mkv
+    để hỗ trợ DASH tách luồng, progressive, Shorts và video chỉ có codec/container lạ.
     """
     download_dir = download_dir.resolve()
     outtmpl = str(download_dir / "%(id)s.%(ext)s")
@@ -139,22 +139,25 @@ def _ytdlp_download_sync(url: str, download_dir: Path) -> str:
     if cookies_from_browser:
         # Định dạng yt-dlp: "chrome", "firefox", "safari", ...
         base["cookiesfrombrowser"] = (cookies_from_browser,)
-    # bv*+ba/b: video+audio tách hoặc một file; merge -> mp4 nếu có ffmpeg
+    # Nhiều bước format: một số video chỉ có DASH webm/opus, progressive mp4, hoặc mux mp4 thất bại → thử mkv / `b`.
+    # Tham khảo: https://github.com/yt-dlp/yt-dlp#format-selection
     format_attempts: list[dict] = [
-        {
-            "format": "bv*+ba/best",
-            "merge_output_format": "mp4",
-        },
-        {
-            "format": "bestvideo+bestaudio/best",
-            "merge_output_format": "mp4",
-        },
-        {
-            "format": "best",
-        },
-        {
-            # Fallback cuối: để yt-dlp tự chọn format mặc định.
-        },
+        {"format": "bv*+ba/b", "merge_output_format": "mp4"},
+        {"format": "bv*+ba/b", "merge_output_format": "mkv"},
+        {"format": "bv*+ba/bv+ba/b", "merge_output_format": "mp4"},
+        {"format": "bv*+ba/bv+ba/b", "merge_output_format": "mkv"},
+        {"format": "bestvideo*+bestaudio/bestvideo+bestaudio/b", "merge_output_format": "mp4"},
+        {"format": "bestvideo*+bestaudio/bestvideo+bestaudio/b", "merge_output_format": "mkv"},
+        {"format": "bestvideo+bestaudio/b", "merge_output_format": "mp4"},
+        {"format": "bestvideo+bestaudio/b", "merge_output_format": "mkv"},
+        {"format": "bv+ba/b", "merge_output_format": "mp4"},
+        {"format": "bv+ba/b", "merge_output_format": "mkv"},
+        # `b` = best pre-muxed (một file có cả video+audio), hợp Shorts / luồng progressive.
+        {"format": "b/best", "merge_output_format": "mp4"},
+        {"format": "b/best"},
+        {"format": "bestvideo+bestaudio/best"},
+        {"format": "best"},
+        {},
     ]
     last_err: Exception | None = None
     for fmt_opts in format_attempts:
