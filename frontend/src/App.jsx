@@ -665,6 +665,11 @@ const App = () => {
   }, [profiles]);
 
   useEffect(() => {
+    // Reset bulk selection when switching group filter to avoid stale cross-group selection.
+    setSelectedForRun((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [groupFilter]);
+
+  useEffect(() => {
     if (!filteredProfiles.length) {
       setActiveProfileId(null);
       return;

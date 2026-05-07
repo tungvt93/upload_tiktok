@@ -544,6 +544,10 @@ async function patchCmsVideoDone(videoId, log) {
     return patchCmsVideoStatus(videoId, 'done', log);
 }
 
+async function patchCmsVideoAvailable(videoId, log) {
+    return patchCmsVideoStatus(videoId, 'available', log);
+}
+
 /** Đồng bộ kênh với CMS (cùng VIDEO_CMS_BASE_URL, ví dụ :8001). Gọi sau khi DB lưu schedule_channel_url. */
 async function postCmsChannelsApi(channelUrl) {
     const endpoint = `${VIDEO_CMS_BASE_URL}/api/channels`;
@@ -1067,12 +1071,12 @@ async function runRenderVideosJob(job) {
                 }
                 if (row.id != null) {
                     try {
-                        // Link lỗi ở render-only: đánh dấu done để lần chạy sau không bị lấy lại.
-                        await patchCmsVideoDone(row.id, log);
+                        // Render lỗi: trả trạng thái về available để có thể retry ở lần chạy sau.
+                        await patchCmsVideoAvailable(row.id, log);
                     } catch (patchErr) {
-                        log(`PATCH status=done thất bại cho video id=${row.id}. ${patchErr.message || patchErr}`);
-                        await patchCmsVideoDone(row.id, log).catch((e) =>
-                            log(`PATCH fallback done cũng lỗi cho id=${row.id}: ${e.message || e}`)
+                        log(`PATCH status=available thất bại cho video id=${row.id}. ${patchErr.message || patchErr}`);
+                        await patchCmsVideoAvailable(row.id, log).catch((e) =>
+                            log(`PATCH fallback available cũng lỗi cho id=${row.id}: ${e.message || e}`)
                         );
                     }
                 }
@@ -1724,8 +1728,8 @@ async function uploadVideo(profile, videoFolder, videos, options = {}) {
                         log(`Đánh dấu bỏ qua video lỗi: ${failedKey}`);
                     }
                     if (cmsVideoId != null) {
-                        await patchCmsVideoDone(cmsVideoId, log).catch((patchErr) =>
-                            log(`PATCH done lỗi cho video id=${cmsVideoId}: ${patchErr.message || patchErr}`)
+                        await patchCmsVideoAvailable(cmsVideoId, log).catch((patchErr) =>
+                            log(`PATCH available lỗi cho video id=${cmsVideoId}: ${patchErr.message || patchErr}`)
                         );
                     }
                     continue;
