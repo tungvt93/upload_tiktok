@@ -66,12 +66,10 @@ from moviepy.editor import *
 from moviepy.video.fx import all as vfx
 
 def apply_reup_effects(clip):
-    """Style edit: zoom, crop, color, speed, flip đều, line ngang, grain nhẹ."""
+    """Zoom nhẹ, chỉnh màu, line ngang to hơn, tăng speed nhẹ, cứ 2.5s flip 1 lần."""
 
-    # Zoom nhẹ
     clip = clip.fx(vfx.resize, 1.03)
 
-    # Crop về đúng size
     clip = clip.crop(
         x_center=clip.w / 2,
         y_center=clip.h / 2,
@@ -79,14 +77,11 @@ def apply_reup_effects(clip):
         height=TARGET_H,
     )
 
-    # Chỉnh màu nhẹ
-    clip = clip.fx(vfx.colorx, 1.08)
-
-    # Zoom thêm
-    clip = clip.fx(vfx.resize, 1.22)
+    clip = clip.fx(vfx.colorx, 1.1)
+    clip = clip.fx(vfx.resize, 1.2)
 
     # Tăng speed nhẹ
-    clip = clip.fx(vfx.speedx, 1.05)
+    clip = clip.fx(vfx.speedx, 1.04)
 
     # Cứ mỗi 2.5 giây lật 1 lần
     segments = []
@@ -110,10 +105,9 @@ def apply_reup_effects(clip):
 
     # Line ngang to hơn
     line_y = TARGET_H // 2
-
     line = (
-        ColorClip(size=(TARGET_W, 20), color=(255, 255, 255))
-        .set_opacity(0.85)
+        ColorClip(size=(TARGET_W, 35), color=(255, 255, 255))
+        .set_opacity(0.15)
         .set_duration(clip.duration)
         .set_position(("center", line_y))
     )
