@@ -76,21 +76,32 @@ def apply_reup_effects(clip):
         width=TARGET_W,
         height=TARGET_H,
     )
+    clip = clip.fx(vfx.colorx, 1.3)
+    clip = clip.fx(vfx.resize, 1.5)
 
-    clip = clip.fx(vfx.colorx, 1.1)
-    clip = clip.fx(vfx.resize, 1.2)
+    # Nghiêng nhẹ random
+    angle = random.uniform(-1.5, 1.5)
+    clip = clip.rotate(angle, resample="bilinear")
 
     # Tăng speed nhẹ
-    clip = clip.fx(vfx.speedx, 1.04)
+    clip = clip.fx(vfx.speedx, 1.05)
 
-    # Cứ mỗi 2.5 giây lật 1 lần
     segments = []
     current_t = 0
     flip_interval = 2.5
     flip = False
 
     while current_t < clip.duration:
+
+        # random skip 1s (25% tỉ lệ)
+        if random.random() < 0.25:
+            current_t += 1
+
+        if current_t >= clip.duration:
+            break
+
         end_t = min(current_t + flip_interval, clip.duration)
+
         sub = clip.subclip(current_t, end_t)
 
         if flip:
@@ -106,8 +117,8 @@ def apply_reup_effects(clip):
     # Line ngang to hơn
     line_y = TARGET_H // 2
     line = (
-        ColorClip(size=(TARGET_W, 35), color=(255, 255, 255))
-        .set_opacity(0.15)
+        ColorClip(size=(TARGET_W, 20), color=(255, 255, 255))
+        .set_opacity(0.85)
         .set_duration(clip.duration)
         .set_position(("center", line_y))
     )
