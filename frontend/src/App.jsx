@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { 
-  Plus, 
-  Play, 
-  Trash2, 
-  Settings, 
-  Globe, 
-  Video, 
+import {
+  Plus,
+  Play,
+  Trash2,
+  Settings,
+  Globe,
+  Video,
   AlertCircle,
   CheckCircle2,
   RefreshCw,
@@ -45,11 +45,14 @@ const ProfileCard = ({
   onUpdateFolder,
   onSelectFolder,
   onUpdateProxy,
+  onUpdateChannelIds,
   onUpdateSchedule,
   onUpdateSchedules,
   onUpdateSetMusic,
   onUpdateAutoIncrementSchedule,
   onUpdateUploadCount,
+  onUpdateNeedsRender,
+  onUpdateRemoveTitle,
   groups,
   getStatusColor,
   editingId,
@@ -69,11 +72,11 @@ const ProfileCard = ({
       style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
     >
       {/* Header - Always Visible */}
-      <div 
-        style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'flex-start', 
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
           cursor: 'pointer',
           padding: '4px',
           borderRadius: '8px'
@@ -81,7 +84,7 @@ const ProfileCard = ({
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <label 
+          <label
             style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', flexShrink: 0 }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -92,8 +95,8 @@ const ProfileCard = ({
               style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
             />
           </label>
-          <div style={{ 
-            background: 'rgba(56, 189, 248, 0.1)', 
+          <div style={{
+            background: 'rgba(56, 189, 248, 0.1)',
             width: '44px',
             height: '44px',
             borderRadius: '12px',
@@ -106,11 +109,11 @@ const ProfileCard = ({
           </div>
           <div style={{ minWidth: 0 }}>
             {editingId === profile.id ? (
-              <div 
+              <div
                 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <input 
+                <input
                   autoFocus
                   className="input"
                   style={{ fontSize: '0.9rem', padding: '4px 8px', width: '140px' }}
@@ -121,13 +124,13 @@ const ProfileCard = ({
                     if (e.key === 'Escape') setEditingId(null);
                   }}
                 />
-                <button 
+                <button
                   onClick={() => onUpdateName(profile.id, editingValue)}
                   style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '4px' }}
                 >
                   <Check size={16} />
                 </button>
-                <button 
+                <button
                   onClick={() => setEditingId(null)}
                   style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '4px' }}
                 >
@@ -139,7 +142,7 @@ const ProfileCard = ({
                 <h3 style={{ fontSize: '1.1rem', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '160px' }}>
                   {profile.name}
                 </h3>
-                <button 
+                <button
                   onClick={(e) => {
                     e.stopPropagation();
                     setEditingId(profile.id);
@@ -152,21 +155,21 @@ const ProfileCard = ({
               </div>
             )}
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              <Clock size={12} /> 
+              <Clock size={12} />
               {profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}
-              <div style={{ 
-                width: '6px', 
-                height: '6px', 
-                borderRadius: '50%', 
+              <div style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
                 backgroundColor: getStatusColor(profile.status),
                 marginLeft: '6px'
               }} />
             </div>
           </div>
         </div>
-        
+
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <button 
+          <button
             onClick={(e) => {
               e.stopPropagation();
               onDelete(profile.id);
@@ -219,14 +222,14 @@ const ProfileCard = ({
                   <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Upload Folder</span>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <input 
+                  <input
                     className="input"
                     style={{ fontSize: '0.75rem', padding: '8px 12px', flex: 1 }}
                     placeholder="Global Default"
                     value={profile.video_folder || ''}
                     onChange={(e) => onUpdateFolder(profile.id, e.target.value)}
                   />
-                  <button 
+                  <button
                     onClick={() => onSelectFolder(profile.id)}
                     className="btn-secondary"
                     style={{ padding: '8px', minWidth: 'auto' }}
@@ -241,7 +244,7 @@ const ProfileCard = ({
                   <Link size={14} color="var(--text-muted)" />
                   <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Proxy Server (Optional)</span>
                 </div>
-                <input 
+                <input
                   className="input"
                   style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
                   placeholder="http://user:pass@host:port"
@@ -251,8 +254,23 @@ const ProfileCard = ({
               </div>
 
               <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <Users size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Channel IDs (comma separated)</span>
+                </div>
+                <textarea
+                  className="input"
+                  style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%', minHeight: '60px', resize: 'vertical', fontFamily: 'inherit' }}
+                  placeholder="e.g. UC123, UC456"
+                  value={profile.channel_ids || ''}
+                  onChange={(e) => onUpdateChannelIds(profile.id, e.target.value)}
+                  rows={2}
+                />
+              </div>
+
+              <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
-                  <input 
+                  <input
                     type="checkbox"
                     checked={profile.is_scheduled === 1}
                     onChange={(e) => onUpdateSchedule(profile.id, e.target.checked)}
@@ -270,7 +288,7 @@ const ProfileCard = ({
                       <Clock size={14} color="var(--text-muted)" />
                       <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Daily Times (HH:mm, HH:mm)</span>
                     </div>
-                    <input 
+                    <input
                       className="input"
                       style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
                       placeholder="e.g. 08:00, 18:00, 22:00"
@@ -289,7 +307,7 @@ const ProfileCard = ({
                         <Video size={14} color="var(--text-muted)" />
                         <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Số lượng video mỗi lần</span>
                       </div>
-                      <input 
+                      <input
                         type="number"
                         className="input"
                         style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
@@ -305,7 +323,7 @@ const ProfileCard = ({
 
               <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
-                  <input 
+                  <input
                     type="checkbox"
                     checked={profile.auto_increment_schedule === 1}
                     onChange={(e) => onUpdateAutoIncrementSchedule(profile.id, e.target.checked)}
@@ -314,6 +332,46 @@ const ProfileCard = ({
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Lên lịch nối tiếp (10p)</span>
                     <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>V1: Public, V2: Mặc định, V3+: +10 phút</span>
+                  </div>
+                </label>
+              </div>
+
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <input
+                    type="checkbox"
+                    checked={profile.needs_render !== 0}
+                    onChange={(e) => onUpdateNeedsRender(profile.id, e.target.checked)}
+                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                      <Zap size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                      Render video bypass
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      Bật: xử lý lách bản quyền qua render.py. Tắt: giữ nguyên video gốc.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <input
+                    type="checkbox"
+                    checked={profile.remove_title !== 0}
+                    onChange={(e) => onUpdateRemoveTitle(profile.id, e.target.checked)}
+                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                      <Trash2 size={14} color="var(--error)" style={{ flexShrink: 0 }} />
+                      Xóa tiêu đề khi upload
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      Bật: tự động xóa tiêu đề mặc định khi đăng. Tắt: giữ tiêu đề gốc.
+                    </span>
                   </div>
                 </label>
               </div>
@@ -340,24 +398,24 @@ const ProfileCard = ({
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingBottom: '4px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ 
-                    width: '8px', 
-                    height: '8px', 
-                    borderRadius: '50%', 
-                    backgroundColor: getStatusColor(profile.status) 
+                  <div style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    backgroundColor: getStatusColor(profile.status)
                   }} />
-                  <span style={{ 
-                    fontSize: '0.75rem', 
-                    fontWeight: '700', 
+                  <span style={{
+                    fontSize: '0.75rem',
+                    fontWeight: '700',
                     color: getStatusColor(profile.status),
                     textTransform: 'uppercase'
                   }}>
                     {profile.status}
                   </span>
                 </div>
-                
+
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  <button 
+                  <button
                     className="btn"
                     onClick={() => onOpen(profile.id)}
                     style={{
@@ -372,8 +430,8 @@ const ProfileCard = ({
                     <ExternalLink size={14} />
                     OPEN
                   </button>
-                  
-                  <button 
+
+                  <button
                     className="btn"
                     onClick={() => onStart(profile.id)}
                     disabled={profile.status === 'uploading' || isEngaging}
@@ -442,6 +500,9 @@ const App = () => {
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileGroupId, setNewProfileGroupId] = useState('');
   const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
+  const [newProfileChannelIds, setNewProfileChannelIds] = useState('');
+  const [newProfileNeedsRender, setNewProfileNeedsRender] = useState(true);
+  const [newProfileRemoveTitle, setNewProfileRemoveTitle] = useState(true);
   const [isCreateProfileModalOpen, setIsCreateProfileModalOpen] = useState(false);
   const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -489,7 +550,7 @@ const App = () => {
         axios.get('/api/config'),
         axios.get('/api/groups')
       ]);
-      
+
       const newProfiles = pRes.data || [];
       setProfiles(prev => {
         // Don't overwrite profiles that are currently being updated
@@ -501,7 +562,7 @@ const App = () => {
           return np;
         });
       });
-      
+
       setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
       setGroups(gRes.data || []);
 
@@ -578,6 +639,9 @@ const App = () => {
     setNewProfileName('');
     setNewProfileGroupId('');
     setNewProfileVideoFolder('');
+    setNewProfileChannelIds('');
+    setNewProfileNeedsRender(true);
+    setNewProfileRemoveTitle(true);
   };
 
   const closeCreateProfileModal = ({ force } = {}) => {
@@ -596,7 +660,10 @@ const App = () => {
       await axios.post('/api/profiles', {
         name,
         group_id: newProfileGroupId || null,
-        video_folder: newProfileVideoFolder.trim() || null
+        video_folder: newProfileVideoFolder.trim() || null,
+        channel_ids: newProfileChannelIds.trim() || null,
+        needs_render: newProfileNeedsRender,
+        remove_title: newProfileRemoveTitle
       });
       closeCreateProfileModal({ force: true });
       await fetchData();
@@ -786,6 +853,15 @@ const App = () => {
     }
   };
 
+  const updateProfileChannelIds = async (id, channelIds) => {
+    try {
+      await axios.patch(`/api/profiles/${id}`, { channel_ids: channelIds });
+      fetchData();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const updateProfileName = async (id, newName) => {
     if (!newName.trim()) {
       setEditingId(null);
@@ -802,7 +878,7 @@ const App = () => {
       setEditingId(null);
     }
   };
-  
+
   const updateProfileSchedule = async (id, is_scheduled) => {
     // Prevent multiple concurrent updates
     if (processingRef.current.has(id)) return;
@@ -827,7 +903,7 @@ const App = () => {
   const updateProfileSchedules = async (id, timesStr) => {
     // timesStr is comma-separated e.g. "08:00, 18:00"
     const times = timesStr.split(',').map(t => t.trim()).filter(t => /^\d{2}:\d{2}$/.test(t));
-    
+
     try {
       await axios.post(`/api/profiles/${id}/schedules`, { times });
       await fetchData();
@@ -846,6 +922,42 @@ const App = () => {
     processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { set_music: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const updateProfileNeedsRender = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, needs_render: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { needs_render: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const updateProfileRemoveTitle = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, remove_title: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { remove_title: enabled });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
@@ -942,7 +1054,7 @@ const App = () => {
         <aside style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-              <div style={{ 
+              <div style={{
                 background: 'linear-gradient(135deg, var(--primary), var(--secondary))',
                 width: '40px',
                 height: '40px',
@@ -962,14 +1074,14 @@ const App = () => {
           </div>
 
           <nav className="glass" style={{ padding: '12px', borderRadius: '20px' }}>
-            <button 
+            <button
               onClick={() => setActiveTab('profiles')}
-              style={{ 
-                width: '100%', 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '12px', 
-                padding: '12px 16px', 
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '12px 16px',
                 borderRadius: '12px',
                 background: activeTab === 'profiles' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
                 color: activeTab === 'profiles' ? 'var(--primary)' : 'var(--text-muted)',
@@ -981,14 +1093,14 @@ const App = () => {
             >
               <Layout size={20} /> Profiles Management
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('groups')}
-              style={{ 
-                width: '100%', 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '12px', 
-                padding: '12px 16px', 
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '12px 16px',
                 borderRadius: '12px',
                 background: activeTab === 'groups' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
                 color: activeTab === 'groups' ? 'var(--primary)' : 'var(--text-muted)',
@@ -1001,14 +1113,14 @@ const App = () => {
             >
               <Users size={20} /> Groups
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('settings')}
-              style={{ 
-                width: '100%', 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '12px', 
-                padding: '12px 16px', 
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '12px 16px',
                 borderRadius: '12px',
                 background: activeTab === 'settings' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
                 color: activeTab === 'settings' ? 'var(--primary)' : 'var(--text-muted)',
@@ -1043,13 +1155,13 @@ const App = () => {
         {/* Main Content */}
         <main>
           {message && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
               className="glass"
-              style={{ 
-                padding: '16px 24px', 
-                borderRadius: '16px', 
+              style={{
+                padding: '16px 24px',
+                borderRadius: '16px',
                 background: message.type === 'error' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)',
                 color: message.type === 'error' ? '#EF4444' : '#10B981',
                 border: `1px solid ${message.type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)'}`,
@@ -1127,7 +1239,7 @@ const App = () => {
                       <option value="sequential">Chạy tuần tự</option>
                     </select>
                   </label>
-                  <button 
+                  <button
                     className="btn btn-primary"
                     onClick={() => startAutomation()}
                     disabled={isLoading || selectedForRun.size === 0}
@@ -1187,11 +1299,14 @@ const App = () => {
                       onUpdateFolder={updateProfileFolder}
                       onSelectFolder={handleSelectFolder}
                       onUpdateProxy={updateProfileProxy}
+                      onUpdateChannelIds={updateProfileChannelIds}
                       onUpdateSchedule={updateProfileSchedule}
                       onUpdateSchedules={updateProfileSchedules}
                       onUpdateSetMusic={updateProfileSetMusic}
                       onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
                       onUpdateUploadCount={updateProfileUploadCount}
+                      onUpdateNeedsRender={updateProfileNeedsRender}
+                      onUpdateRemoveTitle={updateProfileRemoveTitle}
                       groups={groups}
                       getStatusColor={getStatusColor}
                       editingId={editingId}
@@ -1204,9 +1319,9 @@ const App = () => {
               </div>
 
               {profiles.length === 0 && (
-                <div style={{ 
-                  textAlign: 'center', 
-                  padding: '80px 40px', 
+                <div style={{
+                  textAlign: 'center',
+                  padding: '80px 40px',
                   color: 'var(--text-muted)',
                   border: '2px dashed var(--border)',
                   borderRadius: '24px',
@@ -1343,6 +1458,54 @@ const App = () => {
                           <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
                             Optional. Leave empty to use the global Video Source Folder.
                           </p>
+                        </div>
+
+                        <div className="input-group">
+                          <label>Channel IDs (comma separated)</label>
+                          <textarea
+                            className="input"
+                            style={{ minHeight: '80px', resize: 'vertical', fontFamily: 'inherit' }}
+                            placeholder="e.g. UC123, UC456"
+                            value={newProfileChannelIds}
+                            onChange={(e) => setNewProfileChannelIds(e.target.value)}
+                            disabled={isCreatingProfile || isSelectingFolder}
+                            rows={3}
+                          />
+                          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
+                            Optional. List of managed channel IDs, comma-separated.
+                          </p>
+                        </div>
+
+                        <div className="input-group" style={{ marginBottom: '12px' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                            <input
+                              type="checkbox"
+                              checked={newProfileNeedsRender}
+                              onChange={(e) => setNewProfileNeedsRender(e.target.checked)}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Render video bypass</span>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định bật. Tắt đi nếu muốn giữ nguyên video gốc.</span>
+                            </div>
+                          </label>
+                        </div>
+
+                        <div className="input-group" style={{ marginBottom: '24px' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                            <input
+                              type="checkbox"
+                              checked={newProfileRemoveTitle}
+                              onChange={(e) => setNewProfileRemoveTitle(e.target.checked)}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Xóa tiêu đề khi upload</span>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định bật. Tắt đi nếu muốn giữ lại tiêu đề gốc làm caption.</span>
+                            </div>
+                          </label>
                         </div>
 
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
@@ -1493,8 +1656,8 @@ const App = () => {
                     </label>
                     <div style={{ position: 'relative' }}>
                       <Video size={18} style={{ position: 'absolute', left: '14px', top: '14px', color: 'var(--text-muted)' }} />
-                      <input 
-                        className="input" 
+                      <input
+                        className="input"
                         style={{ paddingLeft: '44px', width: '100%' }}
                         value={config.videoFolder}
                         onChange={(e) => setConfig({ ...config, videoFolder: e.target.value })}
@@ -1511,7 +1674,7 @@ const App = () => {
                       Maximum Parallel Uploads
                     </label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                      <input 
+                      <input
                         type="range"
                         min="1"
                         max="10"
@@ -1528,8 +1691,8 @@ const App = () => {
                     </p>
                   </div>
 
-                  <button 
-                    className="btn btn-primary" 
+                  <button
+                    className="btn btn-primary"
                     style={{ width: '100%', marginTop: '12px', justifyContent: 'center' }}
                     onClick={updateConfig}
                   >
@@ -1580,22 +1743,22 @@ const App = () => {
           >
             <div className="glass" style={{ padding: '40px', borderRadius: '24px', textAlign: 'center', border: '1px solid var(--primary)' }}>
               <div style={{ position: 'relative', width: '80px', height: '80px', margin: '0 auto 24px' }}>
-                <div style={{ 
-                  position: 'absolute', 
-                  inset: 0, 
-                  border: '4px solid rgba(255, 63, 182, 0.1)', 
-                  borderRadius: '50%' 
+                <div style={{
+                  position: 'absolute',
+                  inset: 0,
+                  border: '4px solid rgba(255, 63, 182, 0.1)',
+                  borderRadius: '50%'
                 }} />
-                <motion.div 
+                <motion.div
                   animate={{ rotate: 360 }}
                   transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                  style={{ 
-                    position: 'absolute', 
-                    inset: 0, 
-                    border: '4px solid transparent', 
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    border: '4px solid transparent',
                     borderTopColor: 'var(--primary)',
-                    borderRadius: '50%' 
-                  }} 
+                    borderRadius: '50%'
+                  }}
                 />
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <FolderOpen size={32} color="var(--primary)" />

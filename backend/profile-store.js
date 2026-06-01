@@ -20,7 +20,7 @@ const createStoreError = (message, status) => {
     return error;
 };
 
-export function createProfileRecord(db, { id, name, group_id, video_folder }) {
+export function createProfileRecord(db, { id, name, group_id, video_folder, channel_ids, needs_render, remove_title }) {
     if (name === undefined || name === null) {
         throw createStoreError('Name is required', 400);
     }
@@ -39,12 +39,15 @@ export function createProfileRecord(db, { id, name, group_id, video_folder }) {
     }
 
     const normalizedVideoFolder = normalizeOptionalText(video_folder);
+    const normalizedChannelIds = normalizeOptionalText(channel_ids);
+    const normalizedNeedsRender = needs_render !== undefined ? (needs_render ? 1 : 0) : 1;
+    const normalizedRemoveTitle = remove_title !== undefined ? (remove_title ? 1 : 0) : 1;
 
     try {
         db.prepare(
             `
-            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, group_id, video_folder, set_music, upload_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, group_id, video_folder, set_music, upload_count, channel_ids, needs_render, remove_title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         ).run(
             id,
@@ -55,7 +58,10 @@ export function createProfileRecord(db, { id, name, group_id, video_folder }) {
             normalizedGroupId ?? null,
             normalizedVideoFolder,
             0,
-            1
+            1,
+            normalizedChannelIds,
+            normalizedNeedsRender,
+            normalizedRemoveTitle
         );
     } catch (e) {
         if (e && e.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
