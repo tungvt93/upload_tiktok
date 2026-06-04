@@ -592,6 +592,13 @@ function sanitizeToAscii(str) {
     return sanitized;
 }
 
+// Automation state - must be declared before any endpoint that uses them
+const runningProfiles = new Set();
+const processingProfiles = new Set();
+const processingVideoIds = new Map(); // video_id -> profile.id currently processing that video
+const manualBrowsers = new Map(); // profileId -> browserContext
+const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
+
 app.post('/api/upload_new_video', async (req, res) => {
     const { video_id, channel_id } = req.body;
 
@@ -599,24 +606,36 @@ app.post('/api/upload_new_video', async (req, res) => {
         return res.status(400).json({ error: 'Both video_id and channel_id are required' });
     }
 
+    // Find profile that manages this channel_id
+    const profiles = db.prepare('SELECT * FROM profiles').all();
+    const profile = profiles.find(p => {
+        if (!p.channel_ids) return false;
+        const ids = p.channel_ids.split(',').map(id => id.trim());
+        return ids.includes(channel_id.trim());
+    });
+
+    if (!profile) {
+        return res.status(404).json({ error: `No profile found managing channel ID: ${channel_id}` });
+    }
+
+    // Lock 1: Check if this exact video_id is already being processed
+    if (processingVideoIds.has(video_id)) {
+        console.log(`[${profile.name}] Duplicate request: video_id=${video_id} is already being processed.`);
+        return res.status(400).json({ error: `Video ID '${video_id}' is already being processed. Please wait.` });
+    }
+
+    // Lock 2: Check if profile is already running automation or processing another video
+    if (runningProfiles.has(profile.id) || processingProfiles.has(profile.id)) {
+        return res.status(400).json({ error: `Profile '${profile.name}' is already running automation or processing a video` });
+    }
+
+    // Acquire both locks immediately
+    processingVideoIds.set(video_id, profile.id);
+    processingProfiles.add(profile.id);
+
+    let downloadedFilePath = null;
+
     try {
-        // Find profile that manages this channel_id
-        const profiles = db.prepare('SELECT * FROM profiles').all();
-        const profile = profiles.find(p => {
-            if (!p.channel_ids) return false;
-            const ids = p.channel_ids.split(',').map(id => id.trim());
-            return ids.includes(channel_id.trim());
-        });
-
-        if (!profile) {
-            return res.status(404).json({ error: `No profile found managing channel ID: ${channel_id}` });
-        }
-
-        // Check if profile is already running upload automation
-        if (runningProfiles.has(profile.id)) {
-            return res.status(400).json({ error: `Profile '${profile.name}' is already running automation` });
-        }
-
         // Determine destination folder
         const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
         if (!fs.existsSync(videoFolder)) {
@@ -636,19 +655,12 @@ app.post('/api/upload_new_video', async (req, res) => {
         let originalTitle = await new Promise((resolve) => {
             const child = spawn('yt-dlp', ['--get-title', '--no-playlist', targetUrl]);
             let titleData = '';
-            child.stdout.on('data', (data) => {
-                titleData += data.toString();
-            });
+            child.stdout.on('data', (data) => { titleData += data.toString(); });
             child.on('close', (code) => {
-                if (code === 0 && titleData.trim()) {
-                    resolve(titleData.trim());
-                } else {
-                    resolve(null); // Short check failed
-                }
+                if (code === 0 && titleData.trim()) resolve(titleData.trim());
+                else resolve(null);
             });
-            child.on('error', () => {
-                resolve(null);
-            });
+            child.on('error', () => resolve(null));
         });
 
         if (!originalTitle) {
@@ -659,29 +671,22 @@ app.post('/api/upload_new_video', async (req, res) => {
             originalTitle = await new Promise((resolve) => {
                 const child = spawn('yt-dlp', ['--get-title', '--no-playlist', targetUrl]);
                 let titleData = '';
-                child.stdout.on('data', (data) => {
-                    titleData += data.toString();
-                });
+                child.stdout.on('data', (data) => { titleData += data.toString(); });
                 child.on('close', (code) => {
-                    if (code === 0 && titleData.trim()) {
-                        resolve(titleData.trim());
-                    } else {
-                        resolve('video'); // final fallback
-                    }
+                    if (code === 0 && titleData.trim()) resolve(titleData.trim());
+                    else resolve('video');
                 });
-                child.on('error', () => {
-                    resolve('video');
-                });
+                child.on('error', () => resolve('video'));
             });
         }
 
         console.log(`[${profile.name}] Original title retrieved: "${originalTitle}"`);
-        const cleanTitle = sanitizeToAscii(originalTitle).substring(0, 80); // Cap title length at 80 chars
+        const cleanTitle = sanitizeToAscii(originalTitle).substring(0, 80);
         const fileNameBase = cleanTitle || 'video';
 
         // Generate a 100% safe, clean ASCII filename containing original title
         const safeFileName = `${fileNameBase}_${Date.now()}_${randomUUID().slice(0, 8)}.mp4`;
-        const downloadedFilePath = path.join(videoFolder, safeFileName);
+        downloadedFilePath = path.join(videoFolder, safeFileName);
 
         console.log(`[${profile.name}] Starting yt-dlp download from: ${targetUrl} to: ${downloadedFilePath}`);
 
@@ -689,7 +694,7 @@ app.post('/api/upload_new_video', async (req, res) => {
         const downloadArgs = [
             targetUrl,
             '-o', downloadedFilePath,
-            '-f', 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
+            '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
             '--merge-output-format', 'mp4',
             '--no-playlist'
         ];
@@ -697,23 +702,12 @@ app.post('/api/upload_new_video', async (req, res) => {
         await new Promise((resolve, reject) => {
             const child = spawn('yt-dlp', downloadArgs);
             let stderrData = '';
-
-            child.stderr.on('data', (data) => {
-                stderrData += data.toString();
-            });
-
+            child.stderr.on('data', (data) => { stderrData += data.toString(); });
             child.on('close', (code) => {
-                if (code === 0) {
-                    resolve();
-                } else {
-                    reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
-                }
+                if (code === 0) resolve();
+                else reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
             });
-
-            child.on('error', (err) => {
-                child.kill();
-                reject(err);
-            });
+            child.on('error', (err) => { child.kill(); reject(err); });
         });
 
         console.log(`[${profile.name}] Video download complete via yt-dlp.`);
@@ -766,30 +760,19 @@ app.post('/api/upload_new_video', async (req, res) => {
                 '-filter_complex', hasAudio ? `[0:v]setpts=PTS/${speedFactor}[v];[0:a]atempo=${speedFactor}[a]` : `[0:v]setpts=PTS/${speedFactor}[v]`,
                 '-map', '[v]'
             ];
-            if (hasAudio) {
-                ffmpegArgs.push('-map', '[a]');
-            }
-            ffmpegArgs.push(
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-crf', '23',
-                slowedFilePath
-            );
-
-            const speedPromise = new Promise((resolve, reject) => {
-                const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
-                ffmpegProcess.on('close', (code) => {
-                    if (code === 0) resolve(true);
-                    else reject(new Error(`ffmpeg exited with code ${code}`));
-                });
-                ffmpegProcess.on('error', (err) => reject(err));
-            });
+            if (hasAudio) ffmpegArgs.push('-map', '[a]');
+            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', slowedFilePath);
 
             try {
-                await speedPromise;
-                if (fs.existsSync(downloadedFilePath)) {
-                    fs.unlinkSync(downloadedFilePath);
-                }
+                await new Promise((resolve, reject) => {
+                    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+                    ffmpegProcess.on('close', (code) => {
+                        if (code === 0) resolve(true);
+                        else reject(new Error(`ffmpeg exited with code ${code}`));
+                    });
+                    ffmpegProcess.on('error', (err) => reject(err));
+                });
+                if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
                 fs.renameSync(slowedFilePath, downloadedFilePath);
                 console.log(`[${profile.name}] Successfully slowed down video to > 5s.`);
                 
@@ -820,9 +803,7 @@ app.post('/api/upload_new_video', async (req, res) => {
 
         if (videoDuration < 5) {
             console.log(`[${profile.name}] Video too short (${videoDuration.toFixed(2)}s < 5s). Deleting and skipping.`);
-            if (fs.existsSync(downloadedFilePath)) {
-                fs.unlinkSync(downloadedFilePath);
-            }
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
             return res.json({
                 success: true,
                 skipped: true,
@@ -833,9 +814,7 @@ app.post('/api/upload_new_video', async (req, res) => {
 
         // Check if render is needed based on profile configuration
         if (profile.needs_render !== 0) {
-            // Now run the python render pipeline
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
-
             console.log(`[${profile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
 
             const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
@@ -850,62 +829,56 @@ app.post('/api/upload_new_video', async (req, res) => {
                 const child = spawn(pythonBinary, renderArgs);
                 let stdoutData = '';
                 let stderrData = '';
-
                 child.stdout.on('data', (data) => stdoutData += data.toString());
                 child.stderr.on('data', (data) => stderrData += data.toString());
-
                 child.on('close', (code) => {
-                    if (code === 0) {
-                        resolve();
-                    } else {
-                        reject(new Error(`render.py exited with code ${code}. Stderr: ${stderrData}`));
-                    }
+                    if (code === 0) resolve();
+                    else reject(new Error(`render.py exited with code ${code}. Stderr: ${stderrData}`));
                 });
-
-                child.on('error', (err) => {
-                    child.kill();
-                    reject(err);
-                });
+                child.on('error', (err) => { child.kill(); reject(err); });
             });
 
             console.log(`[${profile.name}] Render complete. Replacing original downloaded video file...`);
-
-            // Delete original and rename rendered file to keep original name
-            if (fs.existsSync(downloadedFilePath)) {
-                fs.unlinkSync(downloadedFilePath);
-            }
-            
-            // Ensure final output has the same filename
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
             fs.renameSync(renderedFilePath, downloadedFilePath);
-
             console.log(`[${profile.name}] Video fully replaced with bypass-rendered version.`);
         } else {
             console.log(`[${profile.name}] Bypass Render is enabled for this profile. Skipping render pipeline.`);
         }
 
-        // Trigger upload in background (like clicking START button in FE)
-        runSingleProfile(profile);
-
-        return res.json({
+        // Respond immediately before triggering the browser automation
+        res.json({
             success: true,
-            message: 'Video downloaded, bypass-rendered and upload automation started successfully',
+            message: 'Video downloaded and processed. Upload automation starting...',
             profile: profile.name,
             profileId: profile.id,
             filePath: downloadedFilePath
         });
 
+        // Trigger upload in background AFTER responding
+        // processingProfiles lock is released only here - after download+render is fully done
+        // runSingleProfile will manage runningProfiles internally
+        runSingleProfile(profile);
+
     } catch (error) {
         console.error('Error in /api/upload_new_video:', error.message);
-        return res.status(500).json({
-            error: `Failed to process video: ${error.message}`
-        });
+        // Clean up partially downloaded file if it exists
+        if (downloadedFilePath && fs.existsSync(downloadedFilePath)) {
+            try { fs.unlinkSync(downloadedFilePath); } catch (e) {}
+        }
+        // Only send error response if headers not sent yet
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Failed to process video: ${error.message}` });
+        }
+    } finally {
+        // Always release both locks when download+render phase is done
+        processingProfiles.delete(profile.id);
+        processingVideoIds.delete(video_id);
+        console.log(`[${profile.name}] Processing lock released for video_id=${video_id}`);
     }
 });
 
-// Automation Trigger
-const runningProfiles = new Set();
-const manualBrowsers = new Map(); // profileId -> browserContext
-const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
+// Automation Trigger (declarations moved to before /api/upload_new_video)
 
 
 app.post('/api/start', async (req, res) => {
@@ -914,7 +887,7 @@ app.post('/api/start', async (req, res) => {
     if (profileId) {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) return res.status(404).json({ error: 'Profile not found' });
-        if (runningProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running' });
+        if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running or processing a video' });
 
         runSingleProfile(profile);
         return res.json({ status: 'started', profile: profile.name });
@@ -928,7 +901,7 @@ app.post('/api/start', async (req, res) => {
                 return res.status(400).json({ error: 'No matching profiles for the given selection' });
             }
         }
-        const idleProfiles = profiles.filter((p) => !runningProfiles.has(p.id));
+        const idleProfiles = profiles.filter((p) => !runningProfiles.has(p.id) && !processingProfiles.has(p.id));
         if (idleProfiles.length === 0) {
             return res.status(400).json({
                 error:
@@ -955,8 +928,8 @@ app.post('/api/open-profile', async (req, res) => {
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    if (runningProfiles.has(profileId)) {
-        return res.status(400).json({ error: 'Profile is currently running automation' });
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently running automation or processing a video' });
     }
 
     if (manualBrowsers.has(profileId)) {
@@ -1233,6 +1206,23 @@ async function runSingleProfile(profile) {
                 db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
             }
         }, 30000);
+    }
+}
+
+const TELEGRAM_TOKEN = "7952619216:AAFO_cgfDyV1TRism4j7shaaTIgGdtxF6pU";
+const TELEGRAM_CHAT_ID = "1370074402";
+
+async function sendTelegramNotification(message) {
+    try {
+        const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+        await axios.post(url, {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            parse_mode: 'HTML'
+        });
+        console.log(`[Telegram] Message sent: ${message.replace(/<[^>]*>/g, '')}`);
+    } catch (err) {
+        console.error('Failed to send Telegram notification:', err.message);
     }
 }
 
@@ -1674,6 +1664,43 @@ async function uploadVideo(profile, videoFolder, videos) {
 
             log(`Starting Post click sequence...`);
             let clickedPost = false;
+            let capturedVideoId = null;
+
+            // Intercept TikTok API responses to capture the video ID
+            const responseHandler = async (response) => {
+                try {
+                    const url = response.url();
+                    const status = response.status();
+                    if (status >= 200 && status < 300 &&
+                        (url.includes('/publish') || url.includes('/create') || url.includes('/post') ||
+                         url.includes('/upload') || url.includes('/item'))) {
+                        const contentType = response.headers()['content-type'] || '';
+                        if (contentType.includes('json')) {
+                            const text = await response.text().catch(() => '');
+                            if (text) {
+                                // Search for video/item ID patterns in the response body
+                                const idPatterns = [
+                                    /"publish_id"\s*:\s*"(\d+)"/,
+                                    /"video_id"\s*:\s*"(\d+)"/,
+                                    /"item_id"\s*:\s*"(\d+)"/,
+                                    /"aweme_id"\s*:\s*"(\d+)"/,
+                                    /"id"\s*:\s*"(\d{15,})"/,
+                                ];
+                                for (const pattern of idPatterns) {
+                                    const match = text.match(pattern);
+                                    if (match && match[1]) {
+                                        capturedVideoId = match[1];
+                                        log(`Captured video ID from API: ${capturedVideoId} (via ${url.split('?')[0]})`);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) { /* silently ignore */ }
+            };
+            page.on('response', responseHandler);
+
             for (let clickAttempt = 0; clickAttempt < 10; clickAttempt++) {
                 await dismissPopups(page);
 
@@ -1730,8 +1757,33 @@ async function uploadVideo(profile, videoFolder, videos) {
                 if (clickedPost) break;
             }
 
+            // Remove the response listener
+            page.removeListener('response', responseHandler);
+
             if (clickedPost) {
                 log(`Finalizing upload for ${videoFileName}...`);
+                let videoLink = null;
+
+                // Build the video link from the captured video ID
+                if (capturedVideoId) {
+                    videoLink = `https://www.tiktok.com/@${profile.name}/video/${capturedVideoId}`;
+                    log(`Built video link from captured ID: ${videoLink}`);
+                } else {
+                    // Fallback: try to find a video ID from the current page URL
+                    try {
+                        const currentUrl = page.url();
+                        const urlMatch = currentUrl.match(/\/video\/(\d+)/);
+                        if (urlMatch) {
+                            videoLink = `https://www.tiktok.com/@${profile.name}/video/${urlMatch[1]}`;
+                            log(`Built video link from current URL: ${videoLink}`);
+                        } else {
+                            log(`No video ID captured from API or URL.`);
+                        }
+                    } catch (e) {
+                        log(`Error checking URL for video ID: ${e.message}`);
+                    }
+                }
+
                 try {
                     if (fs.existsSync(videoPath)) {
                         fs.unlinkSync(videoPath);
@@ -1740,6 +1792,19 @@ async function uploadVideo(profile, videoFolder, videos) {
                     uploadedCount++;
                 } catch (err) {
                     log(`ERROR deleting file: ${err.message}`);
+                }
+
+                try {
+                    let message = `🎉 <b>Upload TikTok thành công!</b>\n` +
+                                  `👤 <b>Profile:</b> <code>${profile.name}</code>\n` +
+                                  `📹 <b>Video:</b> <code>${videoFileName}</code>\n` +
+                                  `📅 <b>Thời gian:</b> <code>${new Date().toLocaleString('vi-VN')}</code>`;
+                    if (videoLink) {
+                        message += `\n🔗 <b>Link video:</b> <a href="${videoLink}">${videoLink}</a>`;
+                    }
+                    await sendTelegramNotification(message);
+                } catch (telegramErr) {
+                    log(`ERROR sending Telegram notification: ${telegramErr.message}`);
                 }
 
                 // Wait before next loop iteration to let things settle
@@ -1803,8 +1868,8 @@ app.post('/api/engage', async (req, res) => {
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    if (runningProfiles.has(profileId)) {
-        return res.status(400).json({ error: 'Profile is currently running upload automation' });
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently running upload automation or processing a video' });
     }
     if (engagingProfiles.has(profileId)) {
         return res.status(400).json({ error: 'Profile is already engaging' });
@@ -2295,11 +2360,11 @@ function checkAndRunSchedules() {
         if (scheduledProfiles.length > 0) {
             console.log(`[Scheduler] Found ${scheduledProfiles.length} profiles to run at ${currentTime}`);
             scheduledProfiles.forEach(profile => {
-                if (!runningProfiles.has(profile.id)) {
+                if (!runningProfiles.has(profile.id) && !processingProfiles.has(profile.id)) {
                     console.log(`[Scheduler] Triggering automation for: ${profile.name}`);
                     runSingleProfile(profile).catch(err => console.error(`[Scheduler] Error running ${profile.name}:`, err));
                 } else {
-                    console.log(`[Scheduler] Profile ${profile.name} is already running, skipping scheduled trigger.`);
+                    console.log(`[Scheduler] Profile ${profile.name} is already running or processing a video, skipping scheduled trigger.`);
                 }
             });
         }
