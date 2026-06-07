@@ -1569,13 +1569,24 @@ async function uploadVideo(profile, videoFolder, videos) {
             }
             // --- END NEW TASKS ---
 
+            // --- TASK: Wait for video upload to complete ---
+            try {
+                log("Waiting for video upload to complete...");
+                const cancelBtn = page.locator('button:has-text("Cancel")');
+                await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
+                log("Upload complete (Cancel button is gone). Waiting 5s for UI to settle...");
+                await page.waitForTimeout(5000);
+            } catch (uploadErr) {
+                log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
+            }
+
             // --- TASK: Content Check Lite ---
             let checkSuccess = true;
             try {
                 log(`Starting Content check lite validation...`);
                 // Wait for toggle/switch container to be attached
                 const headline = page.locator('.headline-wrapper', { hasText: 'Content check lite' });
-                await headline.waitFor({ timeout: 15000 }).catch(() => null);
+                await headline.waitFor({ timeout: 5000 }).catch(() => null);
 
                 if (await headline.count() > 0) {
                     const switchContent = headline.locator('.Switch__content');
@@ -1615,7 +1626,11 @@ async function uploadVideo(profile, videoFolder, videos) {
                                 const readyEls = Array.from(document.querySelectorAll('.status-result.status-ready'));
                                 const visibleReady = readyEls.find(el => el.getAttribute('data-show') === 'true');
                                 if (visibleReady) {
-                                    return 'ready_or_limit';
+                                    const text = visibleReady.innerText || "";
+                                    if (text.includes("limit") || text.includes("government") || text.includes("politician")) {
+                                        return 'limit_or_restricted';
+                                    }
+                                    return 'ready_initial';
                                 }
                                 return 'unknown';
                             });
@@ -1625,7 +1640,7 @@ async function uploadVideo(profile, videoFolder, videos) {
                             if (status === 'success') {
                                 checkSuccess = true;
                                 break;
-                            } else if (status === 'checking' || status === 'unknown') {
+                            } else if (status === 'checking' || status === 'unknown' || status === 'ready_initial') {
                                 // Stuck check retry logic: If waiting for 3 minutes and retry has not been done yet, click twice
                                 if (!toggledRetry && (Date.now() - checkStartTime > 3 * 60 * 1000)) {
                                     log("Stuck in checking for 3 minutes. Toggling Content check lite off and on again...");
