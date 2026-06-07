@@ -1259,7 +1259,7 @@ async function uploadVideo(profile, videoFolder, videos) {
     };
 
     try {
-        const page = await browser.newPage();
+        let page = await browser.newPage();
         log(`Automation started for profile: ${profile.name}`);
 
         if (videos.length === 0) {
@@ -1273,7 +1273,11 @@ async function uploadVideo(profile, videoFolder, videos) {
             : videos.length;
         const uploadLimit = Math.min(videos.length, maxUploads);
 
-        for (let i = 0; i < uploadLimit; i++) {
+        for (let i = 0; i < videos.length; i++) {
+            if (uploadedCount >= maxUploads) {
+                log(`Reached target upload count: ${uploadedCount}. Stopping.`);
+                break;
+            }
             const videoFileName = videos[i];
             const videoPath = path.join(videoFolder, videoFileName);
 
@@ -1564,6 +1568,113 @@ async function uploadVideo(profile, videoFolder, videos) {
                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_task_fail.png`) }).catch(() => null);
             }
             // --- END NEW TASKS ---
+
+            // --- TASK: Content Check Lite ---
+            let checkSuccess = true;
+            try {
+                log(`Starting Content check lite validation...`);
+                // Wait for toggle/switch container to be attached
+                const headline = page.locator('.headline-wrapper', { hasText: 'Content check lite' });
+                await headline.waitFor({ timeout: 15000 }).catch(() => null);
+
+                if (await headline.count() > 0) {
+                    const switchContent = headline.locator('.Switch__content');
+                    if (await switchContent.count() > 0) {
+                        const isChecked = await switchContent.getAttribute('data-state') === 'checked' || await switchContent.getAttribute('aria-checked') === 'true';
+                        if (!isChecked) {
+                            log("Content check lite is not enabled. Enabling it...");
+                            await switchContent.click({ force: true });
+                        } else {
+                            log("Content check lite is already enabled.");
+                        }
+
+                        log("Waiting for Content check lite to complete...");
+                        let checkStartTime = Date.now();
+                        const maxCheckTime = 12 * 60 * 1000; // 12 minutes max
+                        let toggledRetry = false;
+                        checkSuccess = false;
+
+                        while (Date.now() - checkStartTime < maxCheckTime) {
+                            const status = await page.evaluate(() => {
+                                const successEl = document.querySelector('.status-result.status-success');
+                                if (successEl && successEl.getAttribute('data-show') === 'true') {
+                                    return 'success';
+                                }
+                                const warnEl = document.querySelector('.status-result.status-warn');
+                                if (warnEl && warnEl.getAttribute('data-show') === 'true') {
+                                    return 'warn';
+                                }
+                                const errorEl = document.querySelector('.status-result.status-error');
+                                if (errorEl && errorEl.getAttribute('data-show') === 'true') {
+                                    return 'error';
+                                }
+                                const checkingEl = document.querySelector('.status-result.status-checking');
+                                if (checkingEl && checkingEl.getAttribute('data-show') === 'true') {
+                                    return 'checking';
+                                }
+                                const readyEls = Array.from(document.querySelectorAll('.status-result.status-ready'));
+                                const visibleReady = readyEls.find(el => el.getAttribute('data-show') === 'true');
+                                if (visibleReady) {
+                                    return 'ready_or_limit';
+                                }
+                                return 'unknown';
+                            });
+
+                            log(`Content check status: ${status}`);
+
+                            if (status === 'success') {
+                                checkSuccess = true;
+                                break;
+                            } else if (status === 'checking' || status === 'unknown') {
+                                // Stuck check retry logic: If waiting for 3 minutes and retry has not been done yet, click twice
+                                if (!toggledRetry && (Date.now() - checkStartTime > 3 * 60 * 1000)) {
+                                    log("Stuck in checking for 3 minutes. Toggling Content check lite off and on again...");
+                                    try {
+                                        await switchContent.click({ force: true });
+                                        await page.waitForTimeout(1000);
+                                        await switchContent.click({ force: true });
+                                        await page.waitForTimeout(2000);
+                                        toggledRetry = true;
+                                        checkStartTime = Date.now(); // Reset timer after toggling
+                                    } catch (toggleErr) {
+                                        log(`Failed to toggle retry switch: ${toggleErr.message}`);
+                                    }
+                                }
+                                await page.waitForTimeout(5000);
+                            } else {
+                                log(`Content check failed/restricted/warned/errored with status: ${status}`);
+                                break;
+                            }
+                        }
+                    } else {
+                        log("Warning: Content check switch content selector not found.");
+                    }
+                } else {
+                    log("Warning: Content check lite header not found on this page.");
+                }
+            } catch (checkErr) {
+                log(`Error during Content check lite: ${checkErr.message}`);
+                checkSuccess = false;
+            }
+
+            if (!checkSuccess) {
+                log(`Content check failed. Skipping posting and deleting video file.`);
+                try {
+                    if (fs.existsSync(videoPath)) {
+                        fs.unlinkSync(videoPath);
+                        log(`Deleted ${videoFileName} due to failed content check.`);
+                    }
+                } catch (err) {
+                    log(`ERROR deleting file: ${err.message}`);
+                }
+
+                // Discard the upload by closing the page and opening a new one
+                log("Resetting page to discard current upload...");
+                await page.close().catch(() => null);
+                page = await browser.newPage();
+                continue; // Skip rest of loop and process next video
+            }
+            // --- END TASK: Content Check Lite ---
 
             // --- TASK 3: Scheduled Publishing ---
             if (profile.auto_increment_schedule) {
