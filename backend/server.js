@@ -1627,8 +1627,11 @@ async function uploadVideo(profile, videoFolder, videos) {
                                 const visibleReady = readyEls.find(el => el.getAttribute('data-show') === 'true');
                                 if (visibleReady) {
                                     const text = visibleReady.innerText || "";
-                                    if (text.includes("limit") || text.includes("government") || text.includes("politician")) {
-                                        return 'limit_or_restricted';
+                                    if (text.includes("limit")) {
+                                        return 'limit_reached';
+                                    }
+                                    if (text.includes("government") || text.includes("politician")) {
+                                        return 'restricted';
                                     }
                                     return 'ready_initial';
                                 }
@@ -1637,7 +1640,10 @@ async function uploadVideo(profile, videoFolder, videos) {
 
                             log(`Content check status: ${status}`);
 
-                            if (status === 'success') {
+                            if (status === 'success' || status === 'limit_reached') {
+                                if (status === 'limit_reached') {
+                                    log("Daily content check limit reached. Proceeding to post without safety check validation.");
+                                }
                                 checkSuccess = true;
                                 break;
                             } else if (status === 'checking' || status === 'unknown' || status === 'ready_initial') {
