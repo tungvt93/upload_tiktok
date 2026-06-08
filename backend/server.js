@@ -3,7 +3,9 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+chromium.use(StealthPlugin());
 import Database from 'better-sqlite3';
 import { exec, spawn } from 'child_process';
 import axios from 'axios';
@@ -51,12 +53,259 @@ const OLD_DB_PATH = path.join(DB_DIR, 'db.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const EXTENSIONS_DIR = path.join(__dirname, '..', 'extensions');
+const URBAN_EXTENSION_PATH = path.join(EXTENSIONS_DIR, 'urban-vpn');
+const TOKEN_CACHE_PATH = path.join(EXTENSIONS_DIR, '.urban-token-cache.json');
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR);
 if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 if (!fs.existsSync(EXTENSIONS_DIR)) fs.mkdirSync(EXTENSIONS_DIR);
+
+// --- Anti-bot-detection: shared browser options and init script ---
+function createBrowserOptions(profileName) {
+    const options = {
+        headless: false,
+        ignoreDefaultArgs: [
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--enable-automation'
+        ],
+        args: [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process,BlockInsecurePrivateNetworkRequests',
+            '--no-default-browser-check',
+            '--no-first-run',
+            '--disable-default-apps',
+            '--disable-popup-blocking',
+            '--disable-prompt-on-repost',
+            '--disable-background-timer-throttling',
+            '--disable-renderer-backgrounding',
+            '--disable-dev-shm-usage',
+            '--disable-sync',
+            '--disable-translate',
+            '--no-service-autorun',
+            '--disable-component-update',
+            '--disable-hang-monitor',
+            '--disable-ipc-flooding-protection',
+            '--password-store=basic',
+            '--use-mock-keychain'
+        ]
+    };
+
+    const manifestPath = path.join(URBAN_EXTENSION_PATH, 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+        options.args.push(`--load-extension=${URBAN_EXTENSION_PATH}`);
+        console.log(`[${profileName}] Loading Urban VPN extension...`);
+    }
+
+    return options;
+}
+
+
+// --- Urban VPN token cache helpers ---
+function loadTokenCache() {
+    try {
+        if (fs.existsSync(TOKEN_CACHE_PATH)) {
+            const data = JSON.parse(fs.readFileSync(TOKEN_CACHE_PATH, 'utf8'));
+            if (data.authToken && data.securityToken) {
+                // Check if security token is expired
+                try {
+                    const secToken = JSON.parse(data.securityToken);
+                    if (secToken.expirationTime && Date.now() > secToken.expirationTime) {
+                        console.log('Urban VPN: cached security token expired, will re-register');
+                        return null;
+                    }
+                } catch (e) { /* can't parse, proceed with cached */ }
+                // Check if auth token is explicitly expired
+                try {
+                    const authToken = JSON.parse(data.authToken);
+                    if (authToken.expired === true) {
+                        console.log('Urban VPN: cached auth token expired, will re-register');
+                        return null;
+                    }
+                } catch (e) { /* can't parse, proceed with cached */ }
+                return data;
+            }
+        }
+    } catch (e) { /* ignore corrupt cache */ }
+    return null;
+}
+
+function saveTokenCache(tokens) {
+    try {
+        fs.writeFileSync(TOKEN_CACHE_PATH, JSON.stringify(tokens, null, 2));
+    } catch (e) {
+        console.error('Failed to save Urban VPN token cache:', e.message);
+    }
+}
+
+async function initUrbanVpnExtension(browser, profileName) {
+    let extensionId = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+        const workers = await browser.serviceWorkers();
+        for (const sw of workers) {
+            if (sw.url().includes('chrome-extension://')) {
+                const match = sw.url().match(/chrome-extension:\/\/([^/]+)/);
+                if (match) { extensionId = match[1]; break; }
+            }
+        }
+        if (extensionId) break;
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    if (!extensionId) {
+        console.log(`[${profileName}] Urban VPN: service worker not found`);
+        return;
+    }
+    console.log(`[${profileName}] Urban VPN extension: ${extensionId}`);
+
+    const extUrl = `chrome-extension://${extensionId}/popup/index.html`;
+
+    // Try cached tokens first — must use extension page for chrome.storage access
+    const cached = loadTokenCache();
+    if (cached) {
+        const p = await browser.newPage();
+        // Open a minimal extension page just to get chrome.storage access
+        await p.goto(extUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
+        await p.waitForTimeout(1500);
+
+        // Check if registration error already showing (popup loaded before token injection)
+        const hasError = await p.evaluate(() => {
+            return document.body.innerText.includes('Registration error');
+        }).catch(() => false);
+
+        // Inject cached tokens
+        await p.evaluate((tokens) => {
+            return new Promise(resolve => {
+                chrome.storage.local.set({
+                    AUTH_ANONYMOUS_AUTH_TOKEN: tokens.authToken,
+                    AUTH_ANONYMOUS_SECURITY_TOKEN: tokens.securityToken
+                }, resolve);
+            });
+        }, cached);
+        console.log(`[${profileName}] Urban VPN: injected cached tokens`);
+
+        // If registration error was showing, reload to let popup pick up tokens
+        if (hasError) {
+            console.log(`[${profileName}] Urban VPN: reloading popup after token injection`);
+            await p.goto(extUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
+            await p.waitForTimeout(3000);
+
+            const stillError = await p.evaluate(() => {
+                return document.body.innerText.includes('Registration error');
+            }).catch(() => true);
+
+            if (stillError) {
+                console.log(`[${profileName}] Urban VPN: still showing registration error after token injection, tokens may be expired`);
+            } else {
+                console.log(`[${profileName}] Urban VPN: registration OK with cached tokens`);
+            }
+        }
+
+        await p.close().catch(() => null);
+        await closeUrbanVpnTabs(browser, profileName);
+        return;
+    }
+
+    // No cached tokens — try registration once, then retry in background if rate-limited
+    console.log(`[${profileName}] Urban VPN: no valid cached tokens, attempting registration...`);
+    {
+        const extPage = await browser.newPage();
+        await extPage.goto(extUrl, {
+            waitUntil: 'domcontentloaded', timeout: 10000
+        }).catch(() => null);
+        await extPage.waitForTimeout(5000);
+
+        const hasError = await extPage.evaluate(() => {
+            return document.body.innerText.includes('Registration error');
+        }).catch(() => true);
+
+        if (!hasError) {
+            console.log(`[${profileName}] Urban VPN: registration OK`);
+            const tokens = await extPage.evaluate(() => {
+                return new Promise(resolve => {
+                    chrome.storage.local.get([
+                        'AUTH_ANONYMOUS_AUTH_TOKEN',
+                        'AUTH_ANONYMOUS_SECURITY_TOKEN'
+                    ], resolve);
+                });
+            });
+            await extPage.close().catch(() => null);
+            if (tokens.AUTH_ANONYMOUS_AUTH_TOKEN) {
+                saveTokenCache({
+                    authToken: tokens.AUTH_ANONYMOUS_AUTH_TOKEN,
+                    securityToken: tokens.AUTH_ANONYMOUS_SECURITY_TOKEN
+                });
+                console.log(`[${profileName}] Urban VPN: tokens cached for reuse`);
+            }
+            await closeUrbanVpnTabs(browser, profileName);
+            return;
+        }
+        await extPage.close().catch(() => null);
+        console.log(`[${profileName}] Urban VPN: registration failed (rate-limited), will retry in background`);
+    }
+
+    // Background retry loop (non-blocking) — retry with delays, harmless if browser closed
+    (async () => {
+        const delays = [2 * 60 * 1000, 5 * 60 * 1000, 10 * 60 * 1000];
+        for (let i = 0; i < delays.length; i++) {
+            await new Promise(r => setTimeout(r, delays[i]));
+            try {
+                console.log(`[${profileName}] Urban VPN: background retry ${i + 1}...`);
+                const p = await browser.newPage();
+                await p.goto(extUrl, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
+                await p.waitForTimeout(5000);
+                const err = await p.evaluate(() => {
+                    return document.body.innerText.includes('Registration error');
+                }).catch(() => true);
+                if (!err) {
+                    const tokens = await p.evaluate(() => {
+                        return new Promise(resolve => {
+                            chrome.storage.local.get([
+                                'AUTH_ANONYMOUS_AUTH_TOKEN',
+                                'AUTH_ANONYMOUS_SECURITY_TOKEN'
+                            ], resolve);
+                        });
+                    });
+                    await p.close().catch(() => null);
+                    if (tokens.AUTH_ANONYMOUS_AUTH_TOKEN) {
+                        saveTokenCache({
+                            authToken: tokens.AUTH_ANONYMOUS_AUTH_TOKEN,
+                            securityToken: tokens.AUTH_ANONYMOUS_SECURITY_TOKEN
+                        });
+                        console.log(`[${profileName}] Urban VPN: background retry SUCCESS, tokens cached`);
+                    }
+                    await closeUrbanVpnTabs(browser, profileName).catch(() => {});
+                    return;
+                }
+                await p.close().catch(() => null);
+                console.log(`[${profileName}] Urban VPN: background retry ${i + 1} still rate-limited`);
+                await closeUrbanVpnTabs(browser, profileName).catch(() => {});
+            } catch (e) {
+                console.log(`[${profileName}] Urban VPN: background retry ${i + 1} error (browser closed?): ${e.message}`);
+                return;
+            }
+        }
+        console.log(`[${profileName}] Urban VPN: all background retries exhausted`);
+    })();
+
+    await closeUrbanVpnTabs(browser, profileName);
+}
+
+async function closeUrbanVpnTabs(browserContext, profileName) {
+    try {
+        const pages = browserContext.pages();
+        for (const p of pages) {
+            const url = p.url();
+            if (url.includes('urban-vpn.com/thank-you')) {
+                console.log(`[${profileName}] Closing Urban VPN tab: ${url}`);
+                await p.close().catch(() => null);
+            }
+        }
+    } catch (e) {
+        // silently ignore
+    }
+}
 
 // Init SQLite DB
 const db = new Database(DB_PATH);
@@ -882,14 +1131,14 @@ app.post('/api/upload_new_video', async (req, res) => {
 
 
 app.post('/api/start', async (req, res) => {
-    const { profileId, profileIds, runMode } = req.body;
+    const { profileId, profileIds, runMode, country } = req.body;
 
     if (profileId) {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) return res.status(404).json({ error: 'Profile not found' });
         if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running or processing a video' });
 
-        runSingleProfile(profile);
+        runSingleProfile(profile, country);
         return res.json({ status: 'started', profile: profile.name });
     } else {
         const allRows = db.prepare('SELECT * FROM profiles').all();
@@ -913,16 +1162,16 @@ app.post('/api/start', async (req, res) => {
 
         const mode = runMode === 'sequential' ? 'sequential' : 'parallel';
         if (mode === 'sequential') {
-            runAllSequential(idleProfiles).catch((err) => console.error('Sequential execution error:', err));
+            runAllSequential(idleProfiles, country).catch((err) => console.error('Sequential execution error:', err));
         } else {
-            runAllParallel(idleProfiles);
+            runAllParallel(idleProfiles, country);
         }
         return res.json({ status: 'started', count: idleProfiles.length, runMode: mode });
     }
 });
 
 app.post('/api/open-profile', async (req, res) => {
-    const { profileId } = req.body;
+    const { profileId, country } = req.body;
     if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
 
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
@@ -938,12 +1187,7 @@ app.post('/api/open-profile', async (req, res) => {
 
     try {
         const userDataDir = path.join(PROFILES_DIR, profile.name);
-        const browserOptions = {
-            headless: false,
-            args: [
-                '--disable-blink-features=AutomationControlled'
-            ]
-        };
+        const browserOptions = createBrowserOptions(profile.name);
 
         if (profile.proxy) {
             const proxyConfig = parseProxy(profile.proxy);
@@ -965,14 +1209,404 @@ app.post('/api/open-profile', async (req, res) => {
         await page.goto('https://www.tiktok.com', { waitUntil: 'domcontentloaded' }).catch(() => null);
 
         res.json({ status: 'opened', profile: profile.name });
+
+        initUrbanVpnExtension(browser, profile.name).then(async () => {
+            if (country) {
+                await new Promise(r => setTimeout(r, 2000));
+                await connectUrbanVpnToCountry(browser, profile.name, country);
+            }
+        }).catch(err => {
+            console.log(`[${profile.name}] Urban VPN init error: ${err.message}`);
+        });
     } catch (error) {
         console.error(`[${profile.name}] Failed to open browser:`, error);
         res.status(500).json({ error: `Failed to open browser: ${error.message}` });
     }
 });
 
+// Inspect Urban VPN extension popup DOM
+app.post('/api/urban-vpn/inspect', async (req, res) => {
+    const { profileId } = req.body;
+    if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
 
-async function runAllParallel(profilesToRun) {
+    const browser = manualBrowsers.get(profileId);
+    if (!browser) return res.status(400).json({ error: 'Profile browser not open' });
+
+    try {
+        const extensionId = await getUrbanExtensionId(browser);
+        if (!extensionId) return res.status(400).json({ error: 'Extension not found' });
+
+        const page = await browser.newPage();
+        await page.goto(`chrome-extension://${extensionId}/popup/index.html`, { waitUntil: 'domcontentloaded', timeout: 10000 });
+        await page.waitForTimeout(3000);
+
+        const dom = await page.evaluate(() => {
+            const all = document.body.querySelectorAll('*');
+            const elements = [];
+            all.forEach(el => {
+                const text = (el.textContent || '').trim().replace(/[\x00-\x1f]/g, '').slice(0, 100);
+                const tag = el.tagName.toLowerCase();
+                const cls = el.className?.toString() || '';
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0 && text.length > 0 && text.length < 50) {
+                    elements.push({ tag, cls: cls.slice(0, 60), text, x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) });
+                }
+            });
+            return elements;
+        });
+
+        await page.close().catch(() => null);
+        res.json({ extensionId, elements: dom });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+// Helper: get Urban VPN extension ID from a browser context
+async function getUrbanExtensionId(browser) {
+    const workers = await browser.serviceWorkers();
+    for (const sw of workers) {
+        if (sw.url().includes('chrome-extension://')) {
+            const match = sw.url().match(/chrome-extension:\/\/([^/]+)/);
+            if (match) return match[1];
+        }
+    }
+    return null;
+}
+
+// Helper: connect Urban VPN to a specific country (reusable from any browser context)
+function getCountryCode(name) {
+    const map = {
+        'united states': 'us', 'united kingdom': 'gb', 'canada': 'ca', 'germany': 'de',
+        'france': 'fr', 'netherlands': 'nl', 'japan': 'jp', 'singapore': 'sg',
+        'australia': 'au', 'south korea': 'kr', 'hong kong': 'hk', 'taiwan': 'tw',
+        'india': 'in', 'brazil': 'br', 'mexico': 'mx', 'italy': 'it', 'spain': 'es',
+        'sweden': 'se', 'switzerland': 'ch', 'poland': 'pl', 'russia': 'ru',
+        'argentina': 'ar', 'austria': 'at', 'belgium': 'be', 'chile': 'cl',
+        'colombia': 'co', 'denmark': 'dk', 'finland': 'fi', 'greece': 'gr',
+        'indonesia': 'id', 'ireland': 'ie', 'malaysia': 'my', 'new zealand': 'nz',
+        'norway': 'no', 'peru': 'pe', 'philippines': 'ph', 'portugal': 'pt',
+        'romania': 'ro', 'south africa': 'za', 'thailand': 'th', 'turkey': 'tr',
+        'ukraine': 'ua', 'vietnam': 'vn', 'egypt': 'eg', 'israel': 'il',
+        'czech republic': 'cz', 'hungary': 'hu',
+    };
+    return map[name.toLowerCase()] || name;
+}
+
+async function connectUrbanVpnToCountry(browser, profileName, country, log = console.log) {
+    const extensionId = await getUrbanExtensionId(browser);
+    if (!extensionId) {
+        log(`[${profileName}] Urban VPN: extension not found, cannot connect to ${country}`);
+        return { error: 'Extension not found' };
+    }
+
+    const extUrl = `chrome-extension://${extensionId}/popup/index.html`;
+    const page = await browser.newPage();
+    await page.goto(extUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await page.waitForTimeout(5000);
+
+    // Dismiss any interstitial pages (rate-us, etc.)
+    for (let i = 0; i < 3; i++) {
+        const dismissed = await page.evaluate(() => {
+            const btns = document.body.querySelectorAll('button, a, div[role="button"]');
+            for (const btn of btns) {
+                const text = (btn.textContent || '').trim().toLowerCase();
+                const cls = (btn.className?.toString() || '').toLowerCase();
+                if (text === 'close' || text === 'skip' || text === 'no thanks' ||
+                    text === 'not now' || text === 'later' || cls.includes('close')) {
+                    btn.click();
+                    return text || cls;
+                }
+            }
+            return null;
+        });
+        if (!dismissed) break;
+        log(`[${profileName}] UrbanVPN: dismissed ${dismissed}`);
+        await page.waitForTimeout(2000);
+    }
+
+    // Step 1: Click location selector to open country list
+    await page.waitForTimeout(2000);
+    const locator = page.locator('.location-view, [class*="location-selector"]').first();
+    if (await locator.count() > 0) {
+        await locator.click({ timeout: 5000 }).catch(() => null);
+        log(`[${profileName}] UrbanVPN: opened country list`);
+    }
+    await page.waitForTimeout(4000);
+
+    // Map full country names to ISO codes for Urban VPN matching
+    const countryCode = getCountryCode(country);
+    const searchTerms = [country.toLowerCase(), countryCode.toLowerCase()];
+
+    // Step 2: Find and click target country using Playwright locators
+    let countryClicked = null;
+    const countryTexts = [country, countryCode];
+    for (const searchText of countryTexts) {
+        // Try exact match first
+        const exactBtn = page.locator('button, div, li, span').filter({ hasText: new RegExp(`^${searchText}$`, 'i') }).first();
+        if (await exactBtn.count() > 0) {
+            await exactBtn.click({ timeout: 3000 }).catch(() => null);
+            countryClicked = searchText;
+            break;
+        }
+        // Try contains match
+        const containsBtn = page.locator('button, div, li, span').filter({ hasText: searchText }).first();
+        if (await containsBtn.count() > 0) {
+            await containsBtn.click({ timeout: 3000 }).catch(() => null);
+            countryClicked = searchText;
+            break;
+        }
+    }
+    // Fallback: use evaluate to find and return element position for click
+    if (!countryClicked) {
+        const coords = await page.evaluate((terms) => {
+            const all = document.body.querySelectorAll('div, li, button, p, span');
+            for (const el of all) {
+                const text = (el.textContent || '').trim().toLowerCase();
+                for (const term of terms) {
+                    if (text === term || text.startsWith(term + ' ')) {
+                        let clickable = el;
+                        while (clickable && clickable.tagName !== 'BODY') {
+                            const rect = clickable.getBoundingClientRect();
+                            if (rect.width > 50 && rect.height > 15 && rect.width < 500) {
+                                const x = rect.x + rect.width / 2;
+                                const y = rect.y + rect.height / 2;
+                                return { x, y, text };
+                            }
+                            clickable = clickable.parentElement;
+                        }
+                    }
+                }
+            }
+            return null;
+        }, [country.toLowerCase(), countryCode.toLowerCase()]);
+        if (coords) {
+            await page.mouse.click(coords.x, coords.y);
+            countryClicked = coords.text;
+        }
+    }
+
+    if (!countryClicked) {
+        await page.close().catch(() => null);
+        log(`[${profileName}] UrbanVPN: country "${country}" not found`);
+        return { error: `Country "${country}" not found in list` };
+    }
+    log(`[${profileName}] UrbanVPN: selected ${countryClicked}`);
+    await page.waitForTimeout(5000);
+
+    // Step 3: Click connect button — try multiple strategies
+    // Step 3: Click connect button using Playwright native click
+    let connectResult = null;
+
+    // Strategy 1: Find button with connect text via Playwright locators
+    const connectTexts = ['connect', 'tap to connect', 'tap to connect.', 'connect now', 'click to connect', 'start', 'go'];
+    for (const txt of connectTexts) {
+        const btn = page.locator('button, [role="button"]').filter({ hasText: new RegExp(`^${txt}$`, 'i') }).first();
+        if (await btn.count() > 0 && await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await btn.click({ timeout: 3000 }).catch(() => null);
+            connectResult = 'text:' + txt;
+            break;
+        }
+    }
+
+    // Strategy 2: Click center power button via coordinates
+    if (!connectResult) {
+        const centerCoords = await page.evaluate(() => {
+            const all = Array.from(document.body.querySelectorAll('button, div, [role="button"]'));
+            for (const el of all) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width >= 60 && rect.width <= 250 && rect.height >= 60 && rect.height <= 250
+                    && rect.y > 100 && rect.y < 500 && rect.x > 50) {
+                    const text = (el.textContent || '').trim();
+                    if (text.length <= 30) {
+                        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, size: Math.round(rect.width) + 'x' + Math.round(rect.height) };
+                    }
+                }
+            }
+            return null;
+        });
+        if (centerCoords) {
+            await page.mouse.click(centerCoords.x, centerCoords.y);
+            connectResult = 'center-click(' + centerCoords.size + ')';
+        }
+    }
+
+    // Strategy 3: Fallback — click center area element via coordinates
+    if (!connectResult) {
+        const fallbackCoords = await page.evaluate(() => {
+            const all = Array.from(document.body.querySelectorAll('button, div, [role="button"]'));
+            for (const el of all) {
+                const rect = el.getBoundingClientRect();
+                const text = (el.textContent || '').trim();
+                if (text.length <= 30 && rect.width >= 40 && rect.height >= 40
+                    && rect.y > 150 && rect.y < 450) {
+                    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+                }
+            }
+            return null;
+        });
+        if (fallbackCoords) {
+            await page.mouse.click(fallbackCoords.x, fallbackCoords.y);
+            connectResult = 'fallback-click';
+        }
+    }
+    log(`[${profileName}] UrbanVPN: connect ${connectResult ? 'clicked (' + connectResult + ')' : 'NOT FOUND'}`);
+
+    if (connectResult) {
+        log(`[${profileName}] UrbanVPN: waiting 15s for connection to establish...`);
+        await page.waitForTimeout(15000);
+
+        // Check connection status after waiting
+        const connectionStatus = await page.evaluate(() => {
+            const bodyText = document.body.innerText || '';
+            if (bodyText.includes('Could not connect') || bodyText.includes('Unable to connect')) {
+                // Extract the error message
+                const match = bodyText.match(/(?:Could not connect|Unable to connect)(?: to)?[^.]+/i);
+                return match ? match[0] : 'connection failed';
+            }
+            if (bodyText.includes('Connected') || bodyText.includes('connected')) {
+                return 'connected';
+            }
+            // Check if timer is counting (connecting in progress)
+            if (/\d{2}:\d{2}:\d{2}/.test(bodyText)) {
+                return 'connecting';
+            }
+            return 'unknown';
+        });
+        log(`[${profileName}] UrbanVPN: connection status: ${connectionStatus}`);
+
+        if (connectionStatus !== 'connected' && connectionStatus !== 'connecting' && connectionStatus !== 'unknown') {
+            log(`[${profileName}] UrbanVPN: CONNECTION FAILED — ${connectionStatus}`);
+        }
+    }
+
+    await page.close().catch(() => null);
+
+    // Close any thank-you tabs that opened after connecting
+    await closeUrbanVpnTabs(browser, profileName);
+
+    return { status: 'ok', country: countryClicked, connected: !!connectResult, extensionId };
+}
+
+async function disconnectUrbanVpn(browser, profileName, log = console.log) {
+    const extensionId = await getUrbanExtensionId(browser);
+    if (!extensionId) {
+        log(`[${profileName}] Urban VPN: extension not found, cannot disconnect`);
+        return { error: 'Extension not found' };
+    }
+
+    const extUrl = `chrome-extension://${extensionId}/popup/index.html`;
+    const page = await browser.newPage();
+    await page.goto(extUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await page.waitForTimeout(5000);
+
+    for (let i = 0; i < 3; i++) {
+        const dismissed = await page.evaluate(() => {
+            const btns = document.body.querySelectorAll('button, a, div[role="button"]');
+            for (const btn of btns) {
+                const text = (btn.textContent || '').trim().toLowerCase();
+                const cls = (btn.className?.toString() || '').toLowerCase();
+                if (text === 'close' || text === 'skip' || text === 'no thanks' ||
+                    text === 'not now' || text === 'later' || cls.includes('close')) {
+                    btn.click();
+                    return text || cls;
+                }
+            }
+            return null;
+        });
+        if (!dismissed) break;
+        log(`[${profileName}] UrbanVPN disconnect: dismissed ${dismissed}`);
+        await page.waitForTimeout(2000);
+    }
+
+    // Step: Click disconnect button using Playwright native click
+    let disconnectResult = null;
+
+    // Strategy 1: Find button with disconnect text via Playwright locators
+    const disconnectTexts = ['disconnect', 'tap to disconnect', 'disconnect now', 'stop', 'turn off', 'connected'];
+    for (const txt of disconnectTexts) {
+        const btn = page.locator('button, [role="button"]').filter({ hasText: new RegExp(`^${txt}$|disconnect`, 'i') }).first();
+        if (await btn.count() > 0 && await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await btn.click({ timeout: 3000 }).catch(() => null);
+            disconnectResult = 'text:' + txt;
+            break;
+        }
+    }
+
+    // Strategy 2: Click center power button via coordinates
+    if (!disconnectResult) {
+        const centerCoords = await page.evaluate(() => {
+            const all = Array.from(document.body.querySelectorAll('button, div, [role="button"]'));
+            for (const el of all) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width >= 60 && rect.width <= 250 && rect.height >= 60 && rect.height <= 250
+                    && rect.y > 100 && rect.y < 500 && rect.x > 50) {
+                    const text = (el.textContent || '').trim();
+                    if (text.length <= 30) {
+                        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, size: Math.round(rect.width) + 'x' + Math.round(rect.height) };
+                    }
+                }
+            }
+            return null;
+        });
+        if (centerCoords) {
+            await page.mouse.click(centerCoords.x, centerCoords.y);
+            disconnectResult = 'center-click(' + centerCoords.size + ')';
+        }
+    }
+
+    // Strategy 3: Fallback — click center area element via coordinates
+    if (!disconnectResult) {
+        const fallbackCoords = await page.evaluate(() => {
+            const all = Array.from(document.body.querySelectorAll('button, div, [role="button"]'));
+            for (const el of all) {
+                const rect = el.getBoundingClientRect();
+                const text = (el.textContent || '').trim();
+                if (text.length <= 30 && rect.width >= 40 && rect.height >= 40
+                    && rect.y > 150 && rect.y < 450) {
+                    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+                }
+            }
+            return null;
+        });
+        if (fallbackCoords) {
+            await page.mouse.click(fallbackCoords.x, fallbackCoords.y);
+            disconnectResult = 'fallback-click';
+        }
+    }
+    log(`[${profileName}] UrbanVPN: disconnect ${disconnectResult ? 'clicked (' + disconnectResult + ')' : 'NOT FOUND'}`);
+
+    if (disconnectResult) {
+        log(`[${profileName}] UrbanVPN: waiting 10s for disconnect to complete...`);
+        await page.waitForTimeout(10000);
+    }
+    await page.close().catch(() => null);
+
+    // Close any thank-you tabs
+    await closeUrbanVpnTabs(browser, profileName);
+
+    return { status: 'ok', disconnected: !!disconnectResult };
+}
+
+// Connect Urban VPN to a specific country (manual browser API)
+app.post('/api/urban-vpn/connect', async (req, res) => {
+    const { profileId, country } = req.body;
+    if (!profileId || !country) return res.status(400).json({ error: 'profileId and country are required' });
+
+    const browser = manualBrowsers.get(profileId);
+    if (!browser) return res.status(400).json({ error: 'Profile browser not open' });
+
+    try {
+        const result = await connectUrbanVpnToCountry(browser, 'UrbanVPN', country);
+        if (result.error) return res.status(500).json({ error: result.error });
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function runAllParallel(profilesToRun, country) {
     const maxConcurrency = Number(getConfig('maxConcurrency', 2));
     const queue = [...profilesToRun];
     const active = [];
@@ -984,7 +1618,7 @@ async function runAllParallel(profilesToRun) {
                 continue;
             }
             const profile = queue.shift();
-            const promise = runSingleProfile(profile).finally(() => {
+            const promise = runSingleProfile(profile, country).finally(() => {
                 active.splice(active.indexOf(promise), 1);
             });
             active.push(promise);
@@ -995,10 +1629,10 @@ async function runAllParallel(profilesToRun) {
     processQueue().catch(err => console.error('Parallel execution error:', err));
 }
 
-async function runAllSequential(profilesToRun) {
+async function runAllSequential(profilesToRun, country) {
     for (const profile of profilesToRun) {
         if (runningProfiles.has(profile.id)) continue;
-        await runSingleProfile(profile);
+        await runSingleProfile(profile, country);
     }
 }
 
@@ -1161,9 +1795,17 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     log(`${label} input value after fill: ${actualValue || '<empty>'}`);
 }
 
-async function runSingleProfile(profile) {
+async function runSingleProfile(profile, country) {
     if (runningProfiles.has(profile.id)) return;
     runningProfiles.add(profile.id);
+
+    // Close any existing manual browser for this profile before starting automation
+    const existingBrowser = manualBrowsers.get(profile.id);
+    if (existingBrowser) {
+        console.log(`[${profile.name}] Closing existing manual browser before automation...`);
+        await existingBrowser.close().catch(() => null);
+        manualBrowsers.delete(profile.id);
+    }
 
     console.log(`[${profile.name}] Starting automation...`);
     db.prepare('UPDATE profiles SET status = ?, last_run = ? WHERE id = ?').run('uploading', new Date().toISOString(), profile.id);
@@ -1187,7 +1829,7 @@ async function runSingleProfile(profile) {
         }
 
         // Always open browser to allow login/session management
-        const uploadedCount = await uploadVideo(profile, videoFolder, videos);
+        const uploadedCount = await uploadVideo(profile, videoFolder, videos, country);
 
         if (uploadedCount > 0) {
             db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('success', profile.id);
@@ -1226,17 +1868,12 @@ async function sendTelegramNotification(message) {
     }
 }
 
-async function uploadVideo(profile, videoFolder, videos) {
+async function uploadVideo(profile, videoFolder, videos, country) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
     let lastScheduledTime = null;
 
-    const browserOptions = {
-        headless: false,
-        args: [
-            '--disable-blink-features=AutomationControlled'
-        ]
-    };
+    const browserOptions = createBrowserOptions(profile.name);
 
     if (profile.proxy) {
         const proxyConfig = parseProxy(profile.proxy);
@@ -1257,6 +1894,10 @@ async function uploadVideo(profile, videoFolder, videos) {
             console.error('Failed to write to log file:', e.message);
         }
     };
+
+    initUrbanVpnExtension(browser, profile.name).catch(err => {
+        log(`Urban VPN init error: ${err.message}`);
+    });
 
     try {
         let page = await browser.newPage();
@@ -1788,6 +2429,12 @@ async function uploadVideo(profile, videoFolder, videos) {
             }
             // --- END TASK 3 ---
 
+            // Connect VPN before posting if country is selected
+            if (country) {
+                log(`Connecting Urban VPN to ${country} before posting...`);
+                await connectUrbanVpnToCountry(browser, profile.name, country, log);
+            }
+
             log(`Starting Post click sequence...`);
             let clickedPost = false;
             let capturedVideoId = null;
@@ -1916,6 +2563,13 @@ async function uploadVideo(profile, videoFolder, videos) {
                         log(`SUCCESS: Deleted ${videoFileName} after upload.`);
                     }
                     uploadedCount++;
+
+                    // Disconnect VPN after successful post
+                    if (country) {
+                        log(`Disconnecting Urban VPN after posting...`);
+                        await disconnectUrbanVpn(browser, profile.name, log).catch(e =>
+                            log(`Urban VPN disconnect error: ${e.message}`));
+                    }
                 } catch (err) {
                     log(`ERROR deleting file: ${err.message}`);
                 }
@@ -1988,7 +2642,7 @@ function randomItem(arr) {
 
 // POST /api/engage — Bắt đầu auto engage session
 app.post('/api/engage', async (req, res) => {
-    const { profileId } = req.body;
+    const { profileId, country } = req.body;
     if (!profileId) return res.status(400).json({ error: 'profileId is required' });
 
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
@@ -2002,7 +2656,7 @@ app.post('/api/engage', async (req, res) => {
     }
 
     // Start engage session in background
-    runEngageSession(profile).catch(err =>
+    runEngageSession(profile, country).catch(err =>
         console.error(`[${profile.name}] Engage session error:`, err)
     );
 
@@ -2034,9 +2688,17 @@ app.get('/api/engage/status/:profileId', (req, res) => {
     });
 });
 
-async function runEngageSession(profile) {
+async function runEngageSession(profile, country) {
     const profileId = profile.id;
     const userDataDir = path.join(PROFILES_DIR, profile.name);
+
+    // Close any existing manual browser for this profile before starting engage
+    const existingBrowser = manualBrowsers.get(profileId);
+    if (existingBrowser) {
+        console.log(`[${profile.name}] Closing existing manual browser before engage...`);
+        await existingBrowser.close().catch(() => null);
+        manualBrowsers.delete(profileId);
+    }
 
     const log = (msg) => {
         const entry = `[${new Date().toISOString()}] [${profile.name}][ENGAGE] ${msg}\n`;
@@ -2046,10 +2708,7 @@ async function runEngageSession(profile) {
         } catch (e) { }
     };
 
-    const browserOptions = {
-        headless: false,
-        args: ['--disable-blink-features=AutomationControlled']
-    };
+    const browserOptions = createBrowserOptions(profile.name);
 
     if (profile.proxy) {
         const proxyConfig = parseProxy(profile.proxy);
@@ -2060,6 +2719,15 @@ async function runEngageSession(profile) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+
+    initUrbanVpnExtension(browser, profile.name).then(async () => {
+        if (country) {
+            await new Promise(r => setTimeout(r, 2000));
+            await connectUrbanVpnToCountry(browser, profile.name, country, log);
+        }
+    }).catch(err => {
+        log(`Urban VPN init error: ${err.message}`);
+    });
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
     engagingProfiles.set(profileId, session);

@@ -61,6 +61,7 @@ const ProfileCard = ({
   setEditingValue
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [vpnCountry, setVpnCountry] = useState('');
 
   return (
     <motion.div
@@ -396,6 +397,66 @@ const ProfileCard = ({
                 </label>
               </div>
 
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <Globe size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Urban VPN Country</span>
+                </div>
+                <select
+                  className="input"
+                  style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                  value={vpnCountry}
+                  onChange={(e) => setVpnCountry(e.target.value)}
+                >
+                  <option value="">-- None --</option>
+                  <option value="United States">United States</option>
+                  <option value="United Kingdom">United Kingdom</option>
+                  <option value="Canada">Canada</option>
+                  <option value="Germany">Germany</option>
+                  <option value="France">France</option>
+                  <option value="Netherlands">Netherlands</option>
+                  <option value="Japan">Japan</option>
+                  <option value="Singapore">Singapore</option>
+                  <option value="Australia">Australia</option>
+                  <option value="South Korea">South Korea</option>
+                  <option value="Hong Kong">Hong Kong</option>
+                  <option value="Taiwan">Taiwan</option>
+                  <option value="India">India</option>
+                  <option value="Brazil">Brazil</option>
+                  <option value="Mexico">Mexico</option>
+                  <option value="Spain">Spain</option>
+                  <option value="Italy">Italy</option>
+                  <option value="Sweden">Sweden</option>
+                  <option value="Switzerland">Switzerland</option>
+                  <option value="Poland">Poland</option>
+                  <option value="Turkey">Turkey</option>
+                  <option value="Russia">Russia</option>
+                  <option value="Ukraine">Ukraine</option>
+                  <option value="Argentina">Argentina</option>
+                  <option value="Colombia">Colombia</option>
+                  <option value="Thailand">Thailand</option>
+                  <option value="Vietnam">Vietnam</option>
+                  <option value="Indonesia">Indonesia</option>
+                  <option value="Philippines">Philippines</option>
+                  <option value="Malaysia">Malaysia</option>
+                  <option value="South Africa">South Africa</option>
+                  <option value="Egypt">Egypt</option>
+                  <option value="United Arab Emirates">United Arab Emirates</option>
+                  <option value="Israel">Israel</option>
+                  <option value="Ireland">Ireland</option>
+                  <option value="Belgium">Belgium</option>
+                  <option value="Austria">Austria</option>
+                  <option value="Norway">Norway</option>
+                  <option value="Denmark">Denmark</option>
+                  <option value="Finland">Finland</option>
+                  <option value="Czech Republic">Czech Republic</option>
+                  <option value="Romania">Romania</option>
+                  <option value="Greece">Greece</option>
+                  <option value="Portugal">Portugal</option>
+                  <option value="Chile">Chile</option>
+                </select>
+              </div>
+
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingBottom: '4px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <div style={{
@@ -417,7 +478,7 @@ const ProfileCard = ({
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                   <button
                     className="btn"
-                    onClick={() => onOpen(profile.id)}
+                    onClick={() => onOpen(profile.id, vpnCountry)}
                     style={{
                       background: 'rgba(255, 255, 255, 0.05)',
                       color: 'white',
@@ -433,7 +494,7 @@ const ProfileCard = ({
 
                   <button
                     className="btn"
-                    onClick={() => onStart(profile.id)}
+                    onClick={() => onStart(profile.id, vpnCountry)}
                     disabled={profile.status === 'uploading' || isEngaging}
                     style={{
                       background: profile.status === 'uploading' ? 'transparent' : 'rgba(255, 255, 255, 0.05)',
@@ -455,7 +516,7 @@ const ProfileCard = ({
                   {/* Auto Engage Button */}
                   <button
                     className="btn"
-                    onClick={() => isEngaging ? onStopEngage(profile.id) : onEngage(profile.id)}
+                    onClick={() => isEngaging ? onStopEngage(profile.id) : onEngage(profile.id, vpnCountry)}
                     disabled={profile.status === 'uploading'}
                     title={isEngaging ? 'Dừng Auto Engage' : 'Bắt đầu xem & tương tác TikTok tự động'}
                     style={{
@@ -696,11 +757,11 @@ const App = () => {
     }
   };
 
-  const startAutomation = async (profileId = null) => {
+  const startAutomation = async (profileId = null, country) => {
     setIsLoading(true);
     try {
       if (profileId) {
-        await axios.post('/api/start', { profileId });
+        await axios.post('/api/start', { profileId, country: country || undefined });
         setMessage({
           type: 'success',
           text: 'Automation started for profile'
@@ -752,9 +813,9 @@ const App = () => {
     });
   };
 
-  const openProfile = async (profileId) => {
+  const openProfile = async (profileId, country) => {
     try {
-      await axios.post('/api/open-profile', { profileId });
+      await axios.post('/api/open-profile', { profileId, country: country || undefined });
       setMessage({ type: 'success', text: 'Browser opened for profile' });
       setTimeout(() => setMessage(null), 3000);
     } catch (err) {
@@ -762,9 +823,9 @@ const App = () => {
     }
   };
 
-  const startEngage = async (profileId) => {
+  const startEngage = async (profileId, country) => {
     try {
-      await axios.post('/api/engage', { profileId });
+      await axios.post('/api/engage', { profileId, country: country || undefined });
       setEngagingProfiles(prev => new Set([...prev, profileId]));
       setMessage({ type: 'success', text: 'Auto Engage started! ♥️ TikTok sẽ tự động xem video.' });
       setTimeout(() => setMessage(null), 5000);
