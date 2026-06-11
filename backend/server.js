@@ -196,6 +196,18 @@ try {
     console.error('Migration error (remove_title column):', err);
 }
 
+// Migration: need_content_check — Xác định profile này có cần check content không
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasNeedContentCheck = tableInfo.some((col) => col.name === 'need_content_check');
+    if (!hasNeedContentCheck) {
+        db.exec('ALTER TABLE profiles ADD COLUMN need_content_check INTEGER DEFAULT 1;');
+        console.log('Added need_content_check column to profiles table with default 1');
+    }
+} catch (err) {
+    console.error('Migration error (need_content_check column):', err);
+}
+
 
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
@@ -278,6 +290,11 @@ function parseProxy(proxyStr) {
         server = proxyStr.includes('://') ? proxyStr : `http://${proxyStr}`;
     }
 
+    // Strip trailing slash if present to avoid Chromium proxy authentication issues
+    if (server && server.endsWith('/')) {
+        server = server.slice(0, -1);
+    }
+
     return { server, username, password };
 }
 
@@ -303,7 +320,7 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name, group_id, video_folder, channel_ids } = req.body;
+    const { name, group_id, video_folder, channel_ids, need_content_check } = req.body;
 
     try {
         const id = Date.now().toString();
@@ -312,7 +329,8 @@ app.post('/api/profiles', (req, res) => {
             name,
             group_id,
             video_folder,
-            channel_ids
+            channel_ids,
+            need_content_check
         });
         res.json(profile);
     } catch (err) {
@@ -389,7 +407,7 @@ app.delete('/api/profiles/:id', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -468,6 +486,10 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (remove_title !== undefined) {
         const val = remove_title ? 1 : 0;
         db.prepare('UPDATE profiles SET remove_title = ? WHERE id = ?').run(val, profileId);
+    }
+    if (need_content_check !== undefined) {
+        const val = need_content_check ? 1 : 0;
+        db.prepare('UPDATE profiles SET need_content_check = ? WHERE id = ?').run(val, profileId);
     }
     res.json({ success: true });
 });
@@ -882,14 +904,14 @@ app.post('/api/upload_new_video', async (req, res) => {
 
 
 app.post('/api/start', async (req, res) => {
-    const { profileId, profileIds, runMode } = req.body;
+    const { profileId, profileIds, runMode, limitUploads, uploadLimitCount } = req.body;
 
     if (profileId) {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) return res.status(404).json({ error: 'Profile not found' });
         if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running or processing a video' });
 
-        runSingleProfile(profile);
+        runSingleProfile(profile, !!limitUploads, Number(uploadLimitCount) || 0);
         return res.json({ status: 'started', profile: profile.name });
     } else {
         const allRows = db.prepare('SELECT * FROM profiles').all();
@@ -913,9 +935,9 @@ app.post('/api/start', async (req, res) => {
 
         const mode = runMode === 'sequential' ? 'sequential' : 'parallel';
         if (mode === 'sequential') {
-            runAllSequential(idleProfiles).catch((err) => console.error('Sequential execution error:', err));
+            runAllSequential(idleProfiles, !!limitUploads, Number(uploadLimitCount) || 0).catch((err) => console.error('Sequential execution error:', err));
         } else {
-            runAllParallel(idleProfiles);
+            runAllParallel(idleProfiles, !!limitUploads, Number(uploadLimitCount) || 0);
         }
         return res.json({ status: 'started', count: idleProfiles.length, runMode: mode });
     }
@@ -972,7 +994,7 @@ app.post('/api/open-profile', async (req, res) => {
 });
 
 
-async function runAllParallel(profilesToRun) {
+async function runAllParallel(profilesToRun, limitUploads = false, uploadLimitCount = 0) {
     const maxConcurrency = Number(getConfig('maxConcurrency', 2));
     const queue = [...profilesToRun];
     const active = [];
@@ -984,7 +1006,7 @@ async function runAllParallel(profilesToRun) {
                 continue;
             }
             const profile = queue.shift();
-            const promise = runSingleProfile(profile).finally(() => {
+            const promise = runSingleProfile(profile, limitUploads, uploadLimitCount).finally(() => {
                 active.splice(active.indexOf(promise), 1);
             });
             active.push(promise);
@@ -995,10 +1017,10 @@ async function runAllParallel(profilesToRun) {
     processQueue().catch(err => console.error('Parallel execution error:', err));
 }
 
-async function runAllSequential(profilesToRun) {
+async function runAllSequential(profilesToRun, limitUploads = false, uploadLimitCount = 0) {
     for (const profile of profilesToRun) {
         if (runningProfiles.has(profile.id)) continue;
-        await runSingleProfile(profile);
+        await runSingleProfile(profile, limitUploads, uploadLimitCount);
     }
 }
 
@@ -1161,7 +1183,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     log(`${label} input value after fill: ${actualValue || '<empty>'}`);
 }
 
-async function runSingleProfile(profile) {
+async function runSingleProfile(profile, limitUploads = false, uploadLimitCount = 0) {
     if (runningProfiles.has(profile.id)) return;
     runningProfiles.add(profile.id);
 
@@ -1187,7 +1209,7 @@ async function runSingleProfile(profile) {
         }
 
         // Always open browser to allow login/session management
-        const uploadedCount = await uploadVideo(profile, videoFolder, videos);
+        const uploadedCount = await uploadVideo(profile, videoFolder, videos, limitUploads, uploadLimitCount);
 
         if (uploadedCount > 0) {
             db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('success', profile.id);
@@ -1226,7 +1248,7 @@ async function sendTelegramNotification(message) {
     }
 }
 
-async function uploadVideo(profile, videoFolder, videos) {
+async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
     let lastScheduledTime = null;
@@ -1268,9 +1290,11 @@ async function uploadVideo(profile, videoFolder, videos) {
             return 0;
         }
 
-        const maxUploads = (profile.is_scheduled === 1 && profile.upload_count > 0)
-            ? profile.upload_count
-            : videos.length;
+        const maxUploads = (limitUploads && uploadLimitCount > 0)
+            ? uploadLimitCount
+            : (profile.is_scheduled === 1 && profile.upload_count > 0)
+                ? profile.upload_count
+                : videos.length;
         const uploadLimit = Math.min(videos.length, maxUploads);
 
         for (let i = 0; i < videos.length; i++) {
@@ -1582,100 +1606,104 @@ async function uploadVideo(profile, videoFolder, videos) {
 
             // --- TASK: Content Check Lite ---
             let checkSuccess = true;
-            try {
-                log(`Starting Content check lite validation...`);
-                // Wait for toggle/switch container to be attached
-                const headline = page.locator('.headline-wrapper', { hasText: 'Content check lite' });
-                await headline.waitFor({ timeout: 5000 }).catch(() => null);
+            if (profile.need_content_check !== 0) {
+                try {
+                    log(`Starting Content check lite validation...`);
+                    // Wait for toggle/switch container to be attached
+                    const headline = page.locator('.headline-wrapper', { hasText: 'Content check lite' });
+                    await headline.waitFor({ timeout: 5000 }).catch(() => null);
 
-                if (await headline.count() > 0) {
-                    const switchContent = headline.locator('.Switch__content');
-                    if (await switchContent.count() > 0) {
-                        const isChecked = await switchContent.getAttribute('data-state') === 'checked' || await switchContent.getAttribute('aria-checked') === 'true';
-                        if (!isChecked) {
-                            log("Content check lite is not enabled. Enabling it...");
-                            await switchContent.click({ force: true });
-                        } else {
-                            log("Content check lite is already enabled.");
-                        }
-
-                        log("Waiting for Content check lite to complete...");
-                        let checkStartTime = Date.now();
-                        const maxCheckTime = 12 * 60 * 1000; // 12 minutes max
-                        let toggledRetry = false;
-                        checkSuccess = false;
-
-                        while (Date.now() - checkStartTime < maxCheckTime) {
-                            const status = await page.evaluate(() => {
-                                const successEl = document.querySelector('.status-result.status-success');
-                                if (successEl && successEl.getAttribute('data-show') === 'true') {
-                                    return 'success';
-                                }
-                                const warnEl = document.querySelector('.status-result.status-warn');
-                                if (warnEl && warnEl.getAttribute('data-show') === 'true') {
-                                    return 'warn';
-                                }
-                                const errorEl = document.querySelector('.status-result.status-error');
-                                if (errorEl && errorEl.getAttribute('data-show') === 'true') {
-                                    return 'error';
-                                }
-                                const checkingEl = document.querySelector('.status-result.status-checking');
-                                if (checkingEl && checkingEl.getAttribute('data-show') === 'true') {
-                                    return 'checking';
-                                }
-                                const readyEls = Array.from(document.querySelectorAll('.status-result.status-ready'));
-                                const visibleReady = readyEls.find(el => el.getAttribute('data-show') === 'true');
-                                if (visibleReady) {
-                                    const text = visibleReady.innerText || "";
-                                    if (text.includes("limit")) {
-                                        return 'limit_reached';
-                                    }
-                                    if (text.includes("government") || text.includes("politician")) {
-                                        return 'restricted';
-                                    }
-                                    return 'ready_initial';
-                                }
-                                return 'unknown';
-                            });
-
-                            log(`Content check status: ${status}`);
-
-                            if (status === 'success' || status === 'limit_reached') {
-                                if (status === 'limit_reached') {
-                                    log("Daily content check limit reached. Proceeding to post without safety check validation.");
-                                }
-                                checkSuccess = true;
-                                break;
-                            } else if (status === 'checking' || status === 'unknown' || status === 'ready_initial') {
-                                // Stuck check retry logic: If waiting for 3 minutes and retry has not been done yet, click twice
-                                if (!toggledRetry && (Date.now() - checkStartTime > 3 * 60 * 1000)) {
-                                    log("Stuck in checking for 3 minutes. Toggling Content check lite off and on again...");
-                                    try {
-                                        await switchContent.click({ force: true });
-                                        await page.waitForTimeout(1000);
-                                        await switchContent.click({ force: true });
-                                        await page.waitForTimeout(2000);
-                                        toggledRetry = true;
-                                        checkStartTime = Date.now(); // Reset timer after toggling
-                                    } catch (toggleErr) {
-                                        log(`Failed to toggle retry switch: ${toggleErr.message}`);
-                                    }
-                                }
-                                await page.waitForTimeout(5000);
+                    if (await headline.count() > 0) {
+                        const switchContent = headline.locator('.Switch__content');
+                        if (await switchContent.count() > 0) {
+                            const isChecked = await switchContent.getAttribute('data-state') === 'checked' || await switchContent.getAttribute('aria-checked') === 'true';
+                            if (!isChecked) {
+                                log("Content check lite is not enabled. Enabling it...");
+                                await switchContent.click({ force: true });
                             } else {
-                                log(`Content check failed/restricted/warned/errored with status: ${status}`);
-                                break;
+                                log("Content check lite is already enabled.");
                             }
+
+                            log("Waiting for Content check lite to complete...");
+                            let checkStartTime = Date.now();
+                            const maxCheckTime = 12 * 60 * 1000; // 12 minutes max
+                            let toggledRetry = false;
+                            checkSuccess = false;
+
+                            while (Date.now() - checkStartTime < maxCheckTime) {
+                                const status = await page.evaluate(() => {
+                                    const successEl = document.querySelector('.status-result.status-success');
+                                    if (successEl && successEl.getAttribute('data-show') === 'true') {
+                                        return 'success';
+                                    }
+                                    const warnEl = document.querySelector('.status-result.status-warn');
+                                    if (warnEl && warnEl.getAttribute('data-show') === 'true') {
+                                        return 'warn';
+                                    }
+                                    const errorEl = document.querySelector('.status-result.status-error');
+                                    if (errorEl && errorEl.getAttribute('data-show') === 'true') {
+                                        return 'error';
+                                    }
+                                    const checkingEl = document.querySelector('.status-result.status-checking');
+                                    if (checkingEl && checkingEl.getAttribute('data-show') === 'true') {
+                                        return 'checking';
+                                    }
+                                    const readyEls = Array.from(document.querySelectorAll('.status-result.status-ready'));
+                                    const visibleReady = readyEls.find(el => el.getAttribute('data-show') === 'true');
+                                    if (visibleReady) {
+                                        const text = visibleReady.innerText || "";
+                                        if (text.includes("limit")) {
+                                            return 'limit_reached';
+                                        }
+                                        if (text.includes("government") || text.includes("politician")) {
+                                            return 'restricted';
+                                        }
+                                        return 'ready_initial';
+                                    }
+                                    return 'unknown';
+                                });
+
+                                log(`Content check status: ${status}`);
+
+                                if (status === 'success' || status === 'limit_reached') {
+                                    if (status === 'limit_reached') {
+                                        log("Daily content check limit reached. Proceeding to post without safety check validation.");
+                                    }
+                                    checkSuccess = true;
+                                    break;
+                                } else if (status === 'checking' || status === 'unknown' || status === 'ready_initial') {
+                                    // Stuck check retry logic: If waiting for 3 minutes and retry has not been done yet, click twice
+                                    if (!toggledRetry && (Date.now() - checkStartTime > 3 * 60 * 1000)) {
+                                        log("Stuck in checking for 3 minutes. Toggling Content check lite off and on again...");
+                                        try {
+                                            await switchContent.click({ force: true });
+                                            await page.waitForTimeout(1000);
+                                            await switchContent.click({ force: true });
+                                            await page.waitForTimeout(2000);
+                                            toggledRetry = true;
+                                            checkStartTime = Date.now(); // Reset timer after toggling
+                                        } catch (toggleErr) {
+                                            log(`Failed to toggle retry switch: ${toggleErr.message}`);
+                                        }
+                                    }
+                                    await page.waitForTimeout(5000);
+                                } else {
+                                    log(`Content check failed/restricted/warned/errored with status: ${status}`);
+                                    break;
+                                }
+                            }
+                        } else {
+                            log("Warning: Content check switch content selector not found.");
                         }
                     } else {
-                        log("Warning: Content check switch content selector not found.");
+                        log("Warning: Content check lite header not found on this page.");
                     }
-                } else {
-                    log("Warning: Content check lite header not found on this page.");
+                } catch (checkErr) {
+                    log(`Error during Content check lite: ${checkErr.message}`);
+                    checkSuccess = false;
                 }
-            } catch (checkErr) {
-                log(`Error during Content check lite: ${checkErr.message}`);
-                checkSuccess = false;
+            } else {
+                log("Content check lite is disabled for this profile. Skipping check.");
             }
 
             if (!checkSuccess) {
@@ -1698,7 +1726,7 @@ async function uploadVideo(profile, videoFolder, videos) {
             // --- END TASK: Content Check Lite ---
 
             // --- TASK 3: Scheduled Publishing ---
-            if (profile.auto_increment_schedule) {
+            if (!limitUploads && profile.auto_increment_schedule) {
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
                     if (i === 0) {
@@ -1746,7 +1774,7 @@ async function uploadVideo(profile, videoFolder, videos) {
                 } catch (e) {
                     log(`Auto-increment scheduling failed: ${e.message}`);
                 }
-            } else if (profile.is_scheduled && i >= 3) {
+            } else if (!limitUploads && profile.is_scheduled && i >= 3) {
                 try {
                     log(`Task 3: Scheduling video ${i + 1}...`);
 

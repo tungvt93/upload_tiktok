@@ -53,6 +53,7 @@ const ProfileCard = ({
   onUpdateUploadCount,
   onUpdateNeedsRender,
   onUpdateRemoveTitle,
+  onUpdateNeedContentCheck,
   groups,
   getStatusColor,
   editingId,
@@ -396,6 +397,26 @@ const ProfileCard = ({
                 </label>
               </div>
 
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <input
+                    type="checkbox"
+                    checked={profile.need_content_check !== 0}
+                    onChange={(e) => onUpdateNeedContentCheck(profile.id, e.target.checked)}
+                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                      <ShieldCheck size={14} color="var(--success)" style={{ flexShrink: 0 }} />
+                      Kiểm tra nội dung (Content Check)
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      Bật: tự động kiểm tra bản quyền / nội dung bằng Content Check Lite. Tắt: bỏ qua kiểm tra.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingBottom: '4px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <div style={{
@@ -503,6 +524,7 @@ const App = () => {
   const [newProfileChannelIds, setNewProfileChannelIds] = useState('');
   const [newProfileNeedsRender, setNewProfileNeedsRender] = useState(true);
   const [newProfileRemoveTitle, setNewProfileRemoveTitle] = useState(true);
+  const [newProfileNeedContentCheck, setNewProfileNeedContentCheck] = useState(true);
   const [isCreateProfileModalOpen, setIsCreateProfileModalOpen] = useState(false);
   const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -520,6 +542,8 @@ const App = () => {
   const [selectedForRun, setSelectedForRun] = useState(() => new Set());
   const [bulkRunMode, setBulkRunMode] = useState('parallel');
   const [engagingProfiles, setEngagingProfiles] = useState(() => new Set());
+  const [limitUploads, setLimitUploads] = useState(false);
+  const [uploadLimitCount, setUploadLimitCount] = useState(1);
 
   const filteredProfiles = useMemo(() => {
     if (groupFilter === 'all') return profiles;
@@ -642,6 +666,7 @@ const App = () => {
     setNewProfileChannelIds('');
     setNewProfileNeedsRender(true);
     setNewProfileRemoveTitle(true);
+    setNewProfileNeedContentCheck(true);
   };
 
   const closeCreateProfileModal = ({ force } = {}) => {
@@ -663,7 +688,8 @@ const App = () => {
         video_folder: newProfileVideoFolder.trim() || null,
         channel_ids: newProfileChannelIds.trim() || null,
         needs_render: newProfileNeedsRender,
-        remove_title: newProfileRemoveTitle
+        remove_title: newProfileRemoveTitle,
+        need_content_check: newProfileNeedContentCheck
       });
       closeCreateProfileModal({ force: true });
       await fetchData();
@@ -700,7 +726,11 @@ const App = () => {
     setIsLoading(true);
     try {
       if (profileId) {
-        await axios.post('/api/start', { profileId });
+        await axios.post('/api/start', { 
+          profileId,
+          limitUploads,
+          uploadLimitCount
+        });
         setMessage({
           type: 'success',
           text: 'Automation started for profile'
@@ -712,7 +742,12 @@ const App = () => {
           setIsLoading(false);
           return;
         }
-        await axios.post('/api/start', { profileIds, runMode: bulkRunMode });
+        await axios.post('/api/start', { 
+          profileIds, 
+          runMode: bulkRunMode,
+          limitUploads,
+          uploadLimitCount
+        });
         setMessage({
           type: 'success',
           text:
@@ -958,6 +993,24 @@ const App = () => {
     processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { remove_title: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const updateProfileNeedContentCheck = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, need_content_check: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { need_content_check: enabled });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
@@ -1227,6 +1280,31 @@ const App = () => {
                     <Plus size={18} />
                     Thêm mới
                   </button>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Giới hạn upload
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', height: '40px', padding: '0 12px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)', userSelect: 'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={limitUploads}
+                        onChange={(e) => setLimitUploads(e.target.checked)}
+                        style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'white' }}>Bật</span>
+                    </label>
+                  </label>
+                  {limitUploads && (
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '80px' }}>
+                      Số video
+                      <input
+                        type="number"
+                        className="input"
+                        style={{ padding: '10px 12px', height: '40px' }}
+                        min="1"
+                        value={uploadLimitCount}
+                        onChange={(e) => setUploadLimitCount(parseInt(e.target.value) || 1)}
+                      />
+                    </label>
+                  )}
                   <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '140px' }}>
                     Kiểu chạy
                     <select
@@ -1307,6 +1385,7 @@ const App = () => {
                       onUpdateUploadCount={updateProfileUploadCount}
                       onUpdateNeedsRender={updateProfileNeedsRender}
                       onUpdateRemoveTitle={updateProfileRemoveTitle}
+                      onUpdateNeedContentCheck={updateProfileNeedContentCheck}
                       groups={groups}
                       getStatusColor={getStatusColor}
                       editingId={editingId}
@@ -1492,7 +1571,7 @@ const App = () => {
                           </label>
                         </div>
 
-                        <div className="input-group" style={{ marginBottom: '24px' }}>
+                        <div className="input-group" style={{ marginBottom: '12px' }}>
                           <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                             <input
                               type="checkbox"
@@ -1504,6 +1583,22 @@ const App = () => {
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
                               <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Xóa tiêu đề khi upload</span>
                               <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định bật. Tắt đi nếu muốn giữ lại tiêu đề gốc làm caption.</span>
+                            </div>
+                          </label>
+                        </div>
+
+                        <div className="input-group" style={{ marginBottom: '24px' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                            <input
+                              type="checkbox"
+                              checked={newProfileNeedContentCheck}
+                              onChange={(e) => setNewProfileNeedContentCheck(e.target.checked)}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Kiểm tra nội dung (Content Check)</span>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định bật. Tắt đi nếu muốn bỏ qua Content Check Lite của TikTok khi upload.</span>
                             </div>
                           </label>
                         </div>
