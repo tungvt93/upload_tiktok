@@ -208,6 +208,26 @@ try {
     console.error('Migration error (need_content_check column):', err);
 }
 
+// Migration: account_id, pass, email, pass_email — CSV import fields
+const csvImportFields = [
+    { name: 'account_id', type: 'TEXT' },
+    { name: 'pass', type: 'TEXT' },
+    { name: 'email', type: 'TEXT' },
+    { name: 'pass_email', type: 'TEXT' },
+];
+for (const field of csvImportFields) {
+    try {
+        const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+        const hasField = tableInfo.some((col) => col.name === field.name);
+        if (!hasField) {
+            db.exec(`ALTER TABLE profiles ADD COLUMN ${field.name} ${field.type};`);
+            console.log(`Added ${field.name} column to profiles table`);
+        }
+    } catch (err) {
+        console.error(`Migration error (${field.name} column):`, err);
+    }
+}
+
 
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
@@ -246,8 +266,8 @@ if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
 if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
 
 // Cleanup: Reset any stuck "uploading" profiles to "idle" on startup
-db.prepare("UPDATE profiles SET status = 'idle' WHERE status = 'uploading'").run();
-console.log('Reset stuck "uploading" profiles to "idle"');
+db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in')").run();
+console.log('Reset stuck "uploading" and "logging_in" profiles to "idle"');
 
 function normalizeGroupId(value) {
     if (value === undefined) return undefined;
@@ -337,6 +357,136 @@ app.post('/api/profiles', (req, res) => {
         res.status(err.status || 400).json({
             error: err.message || 'Profile already exists or database error'
         });
+    }
+});
+
+// CSV Import: parse CSV text and create profiles + groups
+function parseCSVLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+            if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+                current += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (ch === ',' && !inQuotes) {
+            result.push(current.trim());
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    result.push(current.trim());
+    return result;
+}
+
+function parseCSV(csvText) {
+    const lines = csvText.split(/\r?\n/).filter((line) => line.trim() !== '');
+    if (lines.length === 0) return { headers: [], rows: [] };
+
+    const headers = parseCSVLine(lines[0]).map((h) => h.toLowerCase().replace(/\s+/g, '_'));
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const values = parseCSVLine(lines[i]);
+        if (values.length === 0 || values.every((v) => v === '')) continue;
+        const row = {};
+        headers.forEach((h, idx) => {
+            row[h] = values[idx] !== undefined ? values[idx] : '';
+        });
+        rows.push(row);
+    }
+    return { headers, rows };
+}
+
+function findOrCreateGroupByName(db, groupName) {
+    if (!groupName || groupName.trim() === '') return null;
+
+    const trimmed = groupName.trim();
+    const existing = db.prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)').get(trimmed);
+    if (existing) return existing.id;
+
+    const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
+    try {
+        db.prepare('INSERT INTO groups (id, name) VALUES (?, ?)').run(id, trimmed);
+        return id;
+    } catch (e) {
+        // Race condition: another import may have created it
+        const retry = db.prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)').get(trimmed);
+        return retry ? retry.id : null;
+    }
+}
+
+app.post('/api/profiles/import-csv', (req, res) => {
+    const { csvText } = req.body;
+    if (!csvText || typeof csvText !== 'string') {
+        return res.status(400).json({ error: 'csvText is required' });
+    }
+
+    try {
+        const { headers, rows } = parseCSV(csvText);
+        if (rows.length === 0) {
+            return res.status(400).json({ error: 'CSV file has no data rows' });
+        }
+
+        const results = { imported: 0, skipped: 0, errors: [] };
+
+        const insertProfile = db.prepare(`
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
+                group_id, video_folder, set_music, upload_count, needs_render, remove_title,
+                need_content_check, account_id, pass, email, pass_email)
+            VALUES (?, ?, 'idle', 0, 0, ?, NULL, 0, 1, 1, 1, 1, ?, ?, ?, ?)
+        `);
+
+        const existingNames = new Set(
+            db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
+        );
+
+        for (const row of rows) {
+            const profileName = (row.profile_name || row.name || '').trim();
+            if (!profileName) {
+                results.errors.push('Row skipped: empty profile_name');
+                results.skipped++;
+                continue;
+            }
+
+            if (existingNames.has(profileName.toLowerCase())) {
+                results.errors.push(`"${profileName}": profile name already exists`);
+                results.skipped++;
+                continue;
+            }
+
+            const groupName = (row.group_name || row.group || '').trim();
+            let groupId = null;
+            if (groupName) {
+                groupId = findOrCreateGroupByName(db, groupName);
+            }
+
+            const accountId = (row.account_id || '').trim() || null;
+            const pass = (row.pass || row.password || '').trim() || null;
+            const email = (row.email || '').trim() || null;
+            const passEmail = (row.pass_email || row.pass_email_password || '').trim() || null;
+
+            const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
+
+            try {
+                insertProfile.run(id, profileName, groupId, accountId, pass, email, passEmail);
+                existingNames.add(profileName.toLowerCase());
+                results.imported++;
+            } catch (e) {
+                results.errors.push(`"${profileName}": ${e.message}`);
+                results.skipped++;
+            }
+        }
+
+        res.json(results);
+    } catch (err) {
+        console.error('CSV import error:', err);
+        res.status(500).json({ error: `Failed to import CSV: ${err.message}` });
     }
 });
 
@@ -620,6 +770,7 @@ const processingProfiles = new Set();
 const processingVideoIds = new Map(); // video_id -> profile.id currently processing that video
 const manualBrowsers = new Map(); // profileId -> browserContext
 const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
+const loggingInProfiles = new Map(); // profileId -> { browser, stop, stats }
 
 app.post('/api/upload_new_video', async (req, res) => {
     const { video_id, channel_id } = req.body;
@@ -2068,6 +2219,63 @@ app.get('/api/engage/status/:profileId', (req, res) => {
     });
 });
 
+// =============================================
+// LOGIN TIKTOK FEATURE
+// =============================================
+
+// POST /api/login-tiktok — Start TikTok login session
+app.post('/api/login-tiktok', async (req, res) => {
+    const { profileId } = req.body;
+    if (!profileId) return res.status(400).json({ error: 'profileId is required' });
+
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently running upload automation or processing a video' });
+    }
+    if (engagingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently engaging' });
+    }
+    if (loggingInProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is already in login process' });
+    }
+    if (!profile.email || !profile.pass) {
+        return res.status(400).json({ error: 'Profile has no email/password. Import CSV first.' });
+    }
+
+    // Start login session in background
+    runTikTokLogin(profile).catch(err =>
+        console.error(`[${profile.name}] Login session error:`, err)
+    );
+
+    res.json({ status: 'started', profile: profile.name });
+});
+
+// POST /api/login-tiktok/stop — Stop login session
+app.post('/api/login-tiktok/stop', async (req, res) => {
+    const { profileId } = req.body;
+    if (!profileId) return res.status(400).json({ error: 'profileId is required' });
+
+    const session = loggingInProfiles.get(profileId);
+    if (!session) {
+        return res.status(400).json({ error: 'Profile is not in login process' });
+    }
+
+    session.stop = true;
+    res.json({ status: 'stopping', message: 'Login session will stop shortly' });
+});
+
+// GET /api/login-tiktok/status/:profileId — Get login session status
+app.get('/api/login-tiktok/status/:profileId', (req, res) => {
+    const profileId = req.params.profileId;
+    const session = loggingInProfiles.get(profileId);
+    res.json({
+        loggingIn: !!session,
+        stats: session ? session.stats : null
+    });
+});
+
 async function runEngageSession(profile) {
     const profileId = profile.id;
     const userDataDir = path.join(PROFILES_DIR, profile.name);
@@ -2474,6 +2682,803 @@ async function engageDismissPopups(page, log) {
 
 // =============================================
 // END AUTO ENGAGE FEATURE
+// =============================================
+
+// =============================================
+// LOGIN TIKTOK SESSION
+// =============================================
+
+async function retrieveVerificationCode(browser, profile, log, triedCodes = new Set()) {
+    const emailPage = await browser.newPage();
+    try {
+        // Navigate to Outlook Web Access — will redirect to Microsoft login if needed
+        await emailPage.goto('https://outlook.office.com/mail/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await emailPage.waitForTimeout(5000);
+
+        const currentUrl = emailPage.url();
+        log(`Hotmail tab URL: ${currentUrl}`);
+
+        // Check if already logged into Hotmail
+        const isLoggedIn = await emailPage.evaluate(() => {
+            const body = (document.body.innerText || '');
+            return body.includes('Inbox') || body.includes('Hộp thư đến')
+                || !!document.querySelector('[aria-label="Inbox"], [title="Inbox"], [data-app-section="MailModule"]');
+        }).catch(() => false);
+
+        if (!isLoggedIn) {
+            log('Hotmail not logged in. Signing in...');
+
+            // Find email input
+            const emailSelectors = [
+                'input[type="email"]',
+                'input[name="loginfmt"]',
+                'input[placeholder*="email" i]',
+                'input[placeholder*="Email"]',
+                'input#i0116',
+            ];
+
+            let emailField = null;
+            for (const sel of emailSelectors) {
+                emailField = await emailPage.waitForSelector(sel, { timeout: 8000, state: 'visible' }).catch(() => null);
+                if (emailField) break;
+            }
+
+            if (!emailField) {
+                const allInputs = await emailPage.$$('input:visible');
+                for (const input of allInputs) {
+                    const type = await input.getAttribute('type').catch(() => 'text');
+                    if (type !== 'password' && type !== 'hidden' && type !== 'submit' && type !== 'checkbox') {
+                        emailField = input;
+                        break;
+                    }
+                }
+            }
+
+            if (!emailField) throw new Error('Could not find Hotmail email input');
+            await emailField.click();
+            await emailField.fill(profile.email);
+            log('Hotmail: email entered');
+
+            // Click Next
+            await emailPage.waitForTimeout(500);
+            const nextBtn = await emailPage.waitForSelector(
+                'input[type="submit"], button[type="submit"], #idSIButton9',
+                { timeout: 5000 }
+            ).catch(() => null);
+            if (nextBtn) {
+                await nextBtn.click();
+                log('Hotmail: clicked Next');
+            }
+
+            // Wait for page transition — MS redirects after email
+            // After email, Microsoft may show "Use your password" button instead of direct password field
+            await emailPage.waitForTimeout(3000);
+            const afterNextUrl = emailPage.url();
+            log(`Hotmail: after Next URL = ${afterNextUrl}`);
+
+            // Check if already redirected to inbox (auto-login via session cookie)
+            if (afterNextUrl.includes('/mail') && afterNextUrl.includes('outlook.live.com')) {
+                log('Hotmail: auto-login detected, already on inbox. Skipping password...');
+            } else {
+            // Click "Use your password" or similar if present
+            const usePwSelectors = [
+                ':text("Use your password")',
+                ':text("use your password")',
+                'a:has-text("password"), button:has-text("password")',
+                ':text("Password")',
+                '#aadTile, #aadTileTitle',
+            ];
+            for (const sel of usePwSelectors) {
+                const usePwBtn = await emailPage.$(sel);
+                if (usePwBtn && await usePwBtn.isVisible().catch(() => false)) {
+                    await usePwBtn.click();
+                    log(`Hotmail: clicked "Use your password" via ${sel}`);
+                    await emailPage.waitForTimeout(2000);
+                    break;
+                }
+            }
+
+            // Try to find password field with generous wait
+            // But first check if auto-login redirected us away from login page
+            const afterPwWaitUrl = emailPage.url();
+            if (!afterPwWaitUrl.includes('login') && !afterPwWaitUrl.includes('live.com')) {
+                log('Hotmail: auto-login detected (already on inbox). Skipping password...');
+            } else {
+                let passField = await emailPage.waitForSelector('input[type="password"]', {
+                    timeout: 20000, state: 'visible'
+                }).catch(() => null);
+
+                if (passField && profile.pass_email) {
+                    await passField.click();
+                    await passField.fill(profile.pass_email);
+                    log('Hotmail: password entered');
+
+                    await emailPage.waitForTimeout(500);
+                    const signInBtn = await emailPage.waitForSelector(
+                        'input[type="submit"], button[type="submit"], #idSIButton9',
+                        { timeout: 5000 }
+                    ).catch(() => null);
+                    if (signInBtn) {
+                        await signInBtn.click();
+                        log('Hotmail: clicked Sign in');
+                    }
+
+                    await emailPage.waitForTimeout(5000);
+                    log(`Hotmail: after sign-in URL = ${emailPage.url()}`);
+
+                    // Dismiss "Stay signed in?" if present
+                    const stayBtn = await emailPage.$('input[type="submit"], button[type="submit"], #idSIButton9');
+                    if (stayBtn && await stayBtn.isVisible().catch(() => false)) {
+                        await stayBtn.click();
+                        log('Hotmail: dismissed prompt');
+                        await emailPage.waitForTimeout(3000);
+                    }
+                } else if (passField && !profile.pass_email) {
+                    log('Hotmail: password field found but no pass_email set. Waiting 60s for manual login...');
+                    await emailPage.waitForTimeout(60000);
+                } else {
+                    // Check if we're already redirected to inbox (auto-login via session cookie)
+                    const currentPwUrl = emailPage.url();
+                    if (!currentPwUrl.includes('login') && !currentPwUrl.includes('live.com')) {
+                        log('Hotmail: password field not needed, already on inbox.');
+                    } else {
+                        // Debug: log all input elements on the page
+                        const debugInfo = await emailPage.evaluate(() => {
+                            const inputs = document.querySelectorAll('input');
+                            const info = [];
+                            for (const inp of inputs) {
+                                if (inp.type === 'hidden' || inp.type === 'submit') continue;
+                                info.push({
+                                    type: inp.type,
+                                    name: inp.getAttribute('name') || '',
+                                    id: inp.id || '',
+                                    placeholder: inp.getAttribute('placeholder') || '',
+                                    visible: inp.offsetParent !== null
+                                });
+                            }
+                            return info;
+                        }).catch(() => []);
+                        log(`Hotmail: debug inputs found: ${JSON.stringify(debugInfo)}`);
+                        log('Hotmail: password field not found. Waiting 60s for manual login...');
+                        await emailPage.waitForTimeout(60000);
+                    }
+                }
+            }
+
+            } // end else (not auto-login)
+
+            log('Hotmail: sign-in step completed');
+        } else {
+            log('Hotmail: already logged in');
+        }
+
+        // Ensure we're on the inbox page after login
+        const finalUrl = emailPage.url();
+        if (!finalUrl.includes('/mail') && !finalUrl.includes('outlook.live.com')) {
+            log(`Redirecting to inbox from: ${finalUrl}`);
+            await emailPage.goto('https://outlook.live.com/mail/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 20000
+            }).catch(() => null);
+            await emailPage.waitForTimeout(5000);
+        }
+
+        // Poll inbox for TikTok verification email
+        log('Polling Hotmail inbox for TikTok verification email...');
+        const maxPollTime = 2 * 60 * 1000;
+        const pollStart = Date.now();
+        const processedEmails = new Set();  // email text fingerprints already checked
+
+        while (Date.now() - pollStart < maxPollTime) {
+            // Reload inbox to get latest emails
+            await emailPage.reload({ waitUntil: 'domcontentloaded' }).catch(() => null);
+            await emailPage.waitForTimeout(3000);
+
+            // Collect text fingerprints of all TikTok emails currently in inbox
+            const emailIds = await emailPage.evaluate(() => {
+                const results = [];
+                const allElements = document.querySelectorAll(
+                    'div[role="option"], div[role="link"], div[class*="row"], ' +
+                    'div[class*="message"], div[class*="item"], span[class*="subject"]'
+                );
+                for (const el of allElements) {
+                    const text = (el.innerText || el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+                    if (text.includes('tiktok') || text.includes('tik tok')
+                        || text.includes('verification code') || text.includes('security code')
+                        || text.includes('login code') || text.includes('sign-in code')
+                        || text.includes('mã xác minh')) {
+                        // Use first 100 chars as fingerprint (subject + sender, skip relative timestamps)
+                        results.push(text.substring(0, 100).replace(/\d+m(?:in)?\s*ago|just now|\d+:\d+\s*[ap]m/gi, ''));
+                    }
+                }
+                return results;
+            }).catch(() => []);
+
+            if (emailIds.length > 0) {
+                log(`Found ${emailIds.length} TikTok email(s) in inbox`);
+
+                // Try each unprocessed email, newest first
+                for (let i = 0; i < emailIds.length; i++) {
+                    const emailFingerprint = emailIds[i];
+                    if (processedEmails.has(emailFingerprint)) {
+                        log(`Email #${i + 1} already processed, skipping...`);
+                        continue;
+                    }
+                    processedEmails.add(emailFingerprint);
+
+                    // Click this specific email by index
+                    const clicked = await emailPage.evaluate((index) => {
+                        const allElements = document.querySelectorAll(
+                            'div[role="option"], div[role="link"], div[class*="row"], ' +
+                            'div[class*="message"], div[class*="item"], span[class*="subject"]'
+                        );
+                        const matches = [];
+                        for (const el of allElements) {
+                            const text = (el.innerText || el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+                            if (text.includes('tiktok') || text.includes('tik tok')
+                                || text.includes('verification code') || text.includes('security code')
+                                || text.includes('login code') || text.includes('sign-in code')
+                                || text.includes('mã xác minh')) {
+                                matches.push(el);
+                            }
+                        }
+                        if (index < matches.length) {
+                            const clickTarget = matches[index].closest('[role="option"], [role="link"], div[class*="row"], div[class*="message"]') || matches[index];
+                            clickTarget.click();
+                            return true;
+                        }
+                        return false;
+                    }, i).catch(() => false);
+
+                    if (!clicked) continue;
+
+                    log(`Opened TikTok email #${i + 1}, extracting code...`);
+                    await emailPage.waitForTimeout(5000);
+
+                    const code = await emailPage.evaluate(() => {
+                        const body = (document.body.innerText || '').replace(/\s+/g, ' ');
+                        const patterns = [
+                            /\b(\d{6})\b/,
+                            /\b(\d{5})\b/,
+                            /\b(\d{4})\b/,
+                            /code[:\s]*(\d{4,6})/i,
+                            /(\d{4,6})\s*(?:is|your|security|verification)/i,
+                            /verif[yi].{0,20}?(\d{4,6})/i,
+                        ];
+                        for (const pattern of patterns) {
+                            const match = body.match(pattern);
+                            if (match && match[1]) {
+                                const code = match[1];
+                                const blocked = ['2022', '2023', '2024', '2025', '2026', '2027', '2028'];
+                                if (!blocked.includes(code) && code.length >= 4 && code.length <= 6) {
+                                    return code;
+                                }
+                            }
+                        }
+                        return null;
+                    });
+
+                    if (code && !triedCodes.has(code)) {
+                        triedCodes.add(code);
+                        log(`Verification code extracted from email #${i + 1}: ${code}`);
+                        return code;
+                    } else if (code) {
+                        log(`Email #${i + 1} code ${code} already tried, checking next email...`);
+                        // Go back to inbox to try next email
+                        await emailPage.goto('https://outlook.live.com/mail/', {
+                            waitUntil: 'domcontentloaded', timeout: 15000
+                        }).catch(() => null);
+                        await emailPage.waitForTimeout(3000);
+                    } else {
+                        log(`Email #${i + 1}: could not extract code, checking next...`);
+                        await emailPage.goto('https://outlook.live.com/mail/', {
+                            waitUntil: 'domcontentloaded', timeout: 15000
+                        }).catch(() => null);
+                        await emailPage.waitForTimeout(3000);
+                    }
+                }
+
+                log('All visible TikTok emails processed, waiting for new email...');
+            } else {
+                log('No TikTok emails in inbox yet, waiting 10s...');
+            }
+
+            await emailPage.waitForTimeout(10000);
+        }
+
+        log('Timed out waiting for verification email');
+        return null;
+    } finally {
+        await emailPage.close().catch(() => null);
+    }
+}
+
+async function runTikTokLogin(profile) {
+    const profileId = profile.id;
+    const userDataDir = path.join(PROFILES_DIR, profile.name);
+
+    const log = (msg) => {
+        const entry = `[${new Date().toISOString()}] [${profile.name}][LOGIN] ${msg}\n`;
+        console.log(entry.trim());
+        try {
+            fs.appendFileSync(path.join(__dirname, 'automation.log'), entry);
+        } catch (e) {}
+    };
+
+    const browserOptions = {
+        headless: false,
+        args: ['--disable-blink-features=AutomationControlled']
+    };
+    if (profile.proxy) {
+        const proxyConfig = parseProxy(profile.proxy);
+        if (proxyConfig) browserOptions.proxy = proxyConfig;
+    }
+
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const session = {
+        browser,
+        stop: false,
+        stats: { step: 'initializing', startedAt: Date.now() }
+    };
+    loggingInProfiles.set(profileId, session);
+    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('logging_in', profileId);
+
+    log('Login session started');
+
+    try {
+        const tiktokPage = await browser.newPage();
+
+        // --- STEP 1: Navigate to TikTok login ---
+        log('Navigating to TikTok login page...');
+        await tiktokPage.goto('https://www.tiktok.com/login', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await tiktokPage.waitForTimeout(3000);
+        session.stats.step = 'tiktok_login_page';
+
+        // --- STEP 2: Detect if already logged in ---
+        let currentUrl = tiktokPage.url();
+        if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+            log('Already logged in - current URL: ' + currentUrl);
+            session.stats.step = 'already_logged_in';
+            return;
+        }
+
+        // --- STEP 3: Choose email login ---
+        await engageDismissPopups(tiktokPage, log);
+
+        const phoneEmailSelectors = [
+            'a:has-text("Use phone"), button:has-text("phone"), :text("Use phone / email")',
+            ':text-matches("phone.*email", "i")',
+            ':text-matches("email.*username", "i")',
+        ];
+        let phoneEmailBtn = null;
+        for (const sel of phoneEmailSelectors) {
+            phoneEmailBtn = await tiktokPage.$(sel);
+            if (phoneEmailBtn && await phoneEmailBtn.isVisible().catch(() => false)) break;
+            phoneEmailBtn = null;
+        }
+        if (phoneEmailBtn) {
+            await phoneEmailBtn.click();
+            await tiktokPage.waitForTimeout(2000);
+            log('Clicked "Use phone / email / username"');
+        }
+
+        const emailLoginSelectors = [
+            ':text-matches("Log in with email", "i")',
+            'a:has-text("email"), :text-matches("email or username", "i")',
+        ];
+        let emailLoginLink = null;
+        for (const sel of emailLoginSelectors) {
+            emailLoginLink = await tiktokPage.$(sel);
+            if (emailLoginLink && await emailLoginLink.isVisible().catch(() => false)) break;
+            emailLoginLink = null;
+        }
+        if (emailLoginLink) {
+            await emailLoginLink.click();
+            await tiktokPage.waitForTimeout(2000);
+            log('Clicked "Log in with email"');
+        }
+
+        session.stats.step = 'entering_credentials';
+
+        // --- STEP 4: Enter email ---
+        const emailSelectors = [
+            'input[placeholder*="email" i]',
+            'input[placeholder*="username" i]',
+            'input[name="email"]',
+            'input[name="username"]',
+        ];
+        let emailInput = null;
+        for (const sel of emailSelectors) {
+            emailInput = await tiktokPage.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
+            if (emailInput) break;
+        }
+        if (!emailInput) {
+            // Fallback: first visible text input
+            const textInputs = await tiktokPage.$$('input[type="text"]:visible, input:not([type="password"]):not([type="hidden"]):visible');
+            if (textInputs.length > 0) emailInput = textInputs[0];
+        }
+        if (!emailInput) throw new Error('Could not find email input on TikTok login page');
+
+        await emailInput.click();
+        await emailInput.fill('');
+        await emailInput.type(profile.email, { delay: 80 });
+        log('Email entered');
+        session.stats.step = 'email_entered';
+
+        // --- STEP 5: Enter password ---
+        const passwordInput = await tiktokPage.waitForSelector(
+            'input[type="password"]',
+            { timeout: 5000, state: 'visible' }
+        ).catch(() => null);
+        if (!passwordInput) throw new Error('Could not find password input');
+
+        await passwordInput.click();
+        await passwordInput.fill('');
+        await passwordInput.type(profile.pass, { delay: 80 });
+        log('Password entered');
+        session.stats.step = 'password_entered';
+
+        // --- STEP 6: Click login button ---
+        const loginButtonSelectors = [
+            'button:has-text("Log in"):not(:has-text("Log in with"))',
+            'button[type="submit"]:has-text("Log")',
+            'button:has-text("Login")',
+            'button:has-text("Sign in")',
+        ];
+        let loginButton = null;
+        for (const sel of loginButtonSelectors) {
+            loginButton = await tiktokPage.$(sel);
+            if (loginButton && await loginButton.isVisible().catch(() => false)
+                && !await loginButton.isDisabled().catch(() => false)) break;
+            loginButton = null;
+        }
+        if (!loginButton) throw new Error('Could not find active login button');
+
+        await loginButton.click();
+        log('Login button clicked');
+        session.stats.step = 'submitted_credentials';
+        await tiktokPage.waitForTimeout(3000);
+
+        // --- STEP 7: Handle captcha & verification code ---
+        const captchaMaxWait = 5 * 60 * 1000;
+        const captchaStart = Date.now();
+        let captchaDetected = false;
+
+        while (Date.now() - captchaStart < captchaMaxWait) {
+            if (session.stop) throw new Error('Login stopped by user');
+
+            const currentUrl = tiktokPage.url();
+            if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+                log('Redirected away from login page: ' + currentUrl);
+                break;
+            }
+
+            // Also check if we're on a verification code screen — break immediately
+            const pageState = await tiktokPage.evaluate(() => {
+                const bodyText = (document.body.innerText || '').toLowerCase();
+                const captchaKeywords = ['captcha', 'slide to verify', 'puzzle', 'slider',
+                    'security check', 'robot', '验证', 'tsec', 'are you a human',
+                    'drag the slider', 'rotate the image'];
+                const codeKeywords = ['verification code', 'security code', 'verify your',
+                    'confirm your identity', 'enter the code', 'enter code',
+                    'mã xác minh', 'nhập mã', '6-digit code', '6 digit code',
+                    'authentication code', 'login code', 'sign-in code',
+                    'send code', 'sent a code', 'we sent', 'enter confirmation code'];
+
+                const hasCaptcha = captchaKeywords.some(t => bodyText.includes(t));
+                const hasCodeScreen = codeKeywords.some(t => bodyText.includes(t));
+
+                // Also check for code input fields
+                const codeInputs = document.querySelectorAll(
+                    'input[placeholder*="code" i], input[placeholder*="verification" i], ' +
+                    'input[placeholder*="6-digit" i], input[name*="code" i], input[name*="verify" i]'
+                );
+
+                return {
+                    hasCaptcha,
+                    hasCodeScreen: hasCodeScreen || codeInputs.length > 0,
+                    bodyText: bodyText.substring(0, 500)
+                };
+            }).catch(() => ({ hasCaptcha: false, hasCodeScreen: false, bodyText: '' }));
+
+            if (pageState.hasCodeScreen) {
+                log('Verification code screen detected. Proceeding to retrieve code...');
+                session.stats.step = 'code_screen_detected';
+                break;
+            }
+
+            if (pageState.hasCaptcha && !captchaDetected) {
+                captchaDetected = true;
+                log('CAPTCHA detected! Waiting for user to solve it manually...');
+                session.stats.step = 'waiting_captcha';
+            }
+
+            if (captchaDetected && !pageState.hasCaptcha) {
+                log('CAPTCHA appears solved. Checking login state...');
+                session.stats.step = 'captcha_solved';
+                await tiktokPage.waitForTimeout(3000);
+                break;
+            }
+
+            // Check for errors
+            const errorTexts = [
+                'incorrect password', 'wrong password', 'too many attempts',
+                'does not exist', 'account not found', 'suspended', 'banned'
+            ];
+            const bodyText = pageState.bodyText;
+            for (const errText of errorTexts) {
+                if (bodyText.includes(errText)) {
+                    throw new Error(`Login rejected: ${errText}`);
+                }
+            }
+
+            await tiktokPage.waitForTimeout(2000);
+        }
+
+        // --- STEP 8: Check login result ---
+        currentUrl = tiktokPage.url();
+        if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+            log('Login successful! Redirected to: ' + currentUrl);
+            session.stats.step = 'complete';
+            return;
+        }
+
+        // --- STEP 9: Handle verification flow ---
+        // STEP 9a: TikTok may show "Verify it's really you" screen — click email option first
+        const verifyIdentityIndicators = [
+            'verify it\'s really you',
+            'verify your identity',
+            'choose a verification method',
+            'select a verification method',
+            'xác minh danh tính',
+        ];
+        const bodyTextLower = (await tiktokPage.evaluate(() =>
+            (document.body.innerText || '').toLowerCase()
+        ).catch(() => '')) || '';
+
+        const isVerifyIdentityScreen = verifyIdentityIndicators.some(ind =>
+            bodyTextLower.includes(ind)
+        );
+
+        if (isVerifyIdentityScreen) {
+            log('"Verify identity" screen detected. Clicking email option...');
+            const emailOptionSelectors = [
+                'div[class*="pc-home-item"]',               // TikTok email option container
+                'div[class*="home-item"]',                  // fallback
+                ':text("Email")',                           // "Email" text in the option
+                ':text-matches("email", "i")',              // case-insensitive email text
+                'div[class*="item"]:has-text("Email")',     // item containing Email text
+                'div[class*="item"]:has-text("hotmail")',  // item containing hotmail
+                'div[class*="item"]:has-text("gmail")',    // item containing gmail
+            ];
+            for (const sel of emailOptionSelectors) {
+                const opt = await tiktokPage.$(sel);
+                if (opt && await opt.isVisible().catch(() => false)) {
+                    await opt.click();
+                    log(`Clicked email option via ${sel}`);
+                    await tiktokPage.waitForTimeout(5000);
+                    break;
+                }
+            }
+            // After clicking email option, look for "Send code" or similar confirmation button
+            // The button may take a moment to become enabled
+            await tiktokPage.waitForTimeout(2000);
+            const sendBtnSelectors = [
+                'button:has-text("Send code"):not([disabled])',
+                'button:has-text("Send")',
+                'button:has-text("Verify")',
+                'button:has-text("Next")',
+                'button:has-text("Continue")',
+                'button:has-text("Confirm")',
+                ':text("Send code")',
+                'div[role="button"]:has-text("Send")',
+            ];
+            for (const sel of sendBtnSelectors) {
+                try {
+                    const btn = await tiktokPage.waitForSelector(sel, { timeout: 5000, state: 'visible' });
+                    if (btn) {
+                        const disabled = await btn.isDisabled().catch(() => false);
+                        if (!disabled) {
+                            await btn.click({ force: true });
+                            log(`Clicked "${(await btn.innerText().catch(() => sel))}" via ${sel}`);
+                            session.stats.step = 'code_sent';
+                            await tiktokPage.waitForTimeout(45000);
+                            break;
+                        }
+                    }
+                } catch (e) { /* selector not found or not enabled, try next */ }
+            }
+        }
+
+        // STEP 9b: Look for and click any button that triggers sending the verification code
+        const sendCodeSelectors = [
+            'button:has-text("Send code")',
+            'button:has-text("send code")',
+            ':text("Send code")',
+            'button:has-text("Verify")',
+            'button:has-text("Send")',
+            'button:has-text("Next")',
+            'button:has-text("Continue")',
+            'button:has-text("Confirm")',
+            'button:has-text("Yes")',
+            ':text-matches("send.*code", "i")',
+            ':text-matches("gửi.*mã", "i")',
+            ':text-matches("use.*email", "i")',
+            ':text-matches("confirm.*email", "i")',
+            ':text-matches("select.*email", "i")',
+            'div[role="button"]:has-text("Send")',
+            'div[role="button"]:has-text("Continue")',
+        ];
+
+        let sendBtnClicked = false;
+        for (const sel of sendCodeSelectors) {
+            const sendBtn = await tiktokPage.$(sel);
+            if (sendBtn && await sendBtn.isVisible().catch(() => false)
+                && !await sendBtn.isDisabled().catch(() => true)) {
+                await sendBtn.click();
+                log(`Clicked "Send code" button via ${sel}`);
+                session.stats.step = 'code_sent';
+                sendBtnClicked = true;
+                // Wait for TikTok to send the email — new email needs time to arrive in inbox
+                await tiktokPage.waitForTimeout(45000);
+                break;
+            }
+        }
+
+        if (!sendBtnClicked) {
+            // Debug: log visible buttons on page
+            const btns = await tiktokPage.evaluate(() => {
+                const buttons = document.querySelectorAll('button, div[role="button"], a[role="button"], span[role="button"]');
+                const info = [];
+                for (const b of buttons) {
+                    if (b.offsetParent !== null) {
+                        info.push((b.innerText || b.textContent || '').substring(0, 60).trim());
+                    }
+                }
+                return info.filter(t => t.length > 0);
+            }).catch(() => []);
+            log(`Debug: visible buttons on page: ${JSON.stringify(btns)}`);
+        }
+
+        // Now look for the code input field
+        const codeInputSelectors = [
+            'input[placeholder*="code" i]',
+            'input[placeholder*="verification" i]',
+            'input[placeholder*="6-digit" i]',
+            'input[placeholder*="6 digit" i]',
+            'input[name*="code" i]',
+            'input[name*="verify" i]',
+            'input[aria-label*="code" i]',
+            'input[aria-label*="verification" i]',
+            'input[type="text"]:not([placeholder*="email" i]):not([placeholder*="phone" i]):not([placeholder*="password" i])',
+            'input:not([type="hidden"]):not([type="password"]):not([type="email"]):not([type="submit"])',
+        ];
+
+        let codeInput = null;
+        for (const sel of codeInputSelectors) {
+            codeInput = await tiktokPage.$(sel);
+            if (codeInput && await codeInput.isVisible().catch(() => false)) break;
+            codeInput = null;
+        }
+
+        // Also check for verification text on page
+        const hasVerificationText = await tiktokPage.evaluate(() => {
+            const text = (document.body.innerText || '').toLowerCase();
+            return text.includes('verification code') || text.includes('security code')
+                || text.includes('confirm your identity') || text.includes('enter the code')
+                || text.includes('mã xác minh') || text.includes('nhập mã');
+        }).catch(() => false);
+
+        if (hasVerificationText || codeInput) {
+            log('Verification code required. Opening Hotmail to retrieve code...');
+            session.stats.step = 'retrieving_code';
+
+            const triedCodes = new Set();
+            let verified = false;
+
+            for (let retry = 0; retry < 3 && !verified; retry++) {
+                if (session.stop) break;
+                if (retry > 0) log(`Retry attempt ${retry + 1}/3 for verification code...`);
+
+                let code = null;
+                try {
+                    code = await retrieveVerificationCode(browser, profile, log, triedCodes);
+                } catch (err) {
+                    log(`Error retrieving verification code: ${err.message}`);
+                    if (retry < 2) {
+                        log('Will retry...');
+                        continue;
+                    }
+                    break;
+                }
+
+                if (!code) {
+                    log('Could not retrieve verification code from email');
+                    break;
+                }
+
+                // Always re-find code input — page may have changed during Hotmail retrieval
+                codeInput = null;
+                for (const sel of codeInputSelectors) {
+                    codeInput = await tiktokPage.$(sel);
+                    if (codeInput && await codeInput.isVisible().catch(() => false)) break;
+                    codeInput = null;
+                }
+                if (!codeInput) {
+                    log('Could not find code input field after retrieving code');
+                    break;
+                }
+
+                // Use JS to set value directly — TikTok floating UI may intercept clicks
+                await codeInput.evaluate((el, val) => {
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value'
+                    ).set;
+                    nativeInputValueSetter.call(el, val);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }, code);
+                log('Verification code entered');
+                await tiktokPage.waitForTimeout(1000);
+
+                const verifyBtn = await tiktokPage.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Next")');
+                if (verifyBtn && await verifyBtn.isVisible().catch(() => false)) {
+                    await verifyBtn.click({ force: true });
+                    log('Clicked verify button');
+                }
+
+                await tiktokPage.waitForTimeout(5000);
+
+                const finalUrl = tiktokPage.url();
+                if (!finalUrl.includes('/login') && !finalUrl.includes('/passport')) {
+                    log('Login successful after verification!');
+                    session.stats.step = 'complete';
+                    return;
+                }
+                log(`Verification code ${code} rejected. Will retry with different code...`);
+                session.stats.step = 'verification_retrying';
+            }
+
+            if (!verified) {
+                log('Verification code attempts exhausted or failed. Waiting for manual verification...');
+                session.stats.step = 'awaiting_manual_verification';
+                // Wait for user to handle manually
+                for (let i = 0; i < 60; i++) {
+                    if (session.stop) break;
+                    await tiktokPage.waitForTimeout(5000);
+                    const url = tiktokPage.url();
+                    if (!url.includes('/login') && !url.includes('/passport')) {
+                        log('Login completed (manually)!');
+                        session.stats.step = 'complete';
+                        return;
+                    }
+                }
+            }
+        } else {
+            log('After login: on page but no clear success/error. URL: ' + currentUrl);
+            session.stats.step = 'unclear_state';
+        }
+
+    } catch (err) {
+        log(`Login error: ${err.message}`);
+        session.stats.step = 'error';
+        session.stats.error = err.message;
+    } finally {
+        loggingInProfiles.delete(profileId);
+        await browser.close().catch(() => null);
+        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        log('Login session ended, browser closed.');
+    }
+}
+
+// =============================================
+// END LOGIN TIKTOK SESSION
 // =============================================
 
 const dismissPopups = async (page) => {
