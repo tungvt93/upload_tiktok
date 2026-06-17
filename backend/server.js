@@ -1082,17 +1082,6 @@ app.post('/api/upload_new_video', async (req, res) => {
             }
         }
 
-        if (videoDuration < 5) {
-            console.log(`[${profile.name}] Video too short (${videoDuration.toFixed(2)}s < 5s). Deleting and skipping.`);
-            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
-            return res.json({
-                success: true,
-                skipped: true,
-                message: `Video quá ngắn (${videoDuration.toFixed(2)}s < 5s). Đã xóa và bỏ qua, không upload.`,
-                duration: videoDuration
-            });
-        }
-
         // Check if render is needed based on profile configuration
         if (profile.needs_render !== 0) {
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
