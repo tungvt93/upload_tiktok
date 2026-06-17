@@ -439,7 +439,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
             INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
                 group_id, video_folder, set_music, upload_count, needs_render, remove_title,
                 need_content_check, account_id, pass, email, pass_email)
-            VALUES (?, ?, 'idle', 0, 0, ?, NULL, 0, 1, 1, 1, 1, ?, ?, ?, ?)
+            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?)
         `);
 
         const existingNames = new Set(
@@ -466,15 +466,30 @@ app.post('/api/profiles/import-csv', (req, res) => {
                 groupId = findOrCreateGroupByName(db, groupName);
             }
 
-            const accountId = (row.account_id || '').trim() || null;
-            const pass = (row.pass || row.password || '').trim() || null;
-            const email = (row.email || '').trim() || null;
-            const passEmail = (row.pass_email || row.pass_email_password || '').trim() || null;
+            let accountId = (row.account_id || '').trim() || null;
+            let pass = (row.pass || row.password || '').trim() || null;
+            let email = (row.email || '').trim() || null;
+            let passEmail = (row.pass_email || row.pass_email_password || '').trim() || null;
+
+            if (accountId && accountId.includes('|') && !pass && !email && !passEmail) {
+                const parts = accountId.split('|');
+                accountId = parts[0] ? parts[0].trim() : null;
+                pass = parts[1] ? parts[1].trim() : null;
+                email = parts[2] ? parts[2].trim() : null;
+                passEmail = parts[3] ? parts[3].trim() : null;
+            }
 
             const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
 
+            const videoFolder = groupName
+                ? `D:\\TIKTOK\\upload_tiktok\\uploads\\${groupName}\\${profileName}`
+                : `D:\\TIKTOK\\upload_tiktok\\uploads\\${profileName}`;
+
             try {
-                insertProfile.run(id, profileName, groupId, accountId, pass, email, passEmail);
+                if (videoFolder) {
+                    fs.mkdirSync(videoFolder, { recursive: true });
+                }
+                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail);
                 existingNames.add(profileName.toLowerCase());
                 results.imported++;
             } catch (e) {
@@ -904,12 +919,9 @@ app.post('/api/upload_new_video', async (req, res) => {
 
         console.log(`[${profile.name}] Video duration: ${videoDuration.toFixed(2)}s`);
 
-        // If the video is close to 5 seconds (between 2.0s and 5.0s), slow it down to be > 5s
-        if (videoDuration >= 2.0 && videoDuration < 5.0) {
-            const targetDuration = 5.2;
-            const speedFactor = videoDuration / targetDuration;
-            console.log(`[${profile.name}] Video is close to 5s (${videoDuration.toFixed(2)}s). Slowing down by factor ${speedFactor.toFixed(3)} to exceed 5s.`);
-            
+        if (videoDuration < 5.0) {
+            console.log(`[${profile.name}] Video duration is under 5s (${videoDuration.toFixed(2)}s). Slowing down by factor 0.9.`);
+            const speedFactor = 0.9;
             const slowedFilePath = downloadedFilePath.replace('.mp4', '_slowed.mp4');
 
             // Check if there is an audio stream to avoid mapping errors in ffmpeg
@@ -947,9 +959,9 @@ app.post('/api/upload_new_video', async (req, res) => {
                 });
                 if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
                 fs.renameSync(slowedFilePath, downloadedFilePath);
-                console.log(`[${profile.name}] Successfully slowed down video to > 5s.`);
+                console.log(`[${profile.name}] Successfully slowed down video.`);
                 
-                // Re-measure the new video duration
+                // Re-measure duration
                 videoDuration = await new Promise((resolve) => {
                     const ffprobe = spawn('ffprobe', [
                         '-v', 'error',
@@ -965,11 +977,107 @@ app.post('/api/upload_new_video', async (req, res) => {
                     });
                     ffprobe.on('error', () => resolve(0));
                 });
-                console.log(`[${profile.name}] New video duration after slow down: ${videoDuration.toFixed(2)}s`);
+                console.log(`[${profile.name}] Duration after slowing down: ${videoDuration.toFixed(2)}s`);
             } catch (err) {
                 console.error(`[${profile.name}] Failed to slow down video:`, err.message);
                 if (fs.existsSync(slowedFilePath)) {
                     try { fs.unlinkSync(slowedFilePath); } catch (e) {}
+                }
+            }
+        }
+
+        // If still under 5 seconds, pad it by appending a random slice of itself
+        if (videoDuration < 5.0 && videoDuration > 0) {
+            const neededDuration = 5.1 - videoDuration;
+            console.log(`[${profile.name}] Video duration still under 5s (${videoDuration.toFixed(2)}s). Appending a random chunk of ${neededDuration.toFixed(2)}s.`);
+
+            // Ensure needed duration does not exceed the video's actual duration (if it does, we will just slice the whole video)
+            const sliceDuration = Math.min(neededDuration, videoDuration);
+            // Choose a random start position for the slice
+            const maxStart = Math.max(0, videoDuration - sliceDuration);
+            const startPos = Math.random() * maxStart;
+
+            const slicePath = downloadedFilePath.replace('.mp4', '_slice.mp4');
+            const concatFilePath = downloadedFilePath.replace('.mp4', '_concat.mp4');
+            const listFilePath = downloadedFilePath.replace('.mp4', '_list.txt');
+
+            try {
+                // Extract the slice
+                await new Promise((resolve, reject) => {
+                    const sliceArgs = [
+                        '-y',
+                        '-ss', startPos.toString(),
+                        '-t', sliceDuration.toString(),
+                        '-i', downloadedFilePath,
+                        '-c', 'copy',
+                        slicePath
+                    ];
+                    const child = spawn('ffmpeg', sliceArgs);
+                    child.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`Extract slice exited with code ${code}`));
+                    });
+                    child.on('error', reject);
+                });
+
+                // Generate concat list file. ffmpeg concat filter/demuxer requires full paths or relative to execution directory.
+                // We use paths safe for windows/ffmpeg.
+                const fileContent = `file '${downloadedFilePath.replace(/\\/g, '/')}'\nfile '${slicePath.replace(/\\/g, '/')}'\n`;
+                fs.writeFileSync(listFilePath, fileContent);
+
+                // Concatenate original and slice
+                await new Promise((resolve, reject) => {
+                    const concatArgs = [
+                        '-y',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', listFilePath,
+                        '-c', 'copy',
+                        concatFilePath
+                    ];
+                    const child = spawn('ffmpeg', concatArgs);
+                    child.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`Concat exited with code ${code}`));
+                    });
+                    child.on('error', reject);
+                });
+
+                // Clean up and swap files
+                if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+                fs.renameSync(concatFilePath, downloadedFilePath);
+                console.log(`[${profile.name}] Successfully padded video to over 5s.`);
+
+                // Re-measure final duration
+                videoDuration = await new Promise((resolve) => {
+                    const ffprobe = spawn('ffprobe', [
+                        '-v', 'error',
+                        '-show_entries', 'format=duration',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        downloadedFilePath
+                    ]);
+                    let output = '';
+                    ffprobe.stdout.on('data', (data) => output += data.toString());
+                    ffprobe.on('close', () => {
+                        const dur = parseFloat(output.trim());
+                        resolve(isNaN(dur) ? 0 : dur);
+                    });
+                    ffprobe.on('error', () => resolve(0));
+                });
+                console.log(`[${profile.name}] Final video duration: ${videoDuration.toFixed(2)}s`);
+
+            } catch (err) {
+                console.error(`[${profile.name}] Failed to pad video:`, err.message);
+                if (fs.existsSync(concatFilePath)) {
+                    try { fs.unlinkSync(concatFilePath); } catch (e) {}
+                }
+            } finally {
+                // Clean up temporary files
+                if (fs.existsSync(slicePath)) {
+                    try { fs.unlinkSync(slicePath); } catch (e) {}
+                }
+                if (fs.existsSync(listFilePath)) {
+                    try { fs.unlinkSync(listFilePath); } catch (e) {}
                 }
             }
         }
