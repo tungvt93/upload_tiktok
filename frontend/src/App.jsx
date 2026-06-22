@@ -22,12 +22,15 @@ import {
   X,
   Users,
   Music,
+  Search,
   ChevronDown,
   ChevronRight,
   Heart,
   StopCircle,
   Upload,
-  LogIn
+  LogIn,
+  Image,
+  Camera
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -59,6 +62,14 @@ const ProfileCard = ({
   onUpdateNeedsRender,
   onUpdateRemoveTitle,
   onUpdateNeedContentCheck,
+  onSelectAvatar,
+  onChangeAvatar,
+  isChangingAvatar,
+  selectedAvatarPath,
+  onAddFavoriteMusic,
+  isAddingFavoriteMusic,
+  musicSearchTerm,
+  onUpdateMusicSearchTerm,
   groups,
   getStatusColor,
   editingId,
@@ -242,6 +253,46 @@ const ProfileCard = ({
                   >
                     <FolderOpen size={14} />
                   </button>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <Image size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Avatar Image</span>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    className="input"
+                    style={{ fontSize: '0.75rem', padding: '8px 12px', flex: 1 }}
+                    placeholder="Select an image..."
+                    value={selectedAvatarPath || ''}
+                    readOnly
+                  />
+                  <button
+                    onClick={() => onSelectAvatar(profile.id)}
+                    className="btn-secondary"
+                    style={{ padding: '8px', minWidth: 'auto' }}
+                  >
+                    <FolderOpen size={14} />
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <Search size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Favorite Music</span>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    className="input"
+                    style={{ fontSize: '0.75rem', padding: '8px 12px', flex: 1 }}
+                    placeholder="Search music to favorite..."
+                    value={musicSearchTerm || ''}
+                    onChange={(e) => onUpdateMusicSearchTerm(profile.id, e.target.value)}
+                    disabled={isAddingFavoriteMusic}
+                  />
                 </div>
               </div>
 
@@ -543,6 +594,75 @@ const ProfileCard = ({
                       </>
                     )}
                   </button>
+
+                  {/* Change Avatar Button */}
+                  <button
+                    className="btn"
+                    onClick={() => onChangeAvatar(profile.id)}
+                    disabled={profile.status === 'uploading' || !selectedAvatarPath || isChangingAvatar}
+                    title={!selectedAvatarPath ? 'Select an avatar image first' : (isChangingAvatar ? 'Avatar change in progress...' : 'Change TikTok avatar')}
+                    style={{
+                      background: isChangingAvatar
+                        ? 'rgba(59, 130, 246, 0.12)'
+                        : 'rgba(59, 130, 246, 0.08)',
+                      color: isChangingAvatar ? '#3B82F6' : '#60A5FA',
+                      border: '1px solid rgba(59,130,246,0.25)',
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      gap: '6px',
+                      fontWeight: '700',
+                      transition: 'all 0.2s',
+                      cursor: (profile.status === 'uploading' || !selectedAvatarPath) ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {isChangingAvatar ? (
+                      <RefreshCw size={14} className="animate-pulse" />
+                    ) : (
+                      <Camera size={14} />
+                    )}
+                    AVATAR
+                  </button>
+
+                  {/* Add Favorite Music Button */}
+                  <button
+                    className="btn"
+                    onClick={() => onAddFavoriteMusic(profile.id, musicSearchTerm || '')}
+                    disabled={
+                      profile.status === 'uploading' ||
+                      !musicSearchTerm ||
+                      !musicSearchTerm.trim() ||
+                      isAddingFavoriteMusic
+                    }
+                    title={
+                      !musicSearchTerm || !musicSearchTerm.trim()
+                        ? 'Enter a search term first'
+                        : isAddingFavoriteMusic
+                        ? 'Adding favorite music...'
+                        : 'Search and favorite a TikTok sound'
+                    }
+                    style={{
+                      background: isAddingFavoriteMusic
+                        ? 'rgba(168, 85, 247, 0.12)'
+                        : 'rgba(168, 85, 247, 0.08)',
+                      color: isAddingFavoriteMusic ? '#A855F7' : '#C084FC',
+                      border: '1px solid rgba(168,85,247,0.25)',
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      gap: '6px',
+                      fontWeight: '700',
+                      transition: 'all 0.2s',
+                      cursor: (profile.status === 'uploading' || !musicSearchTerm || !musicSearchTerm.trim())
+                        ? 'not-allowed'
+                        : 'pointer'
+                    }}
+                  >
+                    {isAddingFavoriteMusic ? (
+                      <RefreshCw size={14} className="animate-pulse" />
+                    ) : (
+                      <Music size={14} />
+                    )}
+                    FAVORITES
+                  </button>
                 </div>
               </div>
             </div>
@@ -581,6 +701,10 @@ const App = () => {
   const [bulkRunMode, setBulkRunMode] = useState('parallel');
   const [engagingProfiles, setEngagingProfiles] = useState(() => new Set());
   const [loggingInProfiles, setLoggingInProfiles] = useState(() => new Set());
+  const [changingAvatarProfiles, setChangingAvatarProfiles] = useState(() => new Set());
+  const [addingFavoriteMusicProfiles, setAddingFavoriteMusicProfiles] = useState(() => new Set());
+  const [avatarSelections, setAvatarSelections] = useState({}); // profileId -> filePath
+  const [musicSearchTerms, setMusicSearchTerms] = useState({}); // profileId -> searchTerm
   const [limitUploads, setLimitUploads] = useState(false);
   const [uploadLimitCount, setUploadLimitCount] = useState(1);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -649,6 +773,26 @@ const App = () => {
         const next = new Set(prev);
         newProfiles.forEach(p => {
           if (p.status === 'logging_in') next.add(p.id);
+          else next.delete(p.id);
+        });
+        return next;
+      });
+
+      // Sync changing avatar status from profile status field
+      setChangingAvatarProfiles(prev => {
+        const next = new Set(prev);
+        newProfiles.forEach(p => {
+          if (p.status === 'changing_avatar') next.add(p.id);
+          else next.delete(p.id);
+        });
+        return next;
+      });
+
+      // Sync adding favorite music status from profile status field
+      setAddingFavoriteMusicProfiles(prev => {
+        const next = new Set(prev);
+        newProfiles.forEach(p => {
+          if (p.status === 'adding_favorite_music') next.add(p.id);
           else next.delete(p.id);
         });
         return next;
@@ -1227,6 +1371,28 @@ const App = () => {
     }
   };
 
+  const selectAvatarPath = async () => {
+    try {
+      const res = await axios.post('/api/select-image-file');
+      return res.data?.path || null;
+    } catch (err) {
+      console.error('Image file selection cancelled or failed');
+      return null;
+    }
+  };
+
+  const handleSelectAvatar = async (id) => {
+    setIsSelectingFolder(true);
+    try {
+      const selectedPath = await selectAvatarPath();
+      if (selectedPath) {
+        setAvatarSelections(prev => ({ ...prev, [id]: selectedPath }));
+      }
+    } finally {
+      setIsSelectingFolder(false);
+    }
+  };
+
   const handleSelectFolderForCreateProfile = async () => {
     setIsSelectingFolder(true);
     try {
@@ -1239,11 +1405,58 @@ const App = () => {
     }
   };
 
+  const handleChangeAvatar = async (profileId) => {
+    const avatarImage = avatarSelections[profileId];
+    if (!avatarImage) {
+      setMessage({ type: 'error', text: 'Please select an avatar image first' });
+      return;
+    }
+    try {
+      setChangingAvatarProfiles(prev => new Set([...prev, profileId]));
+      await axios.post('/api/change-avatar', { profileId, avatarImage });
+      setMessage({ type: 'success', text: 'Avatar change started! Browser will open shortly.' });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setChangingAvatarProfiles(prev => {
+        const next = new Set(prev);
+        next.delete(profileId);
+        return next;
+      });
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to change avatar' });
+    }
+  };
+
+  const handleAddFavoriteMusic = async (profileId, searchTerm) => {
+    if (!searchTerm || !searchTerm.trim()) {
+      setMessage({ type: 'error', text: 'Please enter a search term' });
+      return;
+    }
+    try {
+      setAddingFavoriteMusicProfiles(prev => new Set([...prev, profileId]));
+      await axios.post('/api/add-favorite-music', { profileId, searchTerm: searchTerm.trim() });
+      setMessage({ type: 'success', text: 'Adding favorite music! Browser will open shortly.' });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setAddingFavoriteMusicProfiles(prev => {
+        const next = new Set(prev);
+        next.delete(profileId);
+        return next;
+      });
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to add favorite music' });
+    }
+  };
+
+  const handleUpdateMusicSearchTerm = (profileId, value) => {
+    setMusicSearchTerms(prev => ({ ...prev, [profileId]: value }));
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'uploading': return 'var(--accent)';
       case 'logging_in': return '#10B981';
       case 'engaging': return '#EC4899';
+      case 'changing_avatar': return '#3B82F6';
+      case 'adding_favorite_music': return '#A855F7';
       case 'success': return 'var(--success)';
       case 'error': return 'var(--error)';
       case 'no_videos': return '#EAB308';
@@ -1568,6 +1781,14 @@ const App = () => {
                       onUpdateNeedsRender={updateProfileNeedsRender}
                       onUpdateRemoveTitle={updateProfileRemoveTitle}
                       onUpdateNeedContentCheck={updateProfileNeedContentCheck}
+                      onSelectAvatar={handleSelectAvatar}
+                      onChangeAvatar={handleChangeAvatar}
+                      isChangingAvatar={changingAvatarProfiles.has(profile.id)}
+                      selectedAvatarPath={avatarSelections[profile.id] || ''}
+                      onAddFavoriteMusic={handleAddFavoriteMusic}
+                      isAddingFavoriteMusic={addingFavoriteMusicProfiles.has(profile.id)}
+                      musicSearchTerm={musicSearchTerms[profile.id] || ''}
+                      onUpdateMusicSearchTerm={handleUpdateMusicSearchTerm}
                       groups={groups}
                       getStatusColor={getStatusColor}
                       editingId={editingId}
