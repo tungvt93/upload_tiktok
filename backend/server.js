@@ -51,12 +51,14 @@ const OLD_DB_PATH = path.join(DB_DIR, 'db.json');
 const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const EXTENSIONS_DIR = path.join(__dirname, '..', 'extensions');
+const DUMMY_VIDEOS_DIR = path.join(__dirname, '..', 'dummy_videos');
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR);
 if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 if (!fs.existsSync(EXTENSIONS_DIR)) fs.mkdirSync(EXTENSIONS_DIR);
+if (!fs.existsSync(DUMMY_VIDEOS_DIR)) fs.mkdirSync(DUMMY_VIDEOS_DIR);
 
 // Init SQLite DB
 const db = new Database(DB_PATH);
@@ -228,6 +230,29 @@ for (const field of csvImportFields) {
     }
 }
 
+// Migration: avatar_image — path to avatar image file for profile
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasAvatarImage = tableInfo.some((col) => col.name === 'avatar_image');
+    if (!hasAvatarImage) {
+        db.exec('ALTER TABLE profiles ADD COLUMN avatar_image TEXT;');
+        console.log('Added avatar_image column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (avatar_image column):', err);
+}
+
+// Migration: music_search — search term for adding favorite music
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasMusicSearch = tableInfo.some((col) => col.name === 'music_search');
+    if (!hasMusicSearch) {
+        db.exec('ALTER TABLE profiles ADD COLUMN music_search TEXT;');
+        console.log('Added music_search column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (music_search column):', err);
+}
 
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
@@ -265,9 +290,9 @@ const setConfig = (key, value) => {
 if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
 if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
 
-// Cleanup: Reset any stuck "uploading" profiles to "idle" on startup
-db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in')").run();
-console.log('Reset stuck "uploading" and "logging_in" profiles to "idle"');
+// Cleanup: Reset any stuck profiles to "idle" on startup
+db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in', 'changing_avatar', 'adding_favorite_music')").run();
+console.log('Reset stuck profiles (uploading, logging_in, changing_avatar, adding_favorite_music) to idle');
 
 function normalizeGroupId(value) {
     if (value === undefined) return undefined;
@@ -656,6 +681,7 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = need_content_check ? 1 : 0;
         db.prepare('UPDATE profiles SET need_content_check = ? WHERE id = ?').run(val, profileId);
     }
+
     res.json({ success: true });
 });
 
@@ -761,6 +787,28 @@ app.post('/api/select-folder', (req, res) => {
     });
 });
 
+app.post('/api/select-image-file', (req, res) => {
+    let script = '';
+
+    if (process.platform === 'darwin') {
+        script = `osascript -e 'POSIX path of (choose file of type {"public.png","public.jpeg","com.compuserve.gif"} with prompt "Select Avatar Image")'`;
+    } else if (process.platform === 'win32') {
+        script = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; \\$dialog = New-Object System.Windows.Forms.OpenFileDialog; \\$dialog.Filter = 'Image Files (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg'; \\$dialog.Title = 'Select Avatar Image'; if (\\$dialog.ShowDialog() -eq 'OK') { \\$dialog.FileName }"`;
+    } else {
+        return res.status(501).json({ error: 'File picker not supported on this platform' });
+    }
+
+    exec(script, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`Image file picker error: ${error.message}`);
+            return res.status(500).json({ error: 'File selection cancelled or failed' });
+        }
+        const selectedPath = stdout.trim();
+        if (!selectedPath) return res.status(500).json({ error: 'No file selected' });
+        res.json({ path: selectedPath });
+    });
+});
+
 app.post('/api/config', (req, res) => {
     Object.entries(req.body).forEach(([k, v]) => setConfig(k, v));
     res.json({ success: true });
@@ -786,6 +834,8 @@ const processingVideoIds = new Map(); // video_id -> profile.id currently proces
 const manualBrowsers = new Map(); // profileId -> browserContext
 const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
 const loggingInProfiles = new Map(); // profileId -> { browser, stop, stats }
+const avatarChangingProfiles = new Set();
+const addingFavoriteMusicProfiles = new Set(); // profileId set — prevents concurrent favorite music operations
 
 app.post('/api/upload_new_video', async (req, res) => {
     const { video_id, channel_id, profile_id, profile_name } = req.body;
@@ -1289,6 +1339,524 @@ app.post('/api/open-profile', async (req, res) => {
         console.error(`[${profile.name}] Failed to open browser:`, error);
         res.status(500).json({ error: `Failed to open browser: ${error.message}` });
     }
+});
+
+async function changeAvatar(profile, avatarImage) {
+    const profileId = profile.id;
+    const userDataDir = path.join(PROFILES_DIR, profile.name);
+
+    const log = (msg) => {
+        const entry = `[${new Date().toISOString()}] [${profile.name}][AVATAR] ${msg}\n`;
+        console.log(entry.trim());
+        try {
+            fs.appendFileSync(path.join(__dirname, 'automation.log'), entry);
+        } catch (e) {}
+    };
+
+    const browserOptions = {
+        headless: false,
+        args: ['--disable-blink-features=AutomationControlled']
+    };
+    if (profile.proxy) {
+        const proxyConfig = parseProxy(profile.proxy);
+        if (proxyConfig) browserOptions.proxy = proxyConfig;
+    }
+
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    avatarChangingProfiles.add(profileId);
+    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
+
+    log('Avatar change session started');
+
+    try {
+        const page = await browser.newPage();
+
+        // Step 1: Navigate to TikTok and find the user's profile URL
+        log('Navigating to TikTok...');
+        await page.goto('https://www.tiktok.com', { waitUntil: 'networkidle', timeout: 60000 });
+        await page.waitForTimeout(3000);
+
+        // Try to get the profile link from the page
+        let profileUrl = null;
+        try {
+            // Look for the profile link in the sidebar/header
+            const profileLink = await page.waitForSelector('a[href*="/@"]', { timeout: 10000 });
+            const href = await profileLink.getAttribute('href');
+            profileUrl = href ? new URL(href, 'https://www.tiktok.com').href : null;
+            log(`Found profile link: ${profileUrl}`);
+        } catch (e) {
+            log(`Could not find profile link: ${e.message}`);
+        }
+
+        // If no profile URL found, try clicking profile icon then View profile
+        if (!profileUrl) {
+            log('Trying profile menu approach...');
+            try {
+                const profileBtn = await page.waitForSelector('#header-profile-avatar, [data-e2e="profile-icon"]', { timeout: 5000 });
+                await profileBtn.click();
+                await page.waitForTimeout(2000);
+                const viewLink = await page.waitForSelector(':text("View profile")', { timeout: 5000 });
+                await viewLink.click();
+                await page.waitForTimeout(4000);
+                profileUrl = page.url();
+                log(`Profile URL from menu: ${profileUrl}`);
+            } catch (e) {
+                log(`Profile menu approach failed: ${e.message}`);
+            }
+        }
+
+        // Navigate to profile page if we have a URL and aren't already there
+        if (profileUrl && !page.url().includes('/@')) {
+            await page.goto(profileUrl, { waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForTimeout(4000);
+        }
+
+        log(`On page: ${page.url()}`);
+
+        // Step 2: Click "Edit profile" button
+        let editBtn = null;
+        try {
+            editBtn = await page.waitForSelector(':text("Edit profile")', { timeout: 10000 });
+        } catch (e) {
+            log(`Edit profile not found: ${e.message}`);
+        }
+
+        if (editBtn) {
+            await editBtn.click();
+            log('Clicked Edit profile');
+            await page.waitForTimeout(4000);
+        } else {
+            const bodyText = await page.evaluate(() => (document.body.innerText || '').substring(0, 500));
+            log(`Page text: ${bodyText}`);
+            return;
+        }
+
+        // Step 3: Wait for the file input to be visible in the modal and upload
+        let fileInput = null;
+        try {
+            fileInput = await page.waitForSelector('input[type="file"]', { timeout: 10000, state: 'visible' });
+        } catch (e) {
+            log(`File input not found: ${e.message}`);
+        }
+
+        if (fileInput) {
+            await fileInput.setInputFiles(avatarImage);
+            log(`Uploaded avatar: ${avatarImage}`);
+            await page.waitForTimeout(4000);
+
+            // Step 4: Click Apply in crop/zoom modal (class ef1kawg9)
+            let applyBtn = null;
+            try {
+                applyBtn = await page.waitForSelector('button.ef1kawg9:has-text("Apply")', { timeout: 15000 });
+            } catch (e) {
+                log(`Apply button not found: ${e.message}`);
+            }
+            if (applyBtn) {
+                await applyBtn.click({ force: true });
+                log('Clicked Apply (crop modal)');
+                await page.waitForTimeout(3000);
+            } else {
+                // Fallback: try generic Apply
+                try {
+                    const btn = await page.$('button:has-text("Apply")');
+                    if (btn) {
+                        await btn.click({ force: true });
+                        log('Clicked Apply (fallback)');
+                        await page.waitForTimeout(3000);
+                    }
+                } catch (e) {}
+            }
+        } else {
+            return;
+        }
+
+        // Step 5: Click Save in edit profile modal
+        let saveBtn = null;
+        try {
+            saveBtn = await page.waitForSelector('button:has-text("Save")', { timeout: 10000 });
+        } catch (e) {
+            log(`Save button not found: ${e.message}`);
+        }
+
+        if (saveBtn) {
+            await saveBtn.click({ force: true });
+            log('Clicked Save');
+            await page.waitForTimeout(4000);
+        }
+
+        log('Avatar change flow completed');
+    } catch (err) {
+        log(`Avatar change error: ${err.message}`);
+        throw err;
+    } finally {
+        avatarChangingProfiles.delete(profileId);
+        await browser.close().catch(() => null);
+        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        log('Avatar change session ended, browser closed.');
+    }
+}
+
+app.post('/api/change-avatar', async (req, res) => {
+    const { profileId, avatarImage } = req.body;
+    if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
+    if (!avatarImage) return res.status(400).json({ error: 'No avatar image provided' });
+
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently running automation or processing a video' });
+    }
+
+    if (avatarChangingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is already changing avatar' });
+    }
+
+    if (!fs.existsSync(avatarImage)) {
+        return res.status(400).json({ error: `Avatar image not found: ${avatarImage}` });
+    }
+
+    res.json({ status: 'started', profile: profile.name });
+
+    // Run async
+    changeAvatar(profile, avatarImage).catch((err) => {
+        console.error(`[${profile.name}] Avatar change failed:`, err.message);
+    });
+});
+
+
+async function addFavoriteMusic(profile, searchTerm) {
+    const profileId = profile.id;
+    const userDataDir = path.join(PROFILES_DIR, profile.name);
+
+    const log = (msg) => {
+        const entry = `[${new Date().toISOString()}] [${profile.name}][FAV-MUSIC] ${msg}\n`;
+        console.log(entry.trim());
+        try {
+            fs.appendFileSync(path.join(__dirname, 'automation.log'), entry);
+        } catch (e) {}
+    };
+
+    // Find a dummy video to upload
+    let videoPath = null;
+    try {
+        const dummyFiles = fs.readdirSync(DUMMY_VIDEOS_DIR).filter(f => {
+            const ext = path.extname(f).toLowerCase();
+            return ['.mp4', '.mov', '.avi', '.mkv', '.webm'].includes(ext);
+        });
+        if (dummyFiles.length === 0) {
+            log('ERROR: No video found in dummy_videos folder. Please add a video file to dummy_videos/');
+            return;
+        }
+        videoPath = path.join(DUMMY_VIDEOS_DIR, dummyFiles[0]);
+        log(`Using dummy video: ${dummyFiles[0]}`);
+    } catch (e) {
+        log(`ERROR reading dummy_videos folder: ${e.message}`);
+        return;
+    }
+
+    const browserOptions = {
+        headless: false,
+        args: ['--disable-blink-features=AutomationControlled']
+    };
+    if (profile.proxy) {
+        const proxyConfig = parseProxy(profile.proxy);
+        if (proxyConfig) browserOptions.proxy = proxyConfig;
+    }
+
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    addingFavoriteMusicProfiles.add(profileId);
+    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
+
+    log(`Searching for music: "${searchTerm}"`);
+
+    try {
+        const page = await browser.newPage();
+
+        // Step 1: Navigate to upload page
+        log('Navigating to upload page...');
+        let initialized = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                await page.goto('https://www.tiktok.com/tiktokstudio/upload', {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 30000
+                });
+
+                for (let poll = 0; poll < 30; poll++) {
+                    const [hasInput, hasButton] = await Promise.all([
+                        page.$('input[type="file"]'),
+                        page.$('button.upload-stage-btn, .upload-stage-btn, [data-e2e="upload-video-button"]'),
+                    ]);
+                    if (hasButton || hasInput) {
+                        log('Upload page components detected.');
+                        initialized = true;
+                        break;
+                    }
+                    await page.waitForTimeout(1000);
+                }
+                if (initialized) break;
+            } catch (e) {
+                log(`Attempt ${attempt} failed: ${e.message}`);
+            }
+        }
+
+        if (!initialized) {
+            log('ERROR: Upload page components not found.');
+            return;
+        }
+
+        // Step 2: Upload the dummy video
+        log('Uploading dummy video...');
+        let uploaded = false;
+
+        // Strategy 1: Intercept filechooser via upload button
+        const uploadButtonSelectors = [
+            '[data-e2e="upload-video-button"]',
+            'button.upload-stage-btn',
+            'button:has-text("Select videos")',
+            '.upload-stage-btn',
+            'button[class*="upload"]'
+        ];
+        for (const sel of uploadButtonSelectors) {
+            try {
+                const el = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
+                if (el) {
+                    log(`Found upload button: ${sel}. Intercepting filechooser...`);
+                    const [fileChooser] = await Promise.all([
+                        page.waitForEvent('filechooser', { timeout: 20000 }),
+                        el.click()
+                    ]);
+                    await fileChooser.setFiles(videoPath);
+                    log('Video file selected via upload button.');
+                    uploaded = true;
+                    break;
+                }
+            } catch (e) {}
+        }
+
+        // Strategy 2: Unhide file input and setInputFiles
+        if (!uploaded) {
+            log('Strategy 2: unhide input and setInputFiles...');
+            try {
+                await page.evaluate(() => {
+                    const input = document.querySelector('input[type="file"]');
+                    if (input) {
+                        input.style.display = 'block';
+                        input.style.visibility = 'visible';
+                        input.style.opacity = '1';
+                        input.style.position = 'fixed';
+                        input.style.top = '0';
+                        input.style.left = '0';
+                        input.style.zIndex = '99999';
+                    }
+                });
+                await page.waitForTimeout(500);
+                const [fileChooser] = await Promise.all([
+                    page.waitForEvent('filechooser', { timeout: 5000 }),
+                    page.click('input[type="file"]')
+                ]);
+                await fileChooser.setFiles(videoPath);
+                log('Video file selected via Strategy 2.');
+                uploaded = true;
+            } catch (e) {}
+        }
+
+        if (!uploaded) {
+            log('ERROR: Could not upload dummy video.');
+            return;
+        }
+
+        // Step 3: Wait for upload UI to appear (sounds button becomes available after upload)
+        log('Waiting for upload UI components...');
+        try {
+            await page.waitForSelector('button[data-button-name="sounds"], button:has-text("Post"), button:has-text("Cancel")', { timeout: 120000 });
+            await page.waitForTimeout(5000);
+        } catch (e) {
+            log(`Upload UI did not appear: ${e.message}`);
+        }
+
+        // Step 4: Click Sounds button
+        log('Looking for Sounds button...');
+        let soundsBtn = null;
+        try {
+            soundsBtn = await page.waitForSelector('button[data-button-name="sounds"]', { timeout: 30000, state: 'visible' });
+        } catch (e) {
+            log(`Sounds button not found directly: ${e.message}`);
+            // Try clicking Edit video first
+            try {
+                const editBtn = await page.$('button:has-text("Edit video"), button:has-text("Edit")');
+                if (editBtn && await editBtn.isVisible()) {
+                    log('Clicking Edit Video first...');
+                    await editBtn.click();
+                    await page.waitForTimeout(3000);
+                    soundsBtn = await page.waitForSelector('button[data-button-name="sounds"]', { timeout: 10000, state: 'visible' }).catch(() => null);
+                }
+            } catch (e2) {
+                log(`Edit video approach failed: ${e2.message}`);
+            }
+        }
+
+        if (!soundsBtn) {
+            log('ERROR: Sounds button not found on upload page');
+            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_sounds.png`) }).catch(() => null);
+            return;
+        }
+
+        log('Clicking Sounds button...');
+        await soundsBtn.click();
+        await page.waitForTimeout(3000);
+
+        // Step 5: Wait for Sounds panel to fully open, then find search input
+        log('Waiting for Sounds panel to fully open...');
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
+        log('Looking for search input in Sounds panel...');
+
+        const searchInputSelectors = [
+            'input.TextInput__input',
+            'input[placeholder="Search sounds"]',
+            'input[role="textbox"][type="text"]',
+            'input[placeholder*="search" i]',
+            'input[placeholder*="sound" i]',
+            'input[placeholder*="music" i]',
+            'input[type="search"]',
+            'input[class*="Search"]',
+        ];
+
+        let searchInput = null;
+        for (const sel of searchInputSelectors) {
+            try {
+                searchInput = await page.waitForSelector(sel, { timeout: 8000 });
+                if (searchInput) {
+                    log(`Found search input via: ${sel}`);
+                    break;
+                }
+            } catch (e) {}
+        }
+
+        if (!searchInput) {
+            log('ERROR: Search input not found in Sounds panel');
+            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_search.png`) }).catch(() => null);
+            return;
+        }
+
+        // Step 6: Type search term using page.fill() — handles React controlled inputs correctly
+        log(`Setting search term: "${searchTerm}"`);
+        await searchInput.fill(searchTerm);
+        log('Search term filled, waiting for suggestions...');
+        await page.waitForTimeout(2000);
+        await page.keyboard.press('Enter');
+        log('Enter pressed, waiting for results...');
+        await page.waitForTimeout(4000);
+
+        // Step 7: Click star/bookmark on first search result
+        // The star button is hidden until real mouse hover — use Playwright's native hover() (not JS dispatchEvent)
+        // which triggers React's synthetic event system properly
+        log('Looking for first search result...');
+        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
+
+        // Find first music listitem (has data-item-id and MusicPanelMusicItem__wrap)
+        const firstItem = await page.$('div[role="listitem"][data-item-id]');
+        if (!firstItem) {
+            log('WARNING: No search results found');
+            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
+            return;
+        }
+
+        // Use Playwright's native hover to trigger React hover handlers
+        log('Hovering first result with Playwright native hover...');
+        await firstItem.hover();
+        await page.waitForTimeout(1500);
+
+        // After hover, look for the star/bookmark button that should now appear
+        // It lives inside MusicPanelMusicItem__operation next to the plus-bold button
+        const starClicked = await page.evaluate(() => {
+            // Find the first music listitem and look inside its operation div
+            const item = document.querySelector('div[role="listitem"][data-item-id]');
+            if (!item) return 'no_item';
+
+            const opDiv = item.querySelector('[class*="operation"]');
+            if (!opDiv) return 'no_operation';
+
+            // Get all buttons in the operation area
+            const buttons = opDiv.querySelectorAll('button');
+            for (const btn of buttons) {
+                // Skip the plus-bold button
+                if (btn.querySelector('[data-icon="plus-bold"]')) continue;
+                // This should be the star/bookmark button
+                btn.click();
+                return 'clicked';
+            }
+
+            // Fallback: look for any [data-icon] that's not plus-bold
+            const icons = opDiv.querySelectorAll('[data-icon]');
+            for (const icon of icons) {
+                const name = icon.getAttribute('data-icon') || '';
+                if (name && name !== 'plus-bold' && name !== 'Loading' && name !== 'center') {
+                    const btn = icon.closest('button');
+                    if (btn) { btn.click(); return 'clicked_icon_' + name; }
+                }
+            }
+
+            // Last resort: dump what buttons exist
+            const btnInfo = Array.from(buttons).map(b => ({
+                text: b.textContent?.trim() || '',
+                aria: b.getAttribute('aria-label') || '',
+                icons: Array.from(b.querySelectorAll('[data-icon]')).map(i => i.getAttribute('data-icon'))
+            }));
+            return 'no_star_btn_' + JSON.stringify(btnInfo);
+        });
+
+        log(`Star click result: ${starClicked}`);
+
+        if (starClicked.startsWith('clicked')) {
+            log('Clicked star/bookmark on first result — music favorited');
+        } else {
+            log(`WARNING: Could not click star — ${starClicked}`);
+            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_star.png`) }).catch(() => null);
+        }
+
+        await page.waitForTimeout(2000);
+
+        log('Favorite music flow completed');
+    } catch (err) {
+        log(`Favorite music error: ${err.message}`);
+        throw err;
+    } finally {
+        addingFavoriteMusicProfiles.delete(profileId);
+        await browser.close().catch(() => null);
+        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        log('Favorite music session ended, browser closed.');
+    }
+}
+
+app.post('/api/add-favorite-music', async (req, res) => {
+    const { profileId, searchTerm } = req.body;
+    if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
+    if (!searchTerm || !searchTerm.trim()) return res.status(400).json({ error: 'Search term is required' });
+
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently running automation or processing a video' });
+    }
+
+    if (avatarChangingProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is currently changing avatar' });
+    }
+
+    if (addingFavoriteMusicProfiles.has(profileId)) {
+        return res.status(400).json({ error: 'Profile is already adding favorite music' });
+    }
+
+    res.json({ status: 'started', profile: profile.name });
+
+    // Run async — fire and forget
+    addFavoriteMusic(profile, searchTerm.trim()).catch((err) => {
+        console.error(`[${profile.name}] Add favorite music failed:`, err.message);
+    });
 });
 
 
