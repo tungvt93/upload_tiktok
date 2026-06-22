@@ -788,19 +788,29 @@ const engagingProfiles = new Map(); // profileId -> { browser, stop: boolean }
 const loggingInProfiles = new Map(); // profileId -> { browser, stop, stats }
 
 app.post('/api/upload_new_video', async (req, res) => {
-    const { video_id, channel_id } = req.body;
+    const { video_id, channel_id, profile_id, profile_name } = req.body;
 
     if (!video_id || !channel_id) {
         return res.status(400).json({ error: 'Both video_id and channel_id are required' });
     }
 
-    // Find profile that manages this channel_id
-    const profiles = db.prepare('SELECT * FROM profiles').all();
-    const profile = profiles.find(p => {
-        if (!p.channel_ids) return false;
-        const ids = p.channel_ids.split(',').map(id => id.trim());
-        return ids.includes(channel_id.trim());
-    });
+    // Find profile
+    let profile = null;
+    if (profile_id) {
+        profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile_id);
+    } else if (profile_name) {
+        profile = db.prepare('SELECT * FROM profiles WHERE name = ?').get(profile_name);
+    }
+
+    if (!profile) {
+        // Fallback to channel_id lookup
+        const profiles = db.prepare('SELECT * FROM profiles').all();
+        profile = profiles.find(p => {
+            if (!p.channel_ids) return false;
+            const ids = p.channel_ids.split(',').map(id => id.trim());
+            return ids.includes(channel_id.trim());
+        });
+    }
 
     if (!profile) {
         return res.status(404).json({ error: `No profile found managing channel ID: ${channel_id}` });
@@ -822,8 +832,43 @@ app.post('/api/upload_new_video', async (req, res) => {
     processingProfiles.add(profile.id);
 
     let downloadedFilePath = null;
+    const activeProcesses = [];
+
+    // Helper to spawn process safely
+    const safeSpawn = (cmd, args, timeoutMs = 300000) => {
+        const child = spawn(cmd, args);
+        activeProcesses.push(child);
+
+        let timeout = null;
+        if (timeoutMs > 0) {
+            timeout = setTimeout(() => {
+                console.log(`[${profile.name}] Process '${cmd} ${args.join(' ')}' timed out after ${timeoutMs}ms. Killing it.`);
+                try { child.kill('SIGKILL'); } catch (e) {}
+            }, timeoutMs);
+        }
+
+        const cleanup = () => {
+            if (timeout) clearTimeout(timeout);
+            const idx = activeProcesses.indexOf(child);
+            if (idx !== -1) activeProcesses.splice(idx, 1);
+        };
+
+        child.on('close', cleanup);
+        child.on('error', cleanup);
+        return child;
+    };
+
+    req.on('close', () => {
+        if (activeProcesses.length > 0) {
+            console.log(`[${profile.name}] Request closed/aborted. Killing ${activeProcesses.length} active process(es)...`);
+            for (const child of activeProcesses) {
+                try { child.kill('SIGKILL'); } catch (e) {}
+            }
+        }
+    });
 
     try {
+
         // Determine destination folder
         const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
         if (!fs.existsSync(videoFolder)) {
@@ -837,11 +882,14 @@ app.post('/api/upload_new_video', async (req, res) => {
         }
 
         // 1. Resolve the correct URL and Get Title
+        const cookiesPath = path.join(__dirname, 'cookies.txt');
+        const cookieArgs = fs.existsSync(cookiesPath) ? ['--cookies', cookiesPath] : [];
+
         let targetUrl = `https://youtube.com/shorts/${video_id}`;
         console.log(`[${profile.name}] Checking if video is a Short: ${targetUrl}`);
         
         let originalTitle = await new Promise((resolve) => {
-            const child = spawn('yt-dlp', ['--get-title', '--no-playlist', targetUrl]);
+            const child = safeSpawn('yt-dlp', ['--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
             let titleData = '';
             child.stdout.on('data', (data) => { titleData += data.toString(); });
             child.on('close', (code) => {
@@ -857,7 +905,7 @@ app.post('/api/upload_new_video', async (req, res) => {
             console.log(`[${profile.name}] Short not found. Falling back to Long video format: ${targetUrl}`);
             
             originalTitle = await new Promise((resolve) => {
-                const child = spawn('yt-dlp', ['--get-title', '--no-playlist', targetUrl]);
+                const child = safeSpawn('yt-dlp', ['--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
                 let titleData = '';
                 child.stdout.on('data', (data) => { titleData += data.toString(); });
                 child.on('close', (code) => {
@@ -884,12 +932,14 @@ app.post('/api/upload_new_video', async (req, res) => {
             '-o', downloadedFilePath,
             '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
             '--merge-output-format', 'mp4',
-            '--no-playlist'
+            '--no-playlist',
+            ...cookieArgs
         ];
 
         await new Promise((resolve, reject) => {
-            const child = spawn('yt-dlp', downloadArgs);
+            const child = safeSpawn('yt-dlp', downloadArgs);
             let stderrData = '';
+            child.stdout.on('data', () => {}); // Consume stdout to prevent hanging
             child.stderr.on('data', (data) => { stderrData += data.toString(); });
             child.on('close', (code) => {
                 if (code === 0) resolve();
@@ -902,7 +952,7 @@ app.post('/api/upload_new_video', async (req, res) => {
 
         // Check video duration - skip if less than 5 seconds
         let videoDuration = await new Promise((resolve) => {
-            const ffprobe = spawn('ffprobe', [
+            const ffprobe = safeSpawn('ffprobe', [
                 '-v', 'error',
                 '-show_entries', 'format=duration',
                 '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -926,7 +976,7 @@ app.post('/api/upload_new_video', async (req, res) => {
 
             // Check if there is an audio stream to avoid mapping errors in ffmpeg
             const hasAudio = await new Promise((resolve) => {
-                const ffprobe = spawn('ffprobe', [
+                const ffprobe = safeSpawn('ffprobe', [
                     '-v', 'error',
                     '-select_streams', 'a',
                     '-show_entries', 'stream=codec_type',
@@ -950,7 +1000,7 @@ app.post('/api/upload_new_video', async (req, res) => {
 
             try {
                 await new Promise((resolve, reject) => {
-                    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+                    const ffmpegProcess = safeSpawn('ffmpeg', ffmpegArgs);
                     ffmpegProcess.on('close', (code) => {
                         if (code === 0) resolve(true);
                         else reject(new Error(`ffmpeg exited with code ${code}`));
@@ -963,7 +1013,7 @@ app.post('/api/upload_new_video', async (req, res) => {
                 
                 // Re-measure duration
                 videoDuration = await new Promise((resolve) => {
-                    const ffprobe = spawn('ffprobe', [
+                    const ffprobe = safeSpawn('ffprobe', [
                         '-v', 'error',
                         '-show_entries', 'format=duration',
                         '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -1012,7 +1062,7 @@ app.post('/api/upload_new_video', async (req, res) => {
                         '-c', 'copy',
                         slicePath
                     ];
-                    const child = spawn('ffmpeg', sliceArgs);
+                    const child = safeSpawn('ffmpeg', sliceArgs);
                     child.on('close', (code) => {
                         if (code === 0) resolve();
                         else reject(new Error(`Extract slice exited with code ${code}`));
@@ -1035,7 +1085,7 @@ app.post('/api/upload_new_video', async (req, res) => {
                         '-c', 'copy',
                         concatFilePath
                     ];
-                    const child = spawn('ffmpeg', concatArgs);
+                    const child = safeSpawn('ffmpeg', concatArgs);
                     child.on('close', (code) => {
                         if (code === 0) resolve();
                         else reject(new Error(`Concat exited with code ${code}`));
@@ -1050,7 +1100,7 @@ app.post('/api/upload_new_video', async (req, res) => {
 
                 // Re-measure final duration
                 videoDuration = await new Promise((resolve) => {
-                    const ffprobe = spawn('ffprobe', [
+                    const ffprobe = safeSpawn('ffprobe', [
                         '-v', 'error',
                         '-show_entries', 'format=duration',
                         '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -1096,7 +1146,7 @@ app.post('/api/upload_new_video', async (req, res) => {
             ];
 
             await new Promise((resolve, reject) => {
-                const child = spawn(pythonBinary, renderArgs);
+                const child = safeSpawn(pythonBinary, renderArgs);
                 let stdoutData = '';
                 let stderrData = '';
                 child.stdout.on('data', (data) => stdoutData += data.toString());
