@@ -2344,10 +2344,43 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             log(`Failed to find favorites tab: ${e.message}`);
                         }
 
-                        log(`Tab click result: waiting 3s...`);
-                        await page.waitForTimeout(3000);
+                        // Wait for Favorites panel content to actually load (not just a blind 3s delay)
+                        // This prevents accidentally clicking a plus button in the For You tab when VPN lag
+                        // causes the Favorites tab to switch back or not finish rendering in time
+                        log(`Tab click done. Waiting for Favorites panel content to load...`);
+                        let favContentLoaded = false;
+                        try {
+                            // Verify the tab is actually selected
+                            await page.waitForSelector(
+                                'button[role="tab"][aria-selected="true"][aria-controls="panel-favorites"]',
+                                { timeout: 8000 }
+                            ).catch(() => log('Favorites tab aria-selected check timed out, proceeding anyway.'));
 
-                        // Screenshot after tab click
+                            // Wait for at least one music item to appear inside the favorites panel
+                            const favItemSelectors = [
+                                '#panel-favorites div[class*="ListItem"]',
+                                '#panel-favorites div[role="listitem"]',
+                                '#panel-favorites .music-item',
+                                '#panel-favorites [data-item-id]',
+                                'div[class*="MusicPanel"] div[class*="ListItem"]',
+                                'div[class*="MusicPanel"] div[role="listitem"]',
+                            ];
+                            for (const sel of favItemSelectors) {
+                                const item = await page.waitForSelector(sel, { timeout: 10000, state: 'visible' }).catch(() => null);
+                                if (item) {
+                                    log(`Favorites content loaded (found item via ${sel}).`);
+                                    favContentLoaded = true;
+                                    break;
+                                }
+                            }
+                            if (!favContentLoaded) {
+                                log('WARNING: Favorites panel content did not load after tab click. Proceeding with caution...');
+                            }
+                        } catch (e) {
+                            log(`Error waiting for favorites content: ${e.message}`);
+                        }
+
+                        // Screenshot after tab click + content wait
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_after_fav_click.png`) }).catch(() => null);
 
                         // Click the first plus button INSIDE the favorites panel
