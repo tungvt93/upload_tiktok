@@ -596,6 +596,166 @@ app.delete('/api/profiles/:id', (req, res) => {
     }
 });
 
+// POST /api/profiles/clear-trash — Clear cache/trash from profile folders to free disk space
+// Safely removes only Chromium cache directories, preserving auth (Cookies, Login Data, Local Storage, Preferences)
+app.post('/api/profiles/clear-trash', (req, res) => {
+    const { profileIds } = req.body;
+    if (!profileIds || !Array.isArray(profileIds) || profileIds.length === 0) {
+        return res.status(400).json({ error: 'profileIds array is required' });
+    }
+
+    // Directories safe to delete (cache only, no auth data)
+    const TRASH_DIRS = [
+        'Cache', 'Code Cache', 'GPUCache',
+        'Service Worker',
+        'GraphiteDawnCache', 'DawnWebGPUCache', 'DawnGraphiteCache',
+        'ShaderCache', 'GrShaderCache',
+        'Session Storage',
+        'component_crx_cache', 'extensions_crx_cache',
+        'segmentation_platform',
+        'shared_proto_db',
+        'GCM Store',
+        'Site Characteristics Database',
+        'Sync Data',
+        'Feature Engagement Tracker',
+        'Extension State', 'Extension Scripts', 'Extension Rules',
+        'Search Logos',
+        'VideoDecodeStats',
+        'PersistentOriginTrials',
+        'parcel_tracking_db',
+        'Safe Browsing',
+        'NativeMessagingHosts',
+    ];
+
+    // Also clear specific cache files in Default/ (not directories)
+    const TRASH_FILES = [
+        'TransportSecurity',   // HSTS preload cache
+        'Network Persistent State',  // network state cache
+        'Reporting and NEL',   // network error logging
+        'OriginTrials',        // origin trial tokens (file version)
+        'QuotaManager',        // quota tracking (rebuilt on next launch)
+        'QuotaManager-journal',
+        'LOCK',                // DB lock file
+        'LOG',                 // DB log file
+        'LOG.old',             // old DB log
+    ];
+
+    const results = [];
+    let totalFreedBytes = 0;
+
+    for (const profileId of profileIds) {
+        const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+        if (!profile) {
+            results.push({ profileId, profileName: '(unknown)', error: 'Profile not found', freedBytes: 0 });
+            continue;
+        }
+
+        const profileDir = path.join(PROFILES_DIR, profile.name);
+        if (!fs.existsSync(profileDir)) {
+            results.push({ profileId, profileName: profile.name, error: 'Profile folder not found', freedBytes: 0 });
+            continue;
+        }
+
+        let profileFreedBytes = 0;
+
+        // Helper: recursive directory size (before deletion)
+        const getDirSize = (dirPath) => {
+            let size = 0;
+            try {
+                const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+                for (const entry of entries) {
+                    const fullPath = path.join(dirPath, entry.name);
+                    try {
+                        if (entry.isDirectory()) {
+                            size += getDirSize(fullPath);
+                        } else if (entry.isFile()) {
+                            size += fs.statSync(fullPath).size;
+                        }
+                    } catch (e) { /* skip inaccessible entry */ }
+                }
+            } catch (e) { /* directory not accessible */ }
+            return size;
+        };
+
+        // Helper: sync sleep (ms), works on all platforms
+        const syncSleep = (ms) => {
+            const end = Date.now() + ms;
+            while (Date.now() < end) { /* spin */ }
+        };
+
+        // Helper: remove a path with retry (Windows may lock files briefly)
+        const rmWithRetry = (targetPath) => {
+            let bytes = 0;
+            try {
+                bytes = getDirSize(targetPath);
+            } catch (e) { /* size check failed, still try to delete */ }
+
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    if (fs.existsSync(targetPath)) {
+                        fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+                    }
+                    break; // success
+                } catch (e) {
+                    if (attempt < 2) {
+                        syncSleep(200 * (attempt + 1));
+                    } else {
+                        console.error(`[ClearTrash] Failed to delete ${targetPath}: ${e.message}`);
+                    }
+                }
+            }
+            return bytes;
+        };
+
+        // Delete trash directories in profile root and Default/
+        for (const trashDir of TRASH_DIRS) {
+            // Check in profile root
+            const rootPath = path.join(profileDir, trashDir);
+            if (fs.existsSync(rootPath)) {
+                profileFreedBytes += rmWithRetry(rootPath);
+            }
+            // Check in Default/ subfolder
+            const defaultPath = path.join(profileDir, 'Default', trashDir);
+            if (fs.existsSync(defaultPath)) {
+                profileFreedBytes += rmWithRetry(defaultPath);
+            }
+        }
+
+        // Delete specific trash files in Default/
+        for (const trashFile of TRASH_FILES) {
+            const filePath = path.join(profileDir, 'Default', trashFile);
+            if (fs.existsSync(filePath)) {
+                try {
+                    const fileSize = fs.statSync(filePath).size;
+                    fs.rmSync(filePath, { force: true, maxRetries: 3, retryDelay: 100 });
+                    profileFreedBytes += fileSize;
+                } catch (e) {
+                    console.error(`[ClearTrash] Failed to delete ${filePath}: ${e.message}`);
+                }
+            }
+        }
+
+        totalFreedBytes += profileFreedBytes;
+        const freedMB = (profileFreedBytes / (1024 * 1024)).toFixed(1);
+        console.log(`[ClearTrash] ${profile.name}: freed ${freedMB} MB`);
+        results.push({
+            profileId,
+            profileName: profile.name,
+            freedBytes: profileFreedBytes,
+            freedMB: parseFloat(freedMB),
+        });
+    }
+
+    const totalMB = (totalFreedBytes / (1024 * 1024)).toFixed(1);
+    console.log(`[ClearTrash] Total freed: ${totalMB} MB across ${profileIds.length} profile(s)`);
+    res.json({
+        success: true,
+        totalFreedBytes,
+        totalFreedMB: parseFloat(totalMB),
+        results,
+    });
+});
+
 app.patch('/api/profiles/:id', (req, res) => {
     const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check } = req.body;
     const profileId = req.params.id;
@@ -3452,8 +3612,12 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
             }
 
             // Wait for page transition — MS redirects after email
-            // After email, Microsoft may show "Use your password" button instead of direct password field
-            await emailPage.waitForTimeout(3000);
+            // After email, Microsoft may show different UIs depending on the account:
+            //   Variant A: "Use your password" link is visible directly
+            //   Variant B: "Verify your email" screen with "Use your password" link
+            //   Variant C: "Other ways to sign in" must be clicked first, then "Use your password" appears
+            //   Variant D: "Other ways to sign in" then "Password" option then password field
+            await emailPage.waitForTimeout(4000);
             const afterNextUrl = emailPage.url();
             log(`Hotmail: after Next URL = ${afterNextUrl}`);
 
@@ -3461,12 +3625,36 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
             if (afterNextUrl.includes('/mail') && afterNextUrl.includes('outlook.live.com')) {
                 log('Hotmail: auto-login detected, already on inbox. Skipping password...');
             } else {
-            // Click "Use your password" or similar if present
+
+            // --- STEP A: Handle "Other ways to sign in" if present ---
+            // Some MS login variants hide the password option behind this link
+            const otherWaysSelectors = [
+                ':text("Other ways to sign in")',
+                ':text-matches("other ways to sign", "i")',
+                ':text-matches("other ways to sign in", "i")',
+                'a:has-text("Other ways to sign")',
+                'span:has-text("Other ways to sign")',
+                'button:has-text("Other ways to sign")',
+            ];
+            for (const sel of otherWaysSelectors) {
+                const otherWaysBtn = await emailPage.$(sel);
+                if (otherWaysBtn && await otherWaysBtn.isVisible().catch(() => false)) {
+                    await otherWaysBtn.click();
+                    log(`Hotmail: clicked "Other ways to sign in" via ${sel}`);
+                    await emailPage.waitForTimeout(3000);
+                    break;
+                }
+            }
+
+            // --- STEP B: Click "Use your password" or "Password" option ---
+            // After "Other ways to sign in" (or directly), find and click the password option
             const usePwSelectors = [
                 ':text("Use your password")',
                 ':text("use your password")',
-                'a:has-text("password"), button:has-text("password")',
                 ':text("Password")',
+                'a:has-text("password"), button:has-text("password")',
+                'span:has-text("Use your password")',
+                'span:has-text("Password")',
                 '#aadTile, #aadTileTitle',
             ];
             for (const sel of usePwSelectors) {
@@ -3474,20 +3662,22 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                 if (usePwBtn && await usePwBtn.isVisible().catch(() => false)) {
                     await usePwBtn.click();
                     log(`Hotmail: clicked "Use your password" via ${sel}`);
-                    await emailPage.waitForTimeout(2000);
+                    await emailPage.waitForTimeout(3000);
                     break;
                 }
             }
 
-            // Try to find password field with generous wait
+            // --- STEP C: Handle password entry ---
             // But first check if auto-login redirected us away from login page
             const afterPwWaitUrl = emailPage.url();
             if (!afterPwWaitUrl.includes('login') && !afterPwWaitUrl.includes('live.com')) {
                 log('Hotmail: auto-login detected (already on inbox). Skipping password...');
             } else {
-                let passField = await emailPage.waitForSelector('input[type="password"]', {
-                    timeout: 20000, state: 'visible'
-                }).catch(() => null);
+                // Wait for password field — MS Fluent UI may use #passwordEntry or #i0118
+                let passField = await emailPage.waitForSelector(
+                    'input[type="password"]:visible, input#passwordEntry:visible, input#i0118:visible',
+                    { timeout: 20000 }
+                ).catch(() => null);
 
                 if (passField && profile.pass_email) {
                     await passField.click();
@@ -3495,9 +3685,10 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                     log('Hotmail: password entered');
 
                     await emailPage.waitForTimeout(500);
+                    // Submit button — Fluent UI <button>Next</button> may not have type="submit"
                     const signInBtn = await emailPage.waitForSelector(
-                        'input[type="submit"], button[type="submit"], #idSIButton9',
-                        { timeout: 5000 }
+                        'input[type="submit"]:visible, button[type="submit"]:visible, #idSIButton9, button:has-text("Next"):visible, button:has-text("Sign in"):visible',
+                        { timeout: 8000 }
                     ).catch(() => null);
                     if (signInBtn) {
                         await signInBtn.click();
@@ -3508,10 +3699,13 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                     log(`Hotmail: after sign-in URL = ${emailPage.url()}`);
 
                     // Dismiss "Stay signed in?" if present
-                    const stayBtn = await emailPage.$('input[type="submit"], button[type="submit"], #idSIButton9');
-                    if (stayBtn && await stayBtn.isVisible().catch(() => false)) {
+                    const stayBtn = await emailPage.waitForSelector(
+                        'input[type="submit"]:visible, button[type="submit"]:visible, #idSIButton9, button:has-text("Yes"):visible',
+                        { timeout: 5000 }
+                    ).catch(() => null);
+                    if (stayBtn) {
                         await stayBtn.click();
-                        log('Hotmail: dismissed prompt');
+                        log('Hotmail: dismissed "Stay signed in?" prompt');
                         await emailPage.waitForTimeout(3000);
                     }
                 } else if (passField && !profile.pass_email) {
@@ -3540,6 +3734,20 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                             return info;
                         }).catch(() => []);
                         log(`Hotmail: debug inputs found: ${JSON.stringify(debugInfo)}`);
+
+                        // Also log visible buttons to help debug
+                        const debugBtns = await emailPage.evaluate(() => {
+                            const buttons = document.querySelectorAll('button, input[type="submit"]');
+                            const info = [];
+                            for (const b of buttons) {
+                                if (b.offsetParent !== null) {
+                                    info.push({ tag: b.tagName, id: b.id || '', text: (b.innerText || b.value || '').substring(0, 60).trim() });
+                                }
+                            }
+                            return info;
+                        }).catch(() => []);
+                        log(`Hotmail: debug visible buttons: ${JSON.stringify(debugBtns)}`);
+
                         log('Hotmail: password field not found. Waiting 60s for manual login...');
                         await emailPage.waitForTimeout(60000);
                     }

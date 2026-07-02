@@ -813,6 +813,27 @@ const App = () => {
     setTimeout(() => setMessage(null), 6000);
   };
 
+  const clearTrash = async () => {
+    const profileIds = [...selectedForRun];
+    if (profileIds.length === 0) {
+      setMessage({ type: 'error', text: 'Chọn ít nhất một profile để Clear Trash.' });
+      return;
+    }
+    setMessage({ type: 'info', text: `Đang dọn rác cho ${profileIds.length} profile...` });
+    try {
+      const res = await axios.post('/api/profiles/clear-trash', { profileIds });
+      const { totalFreedMB } = res.data;
+      if (totalFreedMB > 0) {
+        setMessage({ type: 'success', text: `Đã giải phóng ${totalFreedMB} MB từ ${profileIds.length} profile.` });
+      } else {
+        setMessage({ type: 'info', text: 'Không có file rác nào cần dọn.' });
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi dọn rác' });
+    }
+    setTimeout(() => setMessage(null), 5000);
+  };
+
   const startBulkEngage = async () => {
     const profileIds = [...selectedForRun];
     if (profileIds.length === 0) {
@@ -1355,6 +1376,24 @@ const App = () => {
                   >
                     <Upload size={18} />
                     Import CSV
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={clearTrash}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần dọn rác' : 'Xoá cache/thùng rác của các profile đã chọn để tiết kiệm dung lượng'}
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(239, 155, 68, 0.08)',
+                      color: '#F59E0B',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      fontWeight: '700',
+                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Clear Trash
                   </button>
                   <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                     Giới hạn upload
