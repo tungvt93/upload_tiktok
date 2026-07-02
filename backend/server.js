@@ -939,7 +939,7 @@ app.post('/api/upload_new_video', async (req, res) => {
         console.log(`[${profile.name}] Checking if video is a Short: ${targetUrl}`);
         
         let originalTitle = await new Promise((resolve) => {
-            const child = safeSpawn('yt-dlp', ['--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
+            const child = safeSpawn('yt-dlp', ['--js-runtimes', `node:${process.execPath}`, '--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
             let titleData = '';
             child.stdout.on('data', (data) => { titleData += data.toString(); });
             child.on('close', (code) => {
@@ -955,7 +955,7 @@ app.post('/api/upload_new_video', async (req, res) => {
             console.log(`[${profile.name}] Short not found. Falling back to Long video format: ${targetUrl}`);
             
             originalTitle = await new Promise((resolve) => {
-                const child = safeSpawn('yt-dlp', ['--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
+                const child = safeSpawn('yt-dlp', ['--js-runtimes', `node:${process.execPath}`, '--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
                 let titleData = '';
                 child.stdout.on('data', (data) => { titleData += data.toString(); });
                 child.on('close', (code) => {
@@ -978,6 +978,7 @@ app.post('/api/upload_new_video', async (req, res) => {
 
         // Download video using yt-dlp command line
         const downloadArgs = [
+            '--js-runtimes', `node:${process.execPath}`,
             targetUrl,
             '-o', downloadedFilePath,
             '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
@@ -2333,7 +2334,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         // Refined selector using exact attribute provided by user
                         const favTab = 'button[role="tab"][aria-controls="panel-favorites"], button[role="tab"]:has-text("Favorites")';
                         log(`Waiting for Favorites tab: ${favTab}`);
-
+                        await page.waitForTimeout(5000);
                         try {
                             const tab = await page.waitForSelector(favTab, { timeout: 10000, state: 'visible' });
                             if (tab) {
