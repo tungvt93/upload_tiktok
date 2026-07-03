@@ -1777,30 +1777,48 @@ async function addFavoriteMusic(profile, searchTerm) {
             return;
         }
 
-        // Step 3: Wait for upload UI to appear (sounds button becomes available after upload)
+        // Step 3: Wait for upload UI to appear, then wait for processing to complete
+        // TikTok now requires video processing to finish before the edit sound button is enabled
         log('Waiting for upload UI components...');
         try {
             await page.waitForSelector('button[data-button-name="sounds"], button:has-text("Post"), button:has-text("Cancel")', { timeout: 120000 });
-            await page.waitForTimeout(5000);
+            log('Upload UI detected. Waiting for video processing to complete...');
         } catch (e) {
             log(`Upload UI did not appear: ${e.message}`);
         }
 
-        // Step 4: Click Sounds button
-        log('Looking for Sounds button...');
+        // Wait for upload to complete (Cancel button detaches)
+        try {
+            const cancelBtn = page.locator('button:has-text("Cancel")');
+            await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
+            log('Upload complete (Cancel button gone). Waiting for processing...');
+            await page.waitForTimeout(3000);
+        } catch (e) {
+            log(`Wait for upload completion timed out or failed: ${e.message}`);
+        }
+
+        // Step 4: Wait for sounds button to be enabled (processing complete) then click
+        log('Waiting for Sounds button to become enabled (processing complete)...');
         let soundsBtn = null;
         try {
-            soundsBtn = await page.waitForSelector('button[data-button-name="sounds"]', { timeout: 30000, state: 'visible' });
+            soundsBtn = await page.waitForSelector(
+                'button[data-button-name="sounds"]:not([disabled])',
+                { timeout: 300000, state: 'visible' }
+            );
+            log('Video processing complete — sounds button is now enabled.');
         } catch (e) {
-            log(`Sounds button not found directly: ${e.message}`);
-            // Try clicking Edit video first
+            log(`Sounds button did not become enabled directly: ${e.message}`);
+            // Try clicking Edit video first to reveal the sounds button
             try {
                 const editBtn = await page.$('button:has-text("Edit video"), button:has-text("Edit")');
                 if (editBtn && await editBtn.isVisible()) {
                     log('Clicking Edit Video first...');
                     await editBtn.click();
                     await page.waitForTimeout(3000);
-                    soundsBtn = await page.waitForSelector('button[data-button-name="sounds"]', { timeout: 10000, state: 'visible' }).catch(() => null);
+                    soundsBtn = await page.waitForSelector(
+                        'button[data-button-name="sounds"]:not([disabled])',
+                        { timeout: 60000, state: 'visible' }
+                    ).catch(() => null);
                 }
             } catch (e2) {
                 log(`Edit video approach failed: ${e2.message}`);
@@ -1808,12 +1826,12 @@ async function addFavoriteMusic(profile, searchTerm) {
         }
 
         if (!soundsBtn) {
-            log('ERROR: Sounds button not found on upload page');
+            log('ERROR: Sounds button not found or still disabled after processing wait');
             await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_sounds.png`) }).catch(() => null);
             return;
         }
 
-        log('Clicking Sounds button...');
+        log('Clicking enabled Sounds button...');
         await soundsBtn.click();
         await page.waitForTimeout(3000);
 
@@ -2415,20 +2433,50 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 } else {
                     log(`remove_title tắt: Giữ lại tiêu đề video.`);
                 }
+            } catch (e) {
+                log(`Clear title failed: ${e.message}`);
+                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_task_fail.png`) }).catch(() => null);
+            }
+            // --- END CLEAR TITLE ---
 
-                const useSetMusic = Number(profile.set_music) === 1;
-                if (!useSetMusic) {
-                    log(`set_music tắt: bỏ qua Edit video và chọn nhạc.`);
-                } else {
-                    log(`Task 2: Handling Editor and Sound selection...`);
-                    let soundsBtn = await page.$('button[data-button-name="sounds"]');
-                    if (!soundsBtn) {
+            // --- TASK: Wait for video upload to complete ---
+            try {
+                log("Waiting for video upload to complete...");
+                const cancelBtn = page.locator('button:has-text("Cancel")');
+                await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
+                log("Upload complete (Cancel button is gone). Waiting 5s for UI to settle...");
+                await page.waitForTimeout(5000);
+            } catch (uploadErr) {
+                log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
+            }
+
+            // --- TASK: Wait for video processing to complete & Add Sound ---
+            // TikTok now requires video processing to finish before the edit sound button
+            // becomes enabled. We wait for the sounds button to be visible and not disabled.
+            const useSetMusic = Number(profile.set_music) === 1;
+            if (useSetMusic) {
+                try {
+                    log(`Task 2: Waiting for video processing to complete (sounds button to be enabled)...`);
+                    // Wait for the sounds button to appear and be enabled (not disabled)
+                    // The button exists but is non-interactable while TikTok processes the video
+                    let soundsBtn = null;
+                    try {
+                        soundsBtn = await page.waitForSelector(
+                            'button[data-button-name="sounds"]:not([disabled])',
+                            { timeout: 300000, state: 'visible' }
+                        );
+                        log(`Video processing complete — sounds button is now enabled.`);
+                    } catch (e) {
+                        log(`Sounds button did not become enabled directly: ${e.message}`);
+                        // Try clicking Edit Video first to reveal the sounds button
                         const editButton = await page.$('button:has-text("Edit video"), .edit-video-btn, [data-e2e="edit-video-button"], button:has-text("Edit")');
                         if (editButton && await editButton.isVisible()) {
                             log(`Clicking Edit Video button...`);
                             await editButton.click();
-                            await page.waitForSelector('button[data-button-name="sounds"]', { timeout: 30000, state: 'visible' });
-                            soundsBtn = await page.$('button[data-button-name="sounds"]');
+                            soundsBtn = await page.waitForSelector(
+                                'button[data-button-name="sounds"]:not([disabled])',
+                                { timeout: 60000, state: 'visible' }
+                            ).catch(() => null);
                         }
                     }
 
@@ -2593,25 +2641,16 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             await page.waitForTimeout(2000);
                         }
                     } else {
-                        log(`Editor/Sounds button not found. Skipping editor steps.`);
+                        log(`Editor/Sounds button not found after processing wait. Skipping editor steps.`);
                     }
+                } catch (e) {
+                    log(`Add sound task failed: ${e.message}`);
+                    await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sound_fail.png`) }).catch(() => null);
                 }
-            } catch (e) {
-                log(`New tasks failed: ${e.message}`);
-                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_task_fail.png`) }).catch(() => null);
+            } else {
+                log(`set_music tắt: bỏ qua Edit video và chọn nhạc.`);
             }
-            // --- END NEW TASKS ---
-
-            // --- TASK: Wait for video upload to complete ---
-            try {
-                log("Waiting for video upload to complete...");
-                const cancelBtn = page.locator('button:has-text("Cancel")');
-                await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
-                log("Upload complete (Cancel button is gone). Waiting 5s for UI to settle...");
-                await page.waitForTimeout(5000);
-            } catch (uploadErr) {
-                log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
-            }
+            // --- END PROCESSING WAIT & ADD SOUND ---
 
             // --- TASK: Content Check Lite ---
             let checkSuccess = true;
