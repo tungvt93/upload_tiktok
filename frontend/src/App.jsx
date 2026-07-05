@@ -374,6 +374,7 @@ const App = () => {
   const [newProfileNeedsRender, setNewProfileNeedsRender] = useState(true);
   const [newProfileRemoveTitle, setNewProfileRemoveTitle] = useState(true);
   const [newProfileNeedContentCheck, setNewProfileNeedContentCheck] = useState(true);
+  const [newProfileRenderVideoLong, setNewProfileRenderVideoLong] = useState(false);
   const [isCreateProfileModalOpen, setIsCreateProfileModalOpen] = useState(false);
   const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -561,6 +562,7 @@ const App = () => {
     setNewProfileNeedsRender(true);
     setNewProfileRemoveTitle(true);
     setNewProfileNeedContentCheck(true);
+    setNewProfileRenderVideoLong(false);
   };
 
   const closeCreateProfileModal = ({ force } = {}) => {
@@ -583,7 +585,8 @@ const App = () => {
         channel_ids: newProfileChannelIds.trim() || null,
         needs_render: newProfileNeedsRender,
         remove_title: newProfileRemoveTitle,
-        need_content_check: newProfileNeedContentCheck
+        need_content_check: newProfileNeedContentCheck,
+        render_video_long: newProfileRenderVideoLong
       });
       closeCreateProfileModal({ force: true });
       await fetchData();
@@ -646,6 +649,19 @@ const App = () => {
       fetchData();
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const deleteSelectedProfiles = async () => {
+    if (selectedForRun.size === 0) return;
+    if (!window.confirm(`Bạn có chắc muốn xóa ${selectedForRun.size} profile đã chọn? Việc này cũng sẽ xóa các folder liên quan.`)) return;
+    try {
+      await axios.post('/api/profiles/delete-multiple', { profileIds: Array.from(selectedForRun) });
+      setSelectedForRun(new Set());
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      alert('Có lỗi khi xóa profile');
     }
   };
 
@@ -986,6 +1002,24 @@ const App = () => {
     processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { needs_render: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const updateProfileRenderVideoLong = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, render_video_long: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { render_video_long: enabled });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
@@ -1395,6 +1429,24 @@ const App = () => {
                     <Trash2 size={18} />
                     Clear Trash
                   </button>
+                  <button
+                    className="btn"
+                    onClick={deleteSelectedProfiles}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần xóa' : 'Xoá các profile đã chọn và folder của chúng'}
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      color: '#EF4444',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      fontWeight: '700',
+                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Xóa Profile
+                  </button>
                   <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                     Giới hạn upload
                     <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', height: '40px', padding: '0 12px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)', userSelect: 'none' }}>
@@ -1722,6 +1774,22 @@ const App = () => {
                           <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                             <input
                               type="checkbox"
+                              checked={newProfileRenderVideoLong}
+                              onChange={(e) => setNewProfileRenderVideoLong(e.target.checked)}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Render video dài (&gt;3p cắt nhỏ, up tất cả ngay)</span>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định tắt. Tự động cắt video dài thành nhiều phần, upload toàn bộ.</span>
+                            </div>
+                          </label>
+                        </div>
+
+                        <div className="input-group" style={{ marginBottom: '24px' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                            <input
+                              type="checkbox"
                               checked={newProfileNeedContentCheck}
                               onChange={(e) => setNewProfileNeedContentCheck(e.target.checked)}
                               disabled={isCreatingProfile || isSelectingFolder}
@@ -1927,6 +1995,7 @@ const App = () => {
                 onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
                 onUpdateUploadCount={updateProfileUploadCount}
                 onUpdateNeedsRender={updateProfileNeedsRender}
+                onUpdateRenderVideoLong={updateProfileRenderVideoLong}
                 onUpdateRemoveTitle={updateProfileRemoveTitle}
                 onUpdateNeedContentCheck={updateProfileNeedContentCheck}
                 onSelectAvatar={handleSelectAvatar}

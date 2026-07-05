@@ -34,6 +34,7 @@ const EditProfileModal = ({
   onUpdateNeedsRender,
   onUpdateRemoveTitle,
   onUpdateNeedContentCheck,
+  onUpdateRenderVideoLong,
   onSelectAvatar,
   selectedAvatarPath,
   musicSearchTerm,
@@ -326,6 +327,27 @@ const EditProfileModal = ({
                     </span>
                     <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                       Bật: xử lý lách bản quyền qua render.py. Tắt: giữ nguyên video gốc.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Render video long */}
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <input
+                    type="checkbox"
+                    checked={profile.render_video_long !== 0}
+                    onChange={(e) => onUpdateRenderVideoLong(profile.id, e.target.checked)}
+                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                      <Video size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                      Render video dài (&gt;3p cắt nhỏ, up tất cả ngay)
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      Bật: tự động cắt video dài thành nhiều phần, zoom 1.8x, làm nền mờ và upload liên tục toàn bộ.
                     </span>
                   </div>
                 </label>

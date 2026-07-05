@@ -152,16 +152,10 @@ def render_static_mask_overlay(
         f"rotate={angle}*PI/180:fillcolor=black@0,crop=1080:1920,"
         "eq=saturation=1.3:contrast=1.1,"
         "hflip=enable='between(mod(t,5),2.5,5)',"
-        "format=yuv420p[veffects]"
+        "format=yuv420p[vfinal]"
     )
     
-    # Background Mask Filter (from render_bk.py)
-    mask_filter = (
-        f"[1:v] scale=1080:1920, crop=1080:{mask_height}:0:(in_h-{mask_height})/2, format=rgba [mask]; "
-        f"[veffects][mask] overlay=0:(main_h-{mask_height})/2:shortest=1 [vfinal]"
-    )
-    
-    filters = v_trims + a_trims + [concat_filter, v_effects, mask_filter]
+    filters = v_trims + a_trims + [concat_filter, v_effects]
     
     if has_audio:
         # Original volume adjustment but NO atempo
@@ -174,7 +168,6 @@ def render_static_mask_overlay(
     cmd = [
         _ffmpeg_binary(), "-y",
         "-i", str(video_path),
-        "-loop", "1", "-i", str(background_path),
         "-filter_complex", filter_complex,
         "-map", "[vfinal]",
     ]
@@ -216,7 +209,6 @@ def render_static_mask_overlay(
             clean_cmd = [
                 _ffmpeg_binary(), "-y",
                 "-i", str(video_path),
-                "-loop", "1", "-i", str(background_path),
                 "-filter_complex", filter_complex,
                 "-map", "[vfinal]",
             ]

@@ -20,7 +20,7 @@ const createStoreError = (message, status) => {
     return error;
 };
 
-export function createProfileRecord(db, { id, name, group_id, video_folder, channel_ids, needs_render, remove_title, need_content_check }) {
+export function createProfileRecord(db, { id, name, group_id, video_folder, channel_ids, needs_render, remove_title, need_content_check, render_video_long }) {
     if (name === undefined || name === null) {
         throw createStoreError('Name is required', 400);
     }
@@ -43,12 +43,13 @@ export function createProfileRecord(db, { id, name, group_id, video_folder, chan
     const normalizedNeedsRender = needs_render !== undefined ? (needs_render ? 1 : 0) : 1;
     const normalizedRemoveTitle = remove_title !== undefined ? (remove_title ? 1 : 0) : 1;
     const normalizedNeedContentCheck = need_content_check !== undefined ? (need_content_check ? 1 : 0) : 1;
+    const normalizedRenderVideoLong = render_video_long !== undefined ? (render_video_long ? 1 : 0) : 0;
 
     try {
         db.prepare(
             `
-            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, group_id, video_folder, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, group_id, video_folder, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         ).run(
             id,
@@ -63,7 +64,8 @@ export function createProfileRecord(db, { id, name, group_id, video_folder, chan
             normalizedChannelIds,
             normalizedNeedsRender,
             normalizedRemoveTitle,
-            normalizedNeedContentCheck
+            normalizedNeedContentCheck,
+            normalizedRenderVideoLong
         );
     } catch (e) {
         if (e && e.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {

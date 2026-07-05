@@ -198,6 +198,18 @@ try {
     console.error('Migration error (remove_title column):', err);
 }
 
+// Migration: render_video_long — Xác định profile này có xử lý video dài không
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasRenderVideoLong = tableInfo.some((col) => col.name === 'render_video_long');
+    if (!hasRenderVideoLong) {
+        db.exec('ALTER TABLE profiles ADD COLUMN render_video_long INTEGER DEFAULT 0;');
+        console.log('Added render_video_long column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (render_video_long column):', err);
+}
+
 // Migration: need_content_check — Xác định profile này có cần check content không
 try {
     const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
@@ -365,7 +377,7 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name, group_id, video_folder, channel_ids, need_content_check } = req.body;
+    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long } = req.body;
 
     try {
         const id = Date.now().toString();
@@ -375,7 +387,8 @@ app.post('/api/profiles', (req, res) => {
             group_id,
             video_folder,
             channel_ids,
-            need_content_check
+            need_content_check,
+            render_video_long
         });
         res.json(profile);
     } catch (err) {
@@ -530,7 +543,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
     }
 });
 
-app.delete('/api/profiles/:id', (req, res) => {
+app.delete('/api/profiles/:id', async (req, res) => {
     const profileId = req.params.id;
     try {
         // 1. Get profile info before deleting from DB
@@ -539,11 +552,32 @@ app.delete('/api/profiles/:id', (req, res) => {
         if (profile) {
             console.log(`[System] Deleting profile ${profile.name}...`);
 
+            // 1.5. Stop any active browser sessions
+            const stopSession = async (map, id) => {
+                if (map.has(id)) {
+                    try {
+                        const session = map.get(id);
+                        if (session) {
+                            if (session.stop !== undefined) session.stop = true;
+                            if (session.browser) await session.browser.close().catch(() => {});
+                            else if (session.close) await session.close().catch(() => {});
+                        }
+                    } catch (e) {}
+                    map.delete(id);
+                }
+            };
+            await stopSession(manualBrowsers, profileId);
+            await stopSession(engagingProfiles, profileId);
+            await stopSession(loggingInProfiles, profileId);
+
+            // Give Windows a moment to release file locks
+            await new Promise(r => setTimeout(r, 1000));
+
             // 2. Delete browser profile folder
             const profileFolder = path.join(PROFILES_DIR, profile.name);
             if (fs.existsSync(profileFolder) && profileFolder !== PROFILES_DIR && profile.name.length > 0) {
                 try {
-                    fs.rmSync(profileFolder, { recursive: true, force: true });
+                    fs.rmSync(profileFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
                     console.log(`[System] Deleted browser profile folder: ${profileFolder}`);
                 } catch (err) {
                     console.error(`[System] Error deleting browser profile folder: ${err.message}`);
@@ -554,7 +588,7 @@ app.delete('/api/profiles/:id', (req, res) => {
             const videoFolder = profile.video_folder;
             if (videoFolder && fs.existsSync(videoFolder) && videoFolder !== UPLOADS_DIR && videoFolder.length > 5) {
                 try {
-                    fs.rmSync(videoFolder, { recursive: true, force: true });
+                    fs.rmSync(videoFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
                     console.log(`[System] Deleted video upload folder from DB: ${videoFolder}`);
                 } catch (err) {
                     console.error(`[System] Error deleting video folder from DB: ${err.message}`);
@@ -565,7 +599,7 @@ app.delete('/api/profiles/:id', (req, res) => {
             const uploadsProfileFolder = path.join(UPLOADS_DIR, profile.name);
             if (fs.existsSync(uploadsProfileFolder) && uploadsProfileFolder !== UPLOADS_DIR && profile.name.length > 0) {
                 try {
-                    fs.rmSync(uploadsProfileFolder, { recursive: true, force: true });
+                    fs.rmSync(uploadsProfileFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
                     console.log(`[System] Deleted video upload folder matching profile name: ${uploadsProfileFolder}`);
                 } catch (err) {
                     console.error(`[System] Error deleting video upload folder matching profile name: ${err.message}`);
@@ -578,7 +612,7 @@ app.delete('/api/profiles/:id', (req, res) => {
                 const uploadsNormalizedFolder = path.join(UPLOADS_DIR, normalizedName);
                 if (fs.existsSync(uploadsNormalizedFolder) && uploadsNormalizedFolder !== UPLOADS_DIR && normalizedName.length > 0) {
                     try {
-                        fs.rmSync(uploadsNormalizedFolder, { recursive: true, force: true });
+                        fs.rmSync(uploadsNormalizedFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
                         console.log(`[System] Deleted video upload folder matching normalized name: ${uploadsNormalizedFolder}`);
                     } catch (err) {
                         console.error(`[System] Error deleting video upload folder matching normalized name: ${err.message}`);
@@ -587,12 +621,104 @@ app.delete('/api/profiles/:id', (req, res) => {
             }
         }
 
-        // 4. Delete from Database
+        // Delete from Database
         db.prepare('DELETE FROM profiles WHERE id = ?').run(profileId);
         res.json({ success: true });
     } catch (err) {
         console.error(`[System] Error during profile deletion: ${err.message}`);
         res.status(500).json({ error: `Failed to delete profile: ${err.message}` });
+    }
+});
+
+app.post('/api/profiles/delete-multiple', async (req, res) => {
+    const { profileIds } = req.body;
+    if (!profileIds || !Array.isArray(profileIds) || profileIds.length === 0) {
+        return res.status(400).json({ error: 'profileIds array is required' });
+    }
+
+    try {
+        for (const profileId of profileIds) {
+            const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+            
+            if (profile) {
+                console.log(`[System] Deleting profile ${profile.name}...`);
+
+                // 1.5. Stop any active browser sessions
+                const stopSession = async (map, id) => {
+                    if (map.has(id)) {
+                        try {
+                            const session = map.get(id);
+                            if (session) {
+                                if (session.stop !== undefined) session.stop = true;
+                                if (session.browser) await session.browser.close().catch(() => {});
+                                else if (session.close) await session.close().catch(() => {});
+                            }
+                        } catch (e) {}
+                        map.delete(id);
+                    }
+                };
+                await stopSession(manualBrowsers, profileId);
+                await stopSession(engagingProfiles, profileId);
+                await stopSession(loggingInProfiles, profileId);
+
+                // Give Windows a moment to release file locks
+                await new Promise(r => setTimeout(r, 1000));
+
+                // 2. Delete browser profile folder
+                const profileFolder = path.join(PROFILES_DIR, profile.name);
+                if (fs.existsSync(profileFolder) && profileFolder !== PROFILES_DIR && profile.name.length > 0) {
+                    try {
+                        fs.rmSync(profileFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+                        console.log(`[System] Deleted browser profile folder: ${profileFolder}`);
+                    } catch (err) {
+                        console.error(`[System] Error deleting browser profile folder: ${err.message}`);
+                    }
+                }
+
+                // 3. Delete video upload folder (from DB field)
+                const videoFolder = profile.video_folder;
+                if (videoFolder && fs.existsSync(videoFolder) && videoFolder !== UPLOADS_DIR && videoFolder.length > 5) {
+                    try {
+                        fs.rmSync(videoFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+                        console.log(`[System] Deleted video upload folder from DB: ${videoFolder}`);
+                    } catch (err) {
+                        console.error(`[System] Error deleting video folder from DB: ${err.message}`);
+                    }
+                }
+
+                // 4. Also delete folder in uploads matching profile name (if it exists)
+                const uploadsProfileFolder = path.join(UPLOADS_DIR, profile.name);
+                if (fs.existsSync(uploadsProfileFolder) && uploadsProfileFolder !== UPLOADS_DIR && profile.name.length > 0) {
+                    try {
+                        fs.rmSync(uploadsProfileFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+                        console.log(`[System] Deleted video upload folder matching profile name: ${uploadsProfileFolder}`);
+                    } catch (err) {
+                        console.error(`[System] Error deleting video upload folder matching profile name: ${err.message}`);
+                    }
+                }
+
+                // 5. Also delete folder in uploads matching normalized/lowercase profile name (if it exists)
+                const normalizedName = profile.name.toLowerCase().replace(/\s+/g, '');
+                if (normalizedName) {
+                    const uploadsNormalizedFolder = path.join(UPLOADS_DIR, normalizedName);
+                    if (fs.existsSync(uploadsNormalizedFolder) && uploadsNormalizedFolder !== UPLOADS_DIR && normalizedName.length > 0) {
+                        try {
+                            fs.rmSync(uploadsNormalizedFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+                            console.log(`[System] Deleted video upload folder matching normalized name: ${uploadsNormalizedFolder}`);
+                        } catch (err) {
+                            console.error(`[System] Error deleting video upload folder matching normalized name: ${err.message}`);
+                        }
+                    }
+                }
+            }
+
+            // Delete from Database
+            db.prepare('DELETE FROM profiles WHERE id = ?').run(profileId);
+        }
+        res.json({ success: true, count: profileIds.length });
+    } catch (err) {
+        console.error(`[System] Error during multiple profile deletion: ${err.message}`);
+        res.status(500).json({ error: `Failed to delete profiles: ${err.message}` });
     }
 });
 
@@ -757,7 +883,7 @@ app.post('/api/profiles/clear-trash', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -840,6 +966,10 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (need_content_check !== undefined) {
         const val = need_content_check ? 1 : 0;
         db.prepare('UPDATE profiles SET need_content_check = ? WHERE id = ?').run(val, profileId);
+    }
+    if (render_video_long !== undefined) {
+        const val = render_video_long ? 1 : 0;
+        db.prepare('UPDATE profiles SET render_video_long = ? WHERE id = ?').run(val, profileId);
     }
 
     res.json({ success: true });
@@ -1343,8 +1473,119 @@ app.post('/api/upload_new_video', async (req, res) => {
             }
         }
 
+        // Re-fetch profile to get the latest settings in case the user changed them during a long download
+        const latestProfile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile.id);
+        if (latestProfile) profile = latestProfile;
+
         // Check if render is needed based on profile configuration
-        if (profile.needs_render !== 0) {
+        let forceUploadAll = false;
+        if (profile.render_video_long !== 0 && profile.render_video_long !== undefined) {
+            console.log(`[${profile.name}] Starting long render pipeline (render-then-upload per segment)...`);
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+
+            // Step 1: Get video info (duration + segment count) without rendering
+            const videoInfo = await new Promise((resolve) => {
+                const child = safeSpawn(pythonBinary, [
+                    path.join(__dirname, 'render_long.py'),
+                    '--video', downloadedFilePath,
+                    '--title', originalTitle || 'Video',
+                    '--info-only'
+                ]);
+                let out = '';
+                child.stdout.on('data', d => out += d.toString());
+                child.stderr.on('data', d => console.error(`[${profile.name}][render_long info stderr] ${d.toString().trim()}`));
+                child.on('close', () => {
+                    const info = {};
+                    out.split('\n').forEach(line => {
+                        const [key, val] = line.trim().split(':');
+                        if (key === 'DURATION') info.totalDuration = parseFloat(val);
+                        if (key === 'NUM_SEGMENTS') info.numSegments = parseInt(val);
+                        if (key === 'SEGMENT_DURATION') info.segmentDuration = parseFloat(val);
+                    });
+                    resolve(info);
+                });
+                child.on('error', err => {
+                    console.error(`[${profile.name}] render_long.py info error:`, err.message);
+                    resolve({});
+                });
+            });
+
+            const totalDuration = videoInfo.totalDuration || 0;
+            const numSegments = videoInfo.numSegments || 1;
+            const segmentDuration = videoInfo.segmentDuration || 120;
+            const baseName = path.basename(downloadedFilePath, path.extname(downloadedFilePath));
+
+            console.log(`[${profile.name}] Video: ${totalDuration.toFixed(1)}s → ${numSegments} segment(s), ${segmentDuration}s each`);
+
+            // Respond to client BEFORE starting the long render+upload process
+            res.json({
+                success: true,
+                message: `Video downloaded. Starting render+upload for ${numSegments} segment(s)...`,
+                profile: profile.name,
+                profileId: profile.id,
+                filePath: downloadedFilePath
+            });
+
+            // Run render+upload in background (do not await — already responded)
+            (async () => {
+                try {
+                    for (let i = 0; i < numSegments; i++) {
+                        const startTime = i * segmentDuration;
+                        const duration = Math.min(segmentDuration, totalDuration - startTime);
+                        const outputFile = path.join(videoFolder, `${baseName}_part${i + 1}.mp4`);
+
+                        console.log(`[${profile.name}] Rendering segment ${i + 1}/${numSegments}: ${outputFile}`);
+
+                        // Render single segment
+                        await new Promise((resolve) => {
+                            const child = safeSpawn(pythonBinary, [
+                                path.join(__dirname, 'render_long.py'),
+                                '--video', downloadedFilePath,
+                                '--title', originalTitle || 'Video',
+                                '--start-time', String(startTime),
+                                '--duration', String(duration),
+                                '--output', outputFile
+                            ]);
+                            child.stdout.on('data', d => console.log(`[${profile.name}][render_long] ${d.toString().trim()}`));
+                            child.stderr.on('data', d => console.error(`[${profile.name}][render_long stderr] ${d.toString().trim()}`));
+                            child.on('close', (code) => {
+                                if (code !== 0) console.warn(`[${profile.name}] Segment ${i + 1} render exited with code ${code}`);
+                                resolve();
+                            });
+                            child.on('error', (err) => {
+                                console.error(`[${profile.name}] Segment ${i + 1} spawn error:`, err.message);
+                                resolve();
+                            });
+                        });
+
+                        // Check if output file was created
+                        if (!fs.existsSync(outputFile)) {
+                            console.error(`[${profile.name}] Segment ${i + 1} output not found, skipping upload for this part.`);
+                            continue;
+                        }
+
+                        console.log(`[${profile.name}] Segment ${i + 1} rendered. Uploading immediately...`);
+
+                        // Upload this single segment immediately (opens and closes browser each time)
+                        await runSingleProfile(profile, false, 0, false, outputFile);
+
+                        console.log(`[${profile.name}] Segment ${i + 1}/${numSegments} upload done.`);
+                    }
+
+                    // Delete original downloaded video after all segments are done
+                    if (fs.existsSync(downloadedFilePath)) {
+                        fs.unlinkSync(downloadedFilePath);
+                        console.log(`[${profile.name}] Original video deleted after all segments processed.`);
+                    }
+                } catch (bgErr) {
+                    console.error(`[${profile.name}] Background render+upload error:`, bgErr.message);
+                }
+            })();
+
+            // Skip the rest of the handler (already responded and launched background job)
+            return;
+
+        } else if (profile.needs_render !== 0) {
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
             console.log(`[${profile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
 
@@ -1389,7 +1630,8 @@ app.post('/api/upload_new_video', async (req, res) => {
         // Trigger upload in background AFTER responding
         // processingProfiles lock is released only here - after download+render is fully done
         // runSingleProfile will manage runningProfiles internally
-        runSingleProfile(profile);
+        console.log(`[${profile.name}] Triggering runSingleProfile now (forceUploadAll=${forceUploadAll})...`);
+        runSingleProfile(profile, false, 0, forceUploadAll);
 
     } catch (error) {
         console.error('Error in /api/upload_new_video:', error.message);
@@ -2228,7 +2470,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     log(`${label} input value after fill: ${actualValue || '<empty>'}`);
 }
 
-async function runSingleProfile(profile, limitUploads = false, uploadLimitCount = 0) {
+async function runSingleProfile(profile, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false, specificFile = null) {
     if (runningProfiles.has(profile.id)) return;
     runningProfiles.add(profile.id);
 
@@ -2239,22 +2481,35 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
         const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
         let videos = [];
         try {
-            if (!fs.existsSync(videoFolder)) {
-                console.error(`[${profile.name}] Video folder does not exist: ${videoFolder}`);
-                db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
-                return;
+            if (specificFile) {
+                // Single-file mode: only upload this specific file
+                if (fs.existsSync(specificFile)) {
+                    videos = [path.basename(specificFile)];
+                    console.log(`[${profile.name}] Single-file mode: uploading ${specificFile}`);
+                } else {
+                    console.error(`[${profile.name}] Specific file not found: ${specificFile}`);
+                }
+            } else {
+                if (!fs.existsSync(videoFolder)) {
+                    console.error(`[${profile.name}] Video folder does not exist: ${videoFolder}`);
+                    db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
+                    return;
+                }
+                videos = fs.readdirSync(videoFolder).filter(file => {
+                    const ext = path.extname(file).toLowerCase();
+                    return ext === '.mp4' || ext === '.mov' || ext === '.webm';
+                });
+                console.log(`[${profile.name}] Found ${videos.length} videos in ${videoFolder}`);
             }
-            videos = fs.readdirSync(videoFolder).filter(file => {
-                const ext = path.extname(file).toLowerCase();
-                return ext === '.mp4' || ext === '.mov' || ext === '.webm';
-            });
-            console.log(`[${profile.name}] Found ${videos.length} videos in ${videoFolder}`);
         } catch (e) {
             console.error(`[${profile.name}] Folder error:`, e.message);
         }
 
+        // Determine the actual folder to use (specificFile may be in a different folder)
+        const actualFolder = specificFile ? path.dirname(specificFile) : videoFolder;
+
         // Always open browser to allow login/session management
-        const uploadedCount = await uploadVideo(profile, videoFolder, videos, limitUploads, uploadLimitCount);
+        const uploadedCount = await uploadVideo(profile, actualFolder, videos, limitUploads, uploadLimitCount, forceUploadAll);
 
         if (uploadedCount > 0) {
             db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('success', profile.id);
@@ -2293,7 +2548,7 @@ async function sendTelegramNotification(message) {
     }
 }
 
-async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0) {
+async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
     let lastScheduledTime = null;
@@ -2335,11 +2590,13 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             return 0;
         }
 
-        const maxUploads = (limitUploads && uploadLimitCount > 0)
-            ? uploadLimitCount
-            : (profile.is_scheduled === 1 && profile.upload_count > 0)
-                ? profile.upload_count
-                : videos.length;
+        const maxUploads = forceUploadAll
+            ? videos.length
+            : (limitUploads && uploadLimitCount > 0)
+                ? uploadLimitCount
+                : (profile.is_scheduled === 1 && profile.upload_count > 0)
+                    ? profile.upload_count
+                    : videos.length;
         const uploadLimit = Math.min(videos.length, maxUploads);
 
         for (let i = 0; i < videos.length; i++) {
