@@ -520,8 +520,8 @@ app.post('/api/profiles/import-csv', (req, res) => {
             const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
 
             const videoFolder = groupName
-                ? `D:\\TIKTOK\\upload_tiktok\\uploads\\${groupName}\\${profileName}`
-                : `D:\\TIKTOK\\upload_tiktok\\uploads\\${profileName}`;
+                ? path.join(UPLOADS_DIR, groupName, profileName)
+                : path.join(UPLOADS_DIR, profileName);
 
             try {
                 if (videoFolder) {
