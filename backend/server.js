@@ -266,6 +266,18 @@ try {
     console.error('Migration error (music_search column):', err);
 }
 
+// Migration: cookies — JSON cookie array for cookie-based login
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasCookies = tableInfo.some((col) => col.name === 'cookies');
+    if (!hasCookies) {
+        db.exec('ALTER TABLE profiles ADD COLUMN cookies TEXT;');
+        console.log('Added cookies column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (cookies column):', err);
+}
+
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
     try {
@@ -377,7 +389,7 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long } = req.body;
+    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music } = req.body;
 
     try {
         const id = Date.now().toString();
@@ -388,7 +400,8 @@ app.post('/api/profiles', (req, res) => {
             video_folder,
             channel_ids,
             need_content_check,
-            render_video_long
+            render_video_long,
+            set_music
         });
         res.json(profile);
     } catch (err) {
@@ -476,8 +489,8 @@ app.post('/api/profiles/import-csv', (req, res) => {
         const insertProfile = db.prepare(`
             INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
                 group_id, video_folder, set_music, upload_count, needs_render, remove_title,
-                need_content_check, account_id, pass, email, pass_email)
-            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?)
+                need_content_check, account_id, pass, email, pass_email, cookies)
+            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?, ?)
         `);
 
         const existingNames = new Set(
@@ -508,6 +521,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
             let pass = (row.pass || row.password || '').trim() || null;
             let email = (row.email || '').trim() || null;
             let passEmail = (row.pass_email || row.pass_email_password || '').trim() || null;
+            let cookies = (row.cookies || '').trim() || null;
 
             if (accountId && accountId.includes('|') && !pass && !email && !passEmail) {
                 const parts = accountId.split('|');
@@ -527,7 +541,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
                 if (videoFolder) {
                     fs.mkdirSync(videoFolder, { recursive: true });
                 }
-                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail);
+                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail, cookies);
                 existingNames.add(profileName.toLowerCase());
                 results.imported++;
             } catch (e) {
@@ -883,7 +897,7 @@ app.post('/api/profiles/clear-trash', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -970,6 +984,9 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (render_video_long !== undefined) {
         const val = render_video_long ? 1 : 0;
         db.prepare('UPDATE profiles SET render_video_long = ? WHERE id = ?').run(val, profileId);
+    }
+    if (cookies !== undefined) {
+        db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
     }
 
     res.json({ success: true });
@@ -1648,6 +1665,540 @@ app.post('/api/upload_new_video', async (req, res) => {
         processingProfiles.delete(profile.id);
         processingVideoIds.delete(video_id);
         console.log(`[${profile.name}] Processing lock released for video_id=${video_id}`);
+    }
+});
+
+app.post('/api/upload-profile', async (req, res) => {
+    const { profile_name, video_url } = req.body;
+
+    if (!profile_name || !video_url) {
+        return res.status(400).json({ error: 'Both profile_name and video_url are required' });
+    }
+
+    // Find profile by name
+    const profile = db.prepare('SELECT * FROM profiles WHERE name = ?').get(profile_name);
+    if (!profile) {
+        return res.status(404).json({ error: `Profile not found: ${profile_name}` });
+    }
+
+    // Lock: Check if profile is already running automation or processing
+    if (runningProfiles.has(profile.id) || processingProfiles.has(profile.id)) {
+        return res.status(400).json({ error: `Profile '${profile.name}' is already running automation or processing a video` });
+    }
+
+    // Acquire lock
+    processingProfiles.add(profile.id);
+
+    let downloadedFilePath = null;
+    const activeProcesses = [];
+
+    const safeSpawn = (cmd, args, timeoutMs = 300000) => {
+        const child = spawn(cmd, args);
+        activeProcesses.push(child);
+
+        let timeout = null;
+        if (timeoutMs > 0) {
+            timeout = setTimeout(() => {
+                console.log(`[${profile.name}] Process '${cmd} ${args.join(' ')}' timed out after ${timeoutMs}ms. Killing it.`);
+                try { child.kill('SIGKILL'); } catch (e) {}
+            }, timeoutMs);
+        }
+
+        const cleanup = () => {
+            if (timeout) clearTimeout(timeout);
+            const idx = activeProcesses.indexOf(child);
+            if (idx !== -1) activeProcesses.splice(idx, 1);
+        };
+
+        child.on('close', cleanup);
+        child.on('error', cleanup);
+        return child;
+    };
+
+    req.on('close', () => {
+        if (activeProcesses.length > 0) {
+            console.log(`[${profile.name}] Request closed/aborted. Killing ${activeProcesses.length} active process(es)...`);
+            for (const child of activeProcesses) {
+                try { child.kill('SIGKILL'); } catch (e) {}
+            }
+        }
+    });
+
+    try {
+        // Determine destination folder
+        const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        if (!fs.existsSync(videoFolder)) {
+            fs.mkdirSync(videoFolder, { recursive: true });
+        }
+
+        // Ensure backgrounds folder exists (for render pipeline)
+        const backgroundsFolder = path.join(__dirname, 'backgrounds');
+        if (!fs.existsSync(backgroundsFolder)) {
+            fs.mkdirSync(backgroundsFolder, { recursive: true });
+        }
+
+        // Detect if the URL is a YouTube link
+        const isYouTube = /(?:youtube\.com\/(?:shorts\/|watch\?v=|embed\/|v\/)|youtu\.be\/)/.test(video_url);
+
+        let baseName = 'video';
+        const fileExt = '.mp4';
+        let safeFileName;
+
+        if (isYouTube) {
+            // --- YouTube download via yt-dlp ---
+            // Extract video_id from URL
+            const ytMatch = video_url.match(/(?:youtube\.com\/(?:shorts\/|watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]+)/);
+            const videoId = ytMatch ? ytMatch[1] : null;
+
+            const cookiesPath = path.join(__dirname, 'cookies.txt');
+            const cookieArgs = fs.existsSync(cookiesPath) ? ['--cookies', cookiesPath] : [];
+
+            // Try Shorts format first, then fallback to long format
+            let targetUrl = videoId ? `https://youtube.com/shorts/${videoId}` : video_url;
+            console.log(`[${profile.name}] YouTube detected. Checking if video is a Short: ${targetUrl}`);
+
+            let originalTitle = await new Promise((resolve) => {
+                const child = safeSpawn('yt-dlp', ['--js-runtimes', `node:${process.execPath}`, '--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
+                let titleData = '';
+                child.stdout.on('data', (data) => { titleData += data.toString(); });
+                child.on('close', (code) => {
+                    if (code === 0 && titleData.trim()) resolve(titleData.trim());
+                    else resolve(null);
+                });
+                child.on('error', () => resolve(null));
+            });
+
+            if (!originalTitle && videoId) {
+                targetUrl = `https://youtube.com/watch?v=${videoId}`;
+                console.log(`[${profile.name}] Short not found. Falling back to Long video format: ${targetUrl}`);
+                originalTitle = await new Promise((resolve) => {
+                    const child = safeSpawn('yt-dlp', ['--js-runtimes', `node:${process.execPath}`, '--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
+                    let titleData = '';
+                    child.stdout.on('data', (data) => { titleData += data.toString(); });
+                    child.on('close', (code) => {
+                        if (code === 0 && titleData.trim()) resolve(titleData.trim());
+                        else resolve('video');
+                    });
+                    child.on('error', () => resolve('video'));
+                });
+            }
+
+            console.log(`[${profile.name}] Original title: "${originalTitle}"`);
+            const cleanTitle = sanitizeToAscii(originalTitle || 'video').substring(0, 80);
+            baseName = cleanTitle || 'video';
+            safeFileName = `${baseName}_${Date.now()}_${randomUUID().slice(0, 8)}${fileExt}`;
+            downloadedFilePath = path.join(videoFolder, safeFileName);
+
+            console.log(`[${profile.name}] Starting yt-dlp download to: ${downloadedFilePath}`);
+
+            const downloadArgs = [
+                '--js-runtimes', `node:${process.execPath}`,
+                targetUrl,
+                '-o', downloadedFilePath,
+                '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
+                '--merge-output-format', 'mp4',
+                '--no-playlist',
+                ...cookieArgs
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn('yt-dlp', downloadArgs);
+                let stderrData = '';
+                child.stdout.on('data', () => {});
+                child.stderr.on('data', (data) => { stderrData += data.toString(); });
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${profile.name}] YouTube download complete via yt-dlp.`);
+
+        } else {
+            // --- Direct URL download via HTTP stream (R2, etc.) ---
+            const urlBasename = path.basename(new URL(video_url).pathname) || 'video.mp4';
+            const ext = path.extname(urlBasename).toLowerCase();
+            baseName = path.basename(urlBasename, ext) || 'video';
+            safeFileName = `${baseName}_${Date.now()}_${randomUUID().slice(0, 8)}${ext || fileExt}`;
+            downloadedFilePath = path.join(videoFolder, safeFileName);
+
+            console.log(`[${profile.name}] Direct URL detected. Downloading via HTTP from: ${video_url} to: ${downloadedFilePath}`);
+
+            const httpResponse = await axios({
+                method: 'GET',
+                url: video_url,
+                responseType: 'stream',
+                timeout: 600000, // 10 min timeout for large files
+            });
+
+            const writer = fs.createWriteStream(downloadedFilePath);
+            httpResponse.data.pipe(writer);
+
+            await new Promise((resolve, reject) => {
+                writer.on('finish', resolve);
+                writer.on('error', (err) => {
+                    console.error(`[${profile.name}] Write stream error:`, err.message);
+                    reject(err);
+                });
+                httpResponse.data.on('error', (err) => {
+                    console.error(`[${profile.name}] Download stream error:`, err.message);
+                    reject(err);
+                });
+            });
+
+            console.log(`[${profile.name}] HTTP download complete.`);
+        }
+
+        // Check video duration - skip if less than 5 seconds
+        let videoDuration = await new Promise((resolve) => {
+            const ffprobe = safeSpawn('ffprobe', [
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                downloadedFilePath
+            ]);
+            let output = '';
+            ffprobe.stdout.on('data', (data) => output += data.toString());
+            ffprobe.on('close', () => {
+                const dur = parseFloat(output.trim());
+                resolve(isNaN(dur) ? 0 : dur);
+            });
+            ffprobe.on('error', () => resolve(0));
+        });
+
+        console.log(`[${profile.name}] Video duration: ${videoDuration.toFixed(2)}s`);
+
+        if (videoDuration < 5.0) {
+            console.log(`[${profile.name}] Video duration is under 5s (${videoDuration.toFixed(2)}s). Slowing down by factor 0.9.`);
+            const speedFactor = 0.9;
+            const slowedFilePath = downloadedFilePath.replace('.mp4', '_slowed.mp4');
+
+            // Check if there is an audio stream
+            const hasAudio = await new Promise((resolve) => {
+                const ffprobe = safeSpawn('ffprobe', [
+                    '-v', 'error',
+                    '-select_streams', 'a',
+                    '-show_entries', 'stream=codec_type',
+                    '-of', 'csv=p=0',
+                    downloadedFilePath
+                ]);
+                let output = '';
+                ffprobe.stdout.on('data', (data) => output += data.toString());
+                ffprobe.on('close', () => resolve(output.trim() === 'audio'));
+                ffprobe.on('error', () => resolve(false));
+            });
+
+            const ffmpegArgs = [
+                '-y',
+                '-i', downloadedFilePath,
+                '-filter_complex', hasAudio ? `[0:v]setpts=PTS/${speedFactor}[v];[0:a]atempo=${speedFactor}[a]` : `[0:v]setpts=PTS/${speedFactor}[v]`,
+                '-map', '[v]'
+            ];
+            if (hasAudio) ffmpegArgs.push('-map', '[a]');
+            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', slowedFilePath);
+
+            try {
+                await new Promise((resolve, reject) => {
+                    const ffmpegProcess = safeSpawn('ffmpeg', ffmpegArgs);
+                    ffmpegProcess.on('close', (code) => {
+                        if (code === 0) resolve(true);
+                        else reject(new Error(`ffmpeg exited with code ${code}`));
+                    });
+                    ffmpegProcess.on('error', (err) => reject(err));
+                });
+                if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+                fs.renameSync(slowedFilePath, downloadedFilePath);
+                console.log(`[${profile.name}] Successfully slowed down video.`);
+
+                // Re-measure duration
+                videoDuration = await new Promise((resolve) => {
+                    const ffprobe = safeSpawn('ffprobe', [
+                        '-v', 'error',
+                        '-show_entries', 'format=duration',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        downloadedFilePath
+                    ]);
+                    let output = '';
+                    ffprobe.stdout.on('data', (data) => output += data.toString());
+                    ffprobe.on('close', () => {
+                        const dur = parseFloat(output.trim());
+                        resolve(isNaN(dur) ? 0 : dur);
+                    });
+                    ffprobe.on('error', () => resolve(0));
+                });
+                console.log(`[${profile.name}] Duration after slowing down: ${videoDuration.toFixed(2)}s`);
+            } catch (err) {
+                console.error(`[${profile.name}] Failed to slow down video:`, err.message);
+                if (fs.existsSync(slowedFilePath)) {
+                    try { fs.unlinkSync(slowedFilePath); } catch (e) {}
+                }
+            }
+        }
+
+        // If still under 5 seconds, pad it by appending a random slice of itself
+        if (videoDuration < 5.0 && videoDuration > 0) {
+            const neededDuration = 5.1 - videoDuration;
+            console.log(`[${profile.name}] Video duration still under 5s (${videoDuration.toFixed(2)}s). Appending a random chunk of ${neededDuration.toFixed(2)}s.`);
+
+            const sliceDuration = Math.min(neededDuration, videoDuration);
+            const maxStart = Math.max(0, videoDuration - sliceDuration);
+            const startPos = Math.random() * maxStart;
+
+            const slicePath = downloadedFilePath.replace('.mp4', '_slice.mp4');
+            const concatFilePath = downloadedFilePath.replace('.mp4', '_concat.mp4');
+            const listFilePath = downloadedFilePath.replace('.mp4', '_list.txt');
+
+            try {
+                // Extract the slice
+                await new Promise((resolve, reject) => {
+                    const sliceArgs = [
+                        '-y',
+                        '-ss', startPos.toString(),
+                        '-t', sliceDuration.toString(),
+                        '-i', downloadedFilePath,
+                        '-c', 'copy',
+                        slicePath
+                    ];
+                    const child = safeSpawn('ffmpeg', sliceArgs);
+                    child.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`Extract slice exited with code ${code}`));
+                    });
+                    child.on('error', reject);
+                });
+
+                // Generate concat list file
+                const fileContent = `file '${downloadedFilePath.replace(/\\/g, '/')}'\nfile '${slicePath.replace(/\\/g, '/')}'\n`;
+                fs.writeFileSync(listFilePath, fileContent);
+
+                // Concatenate original and slice
+                await new Promise((resolve, reject) => {
+                    const concatArgs = [
+                        '-y',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', listFilePath,
+                        '-c', 'copy',
+                        concatFilePath
+                    ];
+                    const child = safeSpawn('ffmpeg', concatArgs);
+                    child.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`Concat exited with code ${code}`));
+                    });
+                    child.on('error', reject);
+                });
+
+                // Clean up and swap files
+                if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+                fs.renameSync(concatFilePath, downloadedFilePath);
+                console.log(`[${profile.name}] Successfully padded video to over 5s.`);
+
+                // Re-measure final duration
+                videoDuration = await new Promise((resolve) => {
+                    const ffprobe = safeSpawn('ffprobe', [
+                        '-v', 'error',
+                        '-show_entries', 'format=duration',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        downloadedFilePath
+                    ]);
+                    let output = '';
+                    ffprobe.stdout.on('data', (data) => output += data.toString());
+                    ffprobe.on('close', () => {
+                        const dur = parseFloat(output.trim());
+                        resolve(isNaN(dur) ? 0 : dur);
+                    });
+                    ffprobe.on('error', () => resolve(0));
+                });
+                console.log(`[${profile.name}] Final video duration: ${videoDuration.toFixed(2)}s`);
+
+            } catch (err) {
+                console.error(`[${profile.name}] Failed to pad video:`, err.message);
+                if (fs.existsSync(concatFilePath)) {
+                    try { fs.unlinkSync(concatFilePath); } catch (e) {}
+                }
+            } finally {
+                // Clean up temporary files
+                if (fs.existsSync(slicePath)) {
+                    try { fs.unlinkSync(slicePath); } catch (e) {}
+                }
+                if (fs.existsSync(listFilePath)) {
+                    try { fs.unlinkSync(listFilePath); } catch (e) {}
+                }
+            }
+        }
+
+        // Re-fetch profile to get the latest settings
+        const latestProfile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile.id);
+        const currentProfile = latestProfile || profile;
+
+        // Check if render is needed based on profile configuration
+        if (currentProfile.render_video_long !== 0 && currentProfile.render_video_long !== undefined) {
+            console.log(`[${currentProfile.name}] Starting long render pipeline (render-then-upload per segment)...`);
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+
+            // Step 1: Get video info (duration + segment count) without rendering
+            const videoInfo = await new Promise((resolve) => {
+                const child = safeSpawn(pythonBinary, [
+                    path.join(__dirname, 'render_long.py'),
+                    '--video', downloadedFilePath,
+                    '--title', baseName,
+                    '--info-only'
+                ]);
+                let out = '';
+                child.stdout.on('data', d => out += d.toString());
+                child.stderr.on('data', d => console.error(`[${currentProfile.name}][render_long info stderr] ${d.toString().trim()}`));
+                child.on('close', () => {
+                    const info = {};
+                    out.split('\n').forEach(line => {
+                        const [key, val] = line.trim().split(':');
+                        if (key === 'DURATION') info.totalDuration = parseFloat(val);
+                        if (key === 'NUM_SEGMENTS') info.numSegments = parseInt(val);
+                        if (key === 'SEGMENT_DURATION') info.segmentDuration = parseFloat(val);
+                    });
+                    resolve(info);
+                });
+                child.on('error', err => {
+                    console.error(`[${currentProfile.name}] render_long.py info error:`, err.message);
+                    resolve({});
+                });
+            });
+
+            const totalDuration = videoInfo.totalDuration || 0;
+            const numSegments = videoInfo.numSegments || 1;
+            const segmentDuration = videoInfo.segmentDuration || 120;
+
+            console.log(`[${currentProfile.name}] Video: ${totalDuration.toFixed(1)}s → ${numSegments} segment(s), ${segmentDuration}s each`);
+
+            // Respond to client BEFORE starting the long render+upload process
+            res.json({
+                success: true,
+                message: `Video downloaded. Starting render+upload for ${numSegments} segment(s)...`,
+                profile: currentProfile.name,
+                profileId: currentProfile.id,
+                filePath: downloadedFilePath
+            });
+
+            // Run render+upload in background
+            (async () => {
+                try {
+                    for (let i = 0; i < numSegments; i++) {
+                        const startTime = i * segmentDuration;
+                        const duration = Math.min(segmentDuration, totalDuration - startTime);
+                        const outputFile = path.join(videoFolder, `${baseName}_part${i + 1}.mp4`);
+
+                        console.log(`[${currentProfile.name}] Rendering segment ${i + 1}/${numSegments}: ${outputFile}`);
+
+                        // Render single segment
+                        await new Promise((resolve) => {
+                            const child = safeSpawn(pythonBinary, [
+                                path.join(__dirname, 'render_long.py'),
+                                '--video', downloadedFilePath,
+                                '--title', baseName,
+                                '--start-time', String(startTime),
+                                '--duration', String(duration),
+                                '--output', outputFile
+                            ]);
+                            child.stdout.on('data', d => console.log(`[${currentProfile.name}][render_long] ${d.toString().trim()}`));
+                            child.stderr.on('data', d => console.error(`[${currentProfile.name}][render_long stderr] ${d.toString().trim()}`));
+                            child.on('close', (code) => {
+                                if (code !== 0) console.warn(`[${currentProfile.name}] Segment ${i + 1} render exited with code ${code}`);
+                                resolve();
+                            });
+                            child.on('error', (err) => {
+                                console.error(`[${currentProfile.name}] Segment ${i + 1} spawn error:`, err.message);
+                                resolve();
+                            });
+                        });
+
+                        // Check if output file was created
+                        if (!fs.existsSync(outputFile)) {
+                            console.error(`[${currentProfile.name}] Segment ${i + 1} output not found, skipping upload for this part.`);
+                            continue;
+                        }
+
+                        console.log(`[${currentProfile.name}] Segment ${i + 1} rendered. Uploading immediately...`);
+
+                        // Upload this single segment immediately
+                        await runSingleProfile(currentProfile, false, 0, false, outputFile);
+
+                        console.log(`[${currentProfile.name}] Segment ${i + 1}/${numSegments} upload done.`);
+                    }
+
+                    // Delete original downloaded video after all segments are done
+                    if (fs.existsSync(downloadedFilePath)) {
+                        fs.unlinkSync(downloadedFilePath);
+                        console.log(`[${currentProfile.name}] Original video deleted after all segments processed.`);
+                    }
+                } catch (bgErr) {
+                    console.error(`[${currentProfile.name}] Background render+upload error:`, bgErr.message);
+                }
+            })();
+
+            // Skip the rest of the handler (already responded and launched background job)
+            return;
+
+        } else if (currentProfile.needs_render !== 0) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${currentProfile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const renderArgs = [
+                path.join(__dirname, 'render.py'),
+                '--video', downloadedFilePath,
+                '--backgrounds', backgroundsFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, renderArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`render.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${currentProfile.name}] Render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${currentProfile.name}] Video fully replaced with bypass-rendered version.`);
+        } else {
+            console.log(`[${currentProfile.name}] Bypass Render is enabled for this profile. Skipping render pipeline.`);
+        }
+
+        // Respond immediately before triggering the browser automation
+        res.json({
+            success: true,
+            message: 'Video downloaded and processed. Upload automation starting...',
+            profile: currentProfile.name,
+            profileId: currentProfile.id,
+            filePath: downloadedFilePath
+        });
+
+        // Trigger upload in background AFTER responding
+        console.log(`[${currentProfile.name}] Triggering runSingleProfile now...`);
+        runSingleProfile(currentProfile, false, 0, false);
+
+    } catch (error) {
+        console.error(`Error in /api/upload-profile:`, error.message);
+        // Clean up partially downloaded file if it exists
+        if (downloadedFilePath && fs.existsSync(downloadedFilePath)) {
+            try { fs.unlinkSync(downloadedFilePath); } catch (e) {}
+        }
+        // Only send error response if headers not sent yet
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Failed to process video: ${error.message}` });
+        }
+    } finally {
+        // Always release lock
+        processingProfiles.delete(profile.id);
+        console.log(`[${profile.name}] Processing lock released for upload-profile`);
     }
 });
 
@@ -3445,8 +3996,8 @@ app.post('/api/login-tiktok', async (req, res) => {
     if (loggingInProfiles.has(profileId)) {
         return res.status(400).json({ error: 'Profile is already in login process' });
     }
-    if (!profile.email || !profile.pass) {
-        return res.status(400).json({ error: 'Profile has no email/password. Import CSV first.' });
+    if (!profile.cookies && (!profile.email || !profile.pass)) {
+        return res.status(400).json({ error: 'Profile has no cookies or email/password. Import CSV first.' });
     }
 
     // Start login session in background
@@ -4284,6 +4835,39 @@ async function runTikTokLogin(profile) {
     try {
         const tiktokPage = await browser.newPage();
 
+        // --- STEP 0: Try cookie-based login first ---
+        const hasCookies = profile.cookies && profile.cookies.trim();
+        if (hasCookies) {
+            try {
+                const cookies = JSON.parse(profile.cookies);
+                if (Array.isArray(cookies) && cookies.length > 0) {
+                    log(`Injecting ${cookies.length} cookies from stored profile...`);
+                    await browser.addCookies(cookies);
+
+                    // Navigate to TikTok to check login state
+                    await tiktokPage.goto('https://www.tiktok.com/', {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 30000
+                    });
+                    await tiktokPage.waitForTimeout(3000);
+
+                    const currentUrl = tiktokPage.url();
+                    if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+                        log('Login via cookies successful! Current URL: ' + currentUrl);
+                        session.stats.step = 'cookie_login_complete';
+                        // Refresh cookies from browser for future use
+                        const freshCookies = await browser.cookies();
+                        db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?')
+                            .run(JSON.stringify(freshCookies), profileId);
+                        return;
+                    }
+                    log('Cookie login failed (still on login page), falling back to email/password...');
+                }
+            } catch (e) {
+                log(`Cookie injection failed: ${e.message}, falling back to email/password...`);
+            }
+        }
+
         // --- STEP 1: Navigate to TikTok login ---
         log('Navigating to TikTok login page...');
         await tiktokPage.goto('https://www.tiktok.com/login', {
@@ -4723,6 +5307,20 @@ async function runTikTokLogin(profile) {
         session.stats.step = 'error';
         session.stats.error = err.message;
     } finally {
+        // Save cookies for future logins if login was successful
+        const successSteps = ['complete', 'already_logged_in'];
+        if (successSteps.includes(session.stats.step)) {
+            try {
+                const cookies = await browser.cookies();
+                if (cookies && cookies.length > 0) {
+                    db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?')
+                        .run(JSON.stringify(cookies), profileId);
+                    log(`Saved ${cookies.length} cookies to profile`);
+                }
+            } catch (e) {
+                log(`Failed to save cookies: ${e.message}`);
+            }
+        }
         loggingInProfiles.delete(profileId);
         await browser.close().catch(() => null);
         db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);

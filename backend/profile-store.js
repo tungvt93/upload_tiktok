@@ -20,7 +20,7 @@ const createStoreError = (message, status) => {
     return error;
 };
 
-export function createProfileRecord(db, { id, name, group_id, video_folder, channel_ids, needs_render, remove_title, need_content_check, render_video_long }) {
+export function createProfileRecord(db, { id, name, group_id, video_folder, channel_ids, needs_render, remove_title, need_content_check, render_video_long, set_music }) {
     if (name === undefined || name === null) {
         throw createStoreError('Name is required', 400);
     }
@@ -44,6 +44,7 @@ export function createProfileRecord(db, { id, name, group_id, video_folder, chan
     const normalizedRemoveTitle = remove_title !== undefined ? (remove_title ? 1 : 0) : 1;
     const normalizedNeedContentCheck = need_content_check !== undefined ? (need_content_check ? 1 : 0) : 1;
     const normalizedRenderVideoLong = render_video_long !== undefined ? (render_video_long ? 1 : 0) : 0;
+    const normalizedSetMusic = set_music !== undefined ? (set_music ? 1 : 0) : 1;
 
     try {
         db.prepare(
@@ -59,7 +60,7 @@ export function createProfileRecord(db, { id, name, group_id, video_folder, chan
             0,
             normalizedGroupId ?? null,
             normalizedVideoFolder,
-            0,
+            normalizedSetMusic,
             1,
             normalizedChannelIds,
             normalizedNeedsRender,

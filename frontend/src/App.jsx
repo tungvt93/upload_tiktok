@@ -262,8 +262,8 @@ const ProfileCard = ({
         <button
           className="btn"
           onClick={() => isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id)}
-          disabled={profile.status === 'uploading' || (!profile.email && !profile.pass)}
-          title={(!profile.email && !profile.pass) ? 'Profile chưa có email/password. Import CSV trước.' : (isLoggingIn ? 'Dừng Login' : 'Login TikTok với email/password')}
+          disabled={profile.status === 'uploading' || (!profile.cookies && !profile.email && !profile.pass)}
+          title={(!profile.cookies && !profile.email && !profile.pass) ? 'Profile chưa có cookies hoặc email/password. Import CSV trước.' : (isLoggingIn ? 'Dừng Login' : 'Login TikTok')}
           style={{
             background: isLoggingIn
               ? 'rgba(239, 68, 68, 0.12)'
@@ -275,7 +275,7 @@ const ProfileCard = ({
             gap: '6px',
             fontWeight: '700',
             transition: 'all 0.2s',
-            cursor: (profile.status === 'uploading' || (!profile.email && !profile.pass)) ? 'not-allowed' : 'pointer'
+            cursor: (profile.status === 'uploading' || (!profile.cookies && !profile.email && !profile.pass)) ? 'not-allowed' : 'pointer'
           }}
         >
           {isLoggingIn ? (
@@ -586,7 +586,8 @@ const App = () => {
         needs_render: newProfileNeedsRender,
         remove_title: newProfileRemoveTitle,
         need_content_check: newProfileNeedContentCheck,
-        render_video_long: newProfileRenderVideoLong
+        render_video_long: newProfileRenderVideoLong,
+        set_music: true
       });
       closeCreateProfileModal({ force: true });
       await fetchData();
@@ -810,10 +811,10 @@ const App = () => {
     }
     const missing = profileIds.filter(id => {
       const p = profiles.find(pr => pr.id === id);
-      return !p || !p.email || !p.pass;
+      return !p || (!p.cookies && (!p.email || !p.pass));
     });
     if (missing.length > 0) {
-      setMessage({ type: 'error', text: `${missing.length} profile thiếu email/password (cần Import CSV trước).` });
+      setMessage({ type: 'error', text: `${missing.length} profile thiếu cookies hoặc email/password (cần Import CSV trước).` });
       return;
     }
     setMessage({ type: 'success', text: `Bắt đầu Login cho ${profileIds.length} profile...` });
@@ -1880,7 +1881,7 @@ const App = () => {
                             File CSV cần có các cột:
                           </p>
                           <p style={{ fontSize: '0.75rem', color: 'var(--accent)', fontFamily: 'monospace', marginBottom: '16px' }}>
-                            profile_name, group_name, account_id, pass, email, pass_email
+                            profile_name, group_name, account_id, pass, email, pass_email, cookies
                           </p>
                           <input
                             type="file"
