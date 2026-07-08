@@ -1683,8 +1683,8 @@ app.post('/api/upload_new_video', async (req, res) => {
 app.post('/api/upload-profile', async (req, res) => {
     const { profile_name, video_url } = req.body;
 
-    if (!profile_name || !video_url) {
-        return res.status(400).json({ error: 'Both profile_name and video_url are required' });
+    if (!profile_name) {
+        return res.status(400).json({ error: 'profile_name is required' });
     }
 
     // Find profile by name
@@ -1756,7 +1756,26 @@ app.post('/api/upload-profile', async (req, res) => {
         const fileExt = '.mp4';
         let safeFileName;
 
-        if (isYouTube) {
+        if (!video_url) {
+            // --- No video_url: pick a video from the profile's upload folder ---
+            const videoFiles = fs.readdirSync(videoFolder).filter(f => {
+                const ext = path.extname(f).toLowerCase();
+                return ['.mp4', '.mov', '.avi', '.mkv', '.webm'].includes(ext);
+            });
+
+            if (videoFiles.length === 0) {
+                throw new Error(`No video files found in folder: ${videoFolder}`);
+            }
+
+            // Pick the first available video
+            const pickedFile = videoFiles[0];
+            downloadedFilePath = path.join(videoFolder, pickedFile);
+            const pickedExt = path.extname(pickedFile);
+            baseName = path.basename(pickedFile, pickedExt);
+            safeFileName = pickedFile;
+            console.log(`[${profile.name}] No video_url provided. Using local video: ${downloadedFilePath}`);
+
+        } else if (isYouTube) {
             // --- YouTube download via yt-dlp ---
             // Extract video_id from URL
             const ytMatch = video_url.match(/(?:youtube\.com\/(?:shorts\/|watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]+)/);
@@ -2195,7 +2214,7 @@ app.post('/api/upload-profile', async (req, res) => {
 
         // Trigger upload in background AFTER responding
         console.log(`[${currentProfile.name}] Triggering runSingleProfile now...`);
-        runSingleProfile(currentProfile, false, 0, false);
+        runSingleProfile(currentProfile, false, 0, false, downloadedFilePath);
 
     } catch (error) {
         console.error(`Error in /api/upload-profile:`, error.message);
