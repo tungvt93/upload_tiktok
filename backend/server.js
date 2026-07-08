@@ -33,6 +33,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3010;
 
+let lastTime = Date.now();
+setInterval(() => {
+    const lag = Date.now() - lastTime - 1000;
+    if (lag > 200) {
+        console.log(`[EventLoopLag] WARNING: Event loop blocked for ${lag}ms`);
+    }
+    lastTime = Date.now();
+}, 1000);
+
 app.use(cors());
 app.use(express.json());
 
@@ -897,7 +906,7 @@ app.post('/api/profiles/clear-trash', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -987,6 +996,9 @@ app.patch('/api/profiles/:id', (req, res) => {
     }
     if (cookies !== undefined) {
         db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
+    }
+    if (music_search !== undefined) {
+        db.prepare('UPDATE profiles SET music_search = ? WHERE id = ?').run(music_search, profileId);
     }
 
     res.json({ success: true });
@@ -2538,10 +2550,9 @@ async function addFavoriteMusic(profile, searchTerm) {
                 });
 
                 for (let poll = 0; poll < 30; poll++) {
-                    const [hasInput, hasButton] = await Promise.all([
-                        page.$('input[type="file"]'),
-                        page.$('button.upload-stage-btn, .upload-stage-btn, [data-e2e="upload-video-button"]'),
-                    ]);
+                    const hasInput = await page.locator('input[type="file"]').count().then(c => c > 0).catch(() => false);
+                    const hasButton = await page.locator('button.upload-stage-btn, .upload-stage-btn, [data-e2e="upload-video-button"]').count().then(c => c > 0).catch(() => false);
+
                     if (hasButton || hasInput) {
                         log('Upload page components detected.');
                         initialized = true;
@@ -2574,7 +2585,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         ];
         for (const sel of uploadButtonSelectors) {
             try {
-                const el = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
+                const el = await page.waitForSelector(sel, { timeout: 200, state: 'visible' }).catch(() => null);
                 if (el) {
                     log(`Found upload button: ${sel}. Intercepting filechooser...`);
                     const [fileChooser] = await Promise.all([
@@ -2699,7 +2710,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         let searchInput = null;
         for (const sel of searchInputSelectors) {
             try {
-                searchInput = await page.waitForSelector(sel, { timeout: 8000 });
+                searchInput = await page.waitForSelector(sel, { timeout: 300 });
                 if (searchInput) {
                     log(`Found search input via: ${sel}`);
                     break;
@@ -3099,6 +3110,136 @@ async function sendTelegramNotification(message) {
     }
 }
 
+async function dismissOnboardingModals(page, log) {
+    // Phase 1: Instant detection via page.evaluate (no timeout waits)
+    // Check if ANY known onboarding modal/tooltip exists. If nothing, return immediately.
+    let modalsFound = false;
+
+    try {
+        const detection = await page.evaluate(() => {
+            const found = [];
+
+            // Check TUXModal (e.g., "Turn on automatic content checks?")
+            const tuxModal = document.querySelector('div.TUXModal');
+            if (tuxModal) {
+                const rect = tuxModal.getBoundingClientRect();
+                const style = window.getComputedStyle(tuxModal);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const cancelBtn = tuxModal.querySelector('button');
+                    const btns = Array.from(tuxModal.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'TUXModal', buttons: btns });
+                }
+            }
+
+            // Check tutorial tooltip ("New editing features added")
+            const tutorialTips = document.querySelectorAll('[class*="tutorial-tooltip"], .react-joyride__tooltip');
+            for (const tip of tutorialTips) {
+                const rect = tip.getBoundingClientRect();
+                const style = window.getComputedStyle(tip);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const btns = Array.from(tip.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'tutorial-tooltip', buttons: btns });
+                    break;
+                }
+            }
+
+            // Check editor guide tooltip ("Phone mode")
+            const guideTips = document.querySelectorAll('[class*="editor-guide"]');
+            for (const tip of guideTips) {
+                const rect = tip.getBoundingClientRect();
+                const style = window.getComputedStyle(tip);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const btns = Array.from(tip.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'editor-guide', buttons: btns });
+                    break;
+                }
+            }
+
+            // Check for any joyride tooltip (not in tutorial above)
+            const joyrides = document.querySelectorAll('[class*="joyride"], [data-joyride]');
+            for (const jr of joyrides) {
+                const rect = jr.getBoundingClientRect();
+                const style = window.getComputedStyle(jr);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const btns = Array.from(jr.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'joyride', buttons: btns });
+                    break;
+                }
+            }
+
+            return found;
+        });
+
+        if (detection.length === 0) {
+            // No onboarding modals detected — skip all dismissal attempts
+            return;
+        }
+
+        modalsFound = true;
+        log(`Detected ${detection.length} onboarding modal(s): ${detection.map(d => d.type + '(' + d.buttons.join(',') + ')').join('; ')}`);
+
+    } catch (e) {
+        // evaluate failed (page might be closing/navigating). Skip.
+        return;
+    }
+
+    // Phase 2: Only if modals detected, dismiss them with targeted selectors
+
+    // 1. TUXModal: "Turn on automatic content checks?" → Cancel
+    // ONLY target Cancel inside TUXModal div, never the upload UI Cancel
+    try {
+        const el = await page.waitForSelector('div.TUXModal button:has-text("Cancel")', { timeout: 3000 });
+        if (el) {
+            log('✅ Dismissing TUXModal "Turn on automatic content checks" → Cancel');
+            await el.click();
+            await page.waitForTimeout(800);
+        }
+    } catch (e) { /* not found */ }
+
+    // 2. Tutorial tooltip: "New editing features added" → Got it
+    try {
+        const el = await page.waitForSelector(
+            '[class*="tutorial-tooltip"] button:has-text("Got it"), .react-joyride__tooltip button:has-text("Got it")',
+            { timeout: 3000 }
+        );
+        if (el) {
+            log('✅ Dismissing tutorial/joyride tooltip → Got it');
+            await el.click();
+            await page.waitForTimeout(800);
+
+            // Joyride may have multiple steps
+            try {
+                const el2 = await page.waitForSelector(
+                    '[class*="joyride"] button:has-text("Got it")',
+                    { timeout: 2000 }
+                );
+                if (el2) {
+                    log('✅ Dismissing joyride step 2 → Got it');
+                    await el2.click();
+                    await page.waitForTimeout(500);
+                }
+            } catch (e) { /* no second step */ }
+        }
+    } catch (e) { /* not found */ }
+
+    // 3. Editor guide tooltip: "Phone mode" → Got it
+    try {
+        const el = await page.waitForSelector(
+            '[class*="editor-guide"] button:has-text("Got it")',
+            { timeout: 3000 }
+        );
+        if (el) {
+            log('✅ Dismissing editor guide tooltip → Got it');
+            await el.click();
+            await page.waitForTimeout(800);
+        }
+    } catch (e) { /* not found */ }
+}
+
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
@@ -3132,7 +3273,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     };
 
     try {
-        let page = await browser.newPage();
+        const page = await browser.newPage();
         log(`Automation started for profile: ${profile.name}`);
 
         if (videos.length === 0) {
@@ -3173,23 +3314,29 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     log(`Active polling for upload components...`);
                     // Smart polling loop: check every 1s for up to 30s
                     for (let poll = 0; poll < 30; poll++) {
-                        const [hasInput, hasButton, isLogin] = await Promise.all([
-                            page.$('input[type="file"]'),
-                            page.$('button.upload-stage-btn, .upload-stage-btn, [data-e2e="upload-video-button"]'),
-                            page.evaluate(() => window.location.href.includes('login'))
-                        ]);
-
-                        if (hasButton || hasInput) {
-                            log(`Components detected via polling.`);
-                            initialized = true;
-                            break;
-                        }
+                        log(`[Poll #${poll}] Checking isLogin...`);
+                        const isLogin = page.url().includes('login') || page.url().includes('passport');
                         if (isLogin) {
                             log(`Redirected to login page. Please log in.`);
                             initialized = true; // Still "initialized" in terms of navigation, but with warning
                             break;
                         }
+
+                        log(`[Poll #${poll}] Checking input[type="file"]...`);
+                        const hasInput = await page.locator('input[type="file"]').count().then(c => c > 0).catch(() => false);
+                        
+                        log(`[Poll #${poll}] Checking buttons...`);
+                        const hasButton = await page.locator('button.upload-stage-btn, .upload-stage-btn, [data-e2e="upload-video-button"]').count().then(c => c > 0).catch(() => false);
+
+                        log(`[Poll #${poll}] Check done: hasInput=${hasInput}, hasButton=${hasButton}`);
+                        if (hasButton || hasInput) {
+                            log(`Components detected via polling.`);
+                            initialized = true;
+                            break;
+                        }
+                        log(`[Poll #${poll}] Waiting 1s...`);
                         await page.waitForTimeout(1000);
+                        log(`[Poll #${poll}] Wait done.`);
                     }
 
                     if (initialized) break;
@@ -3208,21 +3355,20 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             log(`Selecting file...`);
             let uploaded = false;
 
-            // Strategy 1: Intercept filechooser with resilient waiting
+            // Strategy 1: Intercept filechooser with fast fallback
+            // Only use specific selectors that are known to work on TikTok's upload page
+            // Broad selectors like button[class*="upload"] can match wrong buttons (e.g. avatar upload)
             const uploadButtonSelectors = [
-                '[data-e2e="upload-video-button"]',
                 'button.upload-stage-btn',
-                'button:has-text("Select videos")',
-                '.upload-stage-btn',
-                'button[class*="upload"]'
+                '[data-e2e="upload-video-button"]',
             ];
             for (const sel of uploadButtonSelectors) {
                 try {
-                    const el = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
+                    const el = await page.waitForSelector(sel, { timeout: 200, state: 'visible' }).catch(() => null);
                     if (el) {
                         log(`Found upload button: ${sel}. Intercepting filechooser...`);
                         const [fileChooser] = await Promise.all([
-                            page.waitForEvent('filechooser', { timeout: 20000 }),
+                            page.waitForEvent('filechooser', { timeout: 5000 }),
                             el.click()
                         ]);
                         await fileChooser.setFiles(videoPath);
@@ -3230,7 +3376,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         uploaded = true;
                         break;
                     }
-                } catch (e) { }
+                } catch (e) { /* filechooser didn't fire in 5s → try next selector */ }
             }
 
             if (!uploaded) {
@@ -3264,6 +3410,9 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             log(`Video file selection complete. Waiting for UI...`);
             await page.waitForTimeout(3000);
 
+            // Dismiss any onboarding modals that may appear after file selection
+            await dismissOnboardingModals(page, log);
+
             // --- NEW TASKS: Clear Title & Add Sound ---
             try {
                 log(`Waiting for upload UI components...`);
@@ -3276,7 +3425,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     const captionSelectors = ['textarea', '.DraftEditor-root', '[role="textbox"]', '[contenteditable="true"]', '.public-DraftEditor-content', '[data-e2e="caption-edit-container"]'];
                     for (const sel of captionSelectors) {
                         try {
-                            const caption = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
+                            const caption = await page.waitForSelector(sel, { timeout: 200, state: 'visible' }).catch(() => null);
                             if (caption) {
                                 log(`Found caption field: ${sel}. Clearing text...`);
                                 await caption.focus();
@@ -3298,6 +3447,162 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             }
             // --- END CLEAR TITLE ---
 
+            // --- TASK: Add Sound (Set Music) ---
+            const useSetMusic = Number(profile.set_music) === 1;
+            if (useSetMusic) {
+                try {
+                    log(`Task 2: Opening Sounds panel immediately (no wait for processing)...`);
+                    let soundsBtn = null;
+                    try {
+                        soundsBtn = await page.waitForSelector(
+                            'button[data-button-name="sounds"]',
+                            { timeout: 30000, state: 'visible' }
+                        );
+                        log(`Sounds button is visible.`);
+                    } catch (e) {
+                        log(`Sounds button not found directly: ${e.message}`);
+                        // Try clicking Edit Video first to reveal the sounds button
+                        const editButton = await page.$('button:has-text("Edit video"), .edit-video-btn, [data-e2e="edit-video-button"], button:has-text("Edit")');
+                        if (editButton && await editButton.isVisible()) {
+                            log(`Clicking Edit Video button...`);
+                            await editButton.click();
+                            soundsBtn = await page.waitForSelector(
+                                'button[data-button-name="sounds"]',
+                                { timeout: 30000, state: 'visible' }
+                            ).catch(() => null);
+                        }
+                    }
+
+                    if (soundsBtn) {
+                        log(`Opening Sounds panel...`);
+                        await soundsBtn.click();
+                        await page.waitForTimeout(3000); // Wait for panel to open
+
+                        // Screenshot before search
+                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
+
+                        // Search for music using profile.music_search instead of clicking Favorites tab
+                        const searchTerm = (profile.music_search || '').trim();
+                        if (!searchTerm) {
+                            log('WARNING: profile.music_search is empty. Skipping sound edit.');
+                        } else {
+                            log(`Searching for music: "${searchTerm}"`);
+
+                            // Find the search input using multiple selector fallbacks (fast check)
+                            const searchInputSelectors = [
+                                'input.TextInput__input',
+                                'input[placeholder="Search sounds"]',
+                                'input[role="textbox"][type="text"]',
+                                'input[type="search"]',
+                            ];
+
+                            let searchInput = null;
+                            for (const sel of searchInputSelectors) {
+                                try {
+                                    searchInput = await page.waitForSelector(sel, { timeout: 300 });
+                                    if (searchInput) {
+                                        log(`Found search input via: ${sel}`);
+                                        break;
+                                    }
+                                } catch (e) {}
+                            }
+
+                            if (!searchInput) {
+                                log('ERROR: Search input not found in Sounds panel');
+                                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_search.png`) }).catch(() => null);
+                            } else {
+                                // Fill search term and trigger search
+                                log(`Setting search term: "${searchTerm}"`);
+                                await searchInput.fill(searchTerm);
+                                await page.keyboard.press('Enter');
+                                log('Enter pressed, waiting for results...');
+                                await page.waitForTimeout(2000);
+
+                                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
+
+                                let soundAdded = false;
+                                try {
+                                    // Find first search result and click plus-bold icon
+                                    const firstItem = await page.$('div[role="listitem"][data-item-id]');
+                                    if (!firstItem) {
+                                        log('WARNING: No search results found');
+                                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
+                                    } else {
+                                        log('Found first search result. Looking for plus button...');
+                                        const icon = await firstItem.$('[data-icon="plus-bold"]');
+                                        if (icon) {
+                                            log(`Found plus icon inside music item. Finding parent button...`);
+                                            const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
+                                            await parentButton.scrollIntoViewIfNeeded();
+                                            await parentButton.click({ force: true });
+                                            log(`Sound added via search result plus button.`);
+                                            soundAdded = true;
+
+                                            // After sound is added, enter -50 in the PropSettingInput
+                                            log(`Waiting for PropSettingInput to appear...`);
+                                            await page.waitForTimeout(800);
+                                            const propInput = await page.waitForSelector(
+                                                'input.PropSettingInput__input, input[class*="PropSettingInput"]',
+                                                { timeout: 3000, state: 'visible' }
+                                            ).catch(() => null);
+                                            if (propInput) {
+                                                log(`Found PropSettingInput. Entering -50...`);
+                                                await propInput.click({ clickCount: 3 });
+                                                await propInput.fill('-50');
+                                                await page.keyboard.press('Enter');
+                                                log(`Entered -50 into PropSettingInput.`);
+                                            } else {
+                                                log(`PropSettingInput not found. Skipping.`);
+                                            }
+                                        } else {
+                                            log('Plus button not found in first search result.');
+                                        }
+                                    }
+
+                                    // Fallback: If sequence failed, try to find ANY visible plus-bold icon that is NOT in the sidebar
+                                    if (!soundAdded) {
+                                        log(`Item-specific search failed. Trying filtered plus icons...`);
+                                        const allIcons = await page.$$('[data-icon="plus-bold"]');
+                                        for (const icon of allIcons) {
+                                            const inSidebar = await icon.evaluate(el => el.closest('[class*="Sidebar"]') || el.closest('[class*="sidebar"]'));
+                                            if (!inSidebar && await icon.isVisible()) {
+                                                const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
+                                                await parentButton.scrollIntoViewIfNeeded();
+                                                await parentButton.click({ force: true });
+                                                log(`Sound added via filtered icon.`);
+                                                soundAdded = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } catch (e) {
+                                    log(`Error in plus button selection: ${e.message}`);
+                                }
+                            }
+                        }
+
+                        await page.waitForTimeout(1000);
+
+                        const saveBtn = 'button:has-text("Save"), .save-btn, button.jsx-2503522271.save-btn';
+                        const sBtn = await page.waitForSelector(saveBtn, { timeout: 5000, state: 'visible' }).catch(() => null);
+                        if (sBtn) {
+                            await sBtn.click();
+                            log(`Changes saved in editor.`);
+                            await page.waitForSelector('button:has-text("Post")', { timeout: 10000, state: 'visible' });
+                            await page.waitForTimeout(1000);
+                        }
+                    } else {
+                        log(`Editor/Sounds button not found. Skipping editor steps.`);
+                    }
+                } catch (e) {
+                    log(`Add sound task failed: ${e.message}`);
+                    await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sound_fail.png`) }).catch(() => null);
+                }
+            } else {
+                log(`set_music tắt: bỏ qua Edit video và chọn nhạc.`);
+            }
+            // --- END ADD SOUND ---
+
             // --- TASK: Wait for video upload to complete ---
             try {
                 log("Waiting for video upload to complete...");
@@ -3308,208 +3613,6 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             } catch (uploadErr) {
                 log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
             }
-
-            // --- TASK: Wait for video processing to complete & Add Sound ---
-            // TikTok now requires video processing to finish before the edit sound button
-            // becomes enabled. We wait for the sounds button to be visible and not disabled.
-            const useSetMusic = Number(profile.set_music) === 1;
-            if (useSetMusic) {
-                try {
-                    log(`Task 2: Waiting for video processing to complete (sounds button to be enabled)...`);
-                    // Wait for the sounds button to appear and be enabled (not disabled)
-                    // The button exists but is non-interactable while TikTok processes the video
-                    let soundsBtn = null;
-                    try {
-                        soundsBtn = await page.waitForSelector(
-                            'button[data-button-name="sounds"]:not([disabled])',
-                            { timeout: 300000, state: 'visible' }
-                        );
-                        log(`Video processing complete — sounds button is now enabled.`);
-                    } catch (e) {
-                        log(`Sounds button did not become enabled directly: ${e.message}`);
-                        // Try clicking Edit Video first to reveal the sounds button
-                        const editButton = await page.$('button:has-text("Edit video"), .edit-video-btn, [data-e2e="edit-video-button"], button:has-text("Edit")');
-                        if (editButton && await editButton.isVisible()) {
-                            log(`Clicking Edit Video button...`);
-                            await editButton.click();
-                            soundsBtn = await page.waitForSelector(
-                                'button[data-button-name="sounds"]:not([disabled])',
-                                { timeout: 60000, state: 'visible' }
-                            ).catch(() => null);
-                        }
-                    }
-
-                    if (soundsBtn) {
-                        log(`Opening Sounds panel...`);
-                        await soundsBtn.click();
-                        await page.waitForTimeout(3000); // Wait for panel to open
-
-                        // Screenshot before tab click
-                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_before_fav_click.png`) }).catch(() => null);
-
-                        // Refined selector using exact attribute provided by user
-                        const favTab = 'button[role="tab"][aria-controls="panel-favorites"], button[role="tab"]:has-text("Favorites")';
-                        log(`Waiting for Favorites tab: ${favTab}`);
-                        await page.waitForTimeout(5000);
-                        try {
-                            const tab = await page.waitForSelector(favTab, { timeout: 10000, state: 'visible' });
-                            if (tab) {
-                                log(`Found tab. Clicking via evaluate...`);
-                                await tab.evaluate(el => el.click());
-                            }
-                        } catch (e) {
-                            log(`Failed to find favorites tab: ${e.message}`);
-                        }
-
-                        // Wait for Favorites panel content to actually load (not just a blind 3s delay)
-                        // This prevents accidentally clicking a plus button in the For You tab when VPN lag
-                        // causes the Favorites tab to switch back or not finish rendering in time
-                        log(`Tab click done. Waiting for Favorites panel content to load...`);
-                        let favContentLoaded = false;
-                        try {
-                            // Verify the tab is actually selected
-                            await page.waitForSelector(
-                                'button[role="tab"][aria-selected="true"][aria-controls="panel-favorites"]',
-                                { timeout: 8000 }
-                            ).catch(() => log('Favorites tab aria-selected check timed out, proceeding anyway.'));
-
-                            // Wait for at least one music item to appear inside the favorites panel
-                            const favItemSelectors = [
-                                '#panel-favorites div[class*="ListItem"]',
-                                '#panel-favorites div[role="listitem"]',
-                                '#panel-favorites .music-item',
-                                '#panel-favorites [data-item-id]',
-                                'div[class*="MusicPanel"] div[class*="ListItem"]',
-                                'div[class*="MusicPanel"] div[role="listitem"]',
-                            ];
-                            for (const sel of favItemSelectors) {
-                                const item = await page.waitForSelector(sel, { timeout: 10000, state: 'visible' }).catch(() => null);
-                                if (item) {
-                                    log(`Favorites content loaded (found item via ${sel}).`);
-                                    favContentLoaded = true;
-                                    break;
-                                }
-                            }
-                            if (!favContentLoaded) {
-                                log('WARNING: Favorites panel content did not load after tab click. Proceeding with caution...');
-                            }
-                        } catch (e) {
-                            log(`Error waiting for favorites content: ${e.message}`);
-                        }
-
-                        // Screenshot after tab click + content wait
-                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_after_fav_click.png`) }).catch(() => null);
-
-                        // Click the first plus button INSIDE the favorites panel
-                        // We need to be very specific to avoid clicking sidebar or other unrelated plus icons
-                        log(`Looking for Plus button in Favorites panel list...`);
-
-                        let soundAdded = false;
-                        try {
-                            // 1. Try to find the panel or the list container
-                            const listSelectors = [
-                                '#panel-favorites',
-                                '[aria-controls="panel-favorites"] ~ div',
-                                '.music-list',
-                                '.MusicPanel__list',
-                                'div[class*="MusicPanel"]'
-                            ];
-
-                            let listContainer = null;
-                            for (const sel of listSelectors) {
-                                const found = await page.$(sel);
-                                if (found && await found.isVisible()) {
-                                    listContainer = found;
-                                    log(`Found list container via ${sel}`);
-                                    break;
-                                }
-                            }
-
-                            // 2. Find rows/items inside the list
-                            const itemSelectors = ['div[class*="ListItem"]', 'div[class*="item"]', 'div[role="listitem"]', '.music-item'];
-                            let firstItem = null;
-                            if (listContainer) {
-                                for (const sel of itemSelectors) {
-                                    const found = await listContainer.$(sel);
-                                    if (found && await found.isVisible()) {
-                                        firstItem = found;
-                                        log(`Found first music item via ${sel}`);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            // 3. Find plus icon inside the first item
-                            if (firstItem) {
-                                const icon = await firstItem.$('[data-icon="plus-bold"]');
-                                if (icon) {
-                                    log(`Found plus icon inside music item. Finding parent button...`);
-                                    const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
-                                    await parentButton.scrollIntoViewIfNeeded();
-                                    await parentButton.click({ force: true });
-                                    log(`Favorite sound added via item-specific parent button.`);
-                                    soundAdded = true;
-
-                                    // After sound is added, enter -50 in the PropSettingInput
-                                    log(`Waiting for PropSettingInput to appear...`);
-                                    await page.waitForTimeout(1500);
-                                    const propInput = await page.waitForSelector(
-                                        'input.PropSettingInput__input, input[class*="PropSettingInput"]',
-                                        { timeout: 8000, state: 'visible' }
-                                    ).catch(() => null);
-                                    if (propInput) {
-                                        log(`Found PropSettingInput. Entering -50...`);
-                                        await propInput.click({ clickCount: 3 });
-                                        await propInput.fill('-50');
-                                        await page.keyboard.press('Enter');
-                                        log(`Entered -50 into PropSettingInput.`);
-                                    } else {
-                                        log(`PropSettingInput not found. Skipping.`);
-                                    }
-                                }
-                            }
-
-                            // Fallback: If sequence failed, try to find ANY visible plus-bold icon that is NOT in the sidebar
-                            if (!soundAdded) {
-                                log(`Item-specific search failed. Trying filtered plus icons...`);
-                                const allIcons = await page.$$('[data-icon="plus-bold"]');
-                                for (const icon of allIcons) {
-                                    const inSidebar = await icon.evaluate(el => el.closest('[class*="Sidebar"]') || el.closest('[class*="sidebar"]'));
-                                    if (!inSidebar && await icon.isVisible()) {
-                                        const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
-                                        await parentButton.scrollIntoViewIfNeeded();
-                                        await parentButton.click({ force: true });
-                                        log(`Favorite sound added via filtered icon.`);
-                                        soundAdded = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            log(`Error in plus button selection: ${e.message}`);
-                        }
-
-                        await page.waitForTimeout(2000);
-
-                        const saveBtn = 'button:has-text("Save"), .save-btn, button.jsx-2503522271.save-btn';
-                        const sBtn = await page.waitForSelector(saveBtn, { timeout: 10000, state: 'visible' }).catch(() => null);
-                        if (sBtn) {
-                            await sBtn.click();
-                            log(`Changes saved in editor.`);
-                            await page.waitForSelector('button:has-text("Post")', { timeout: 30000, state: 'visible' });
-                            await page.waitForTimeout(2000);
-                        }
-                    } else {
-                        log(`Editor/Sounds button not found after processing wait. Skipping editor steps.`);
-                    }
-                } catch (e) {
-                    log(`Add sound task failed: ${e.message}`);
-                    await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sound_fail.png`) }).catch(() => null);
-                }
-            } else {
-                log(`set_music tắt: bỏ qua Edit video và chọn nhạc.`);
-            }
-            // --- END PROCESSING WAIT & ADD SOUND ---
 
             // --- TASK: Content Check Lite ---
             let checkSuccess = true;

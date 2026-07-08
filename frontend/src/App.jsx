@@ -1198,11 +1198,21 @@ const App = () => {
     }
   };
 
-  const handleUpdateMusicSearchTerm = (profileId, value) => {
+  const handleUpdateMusicSearchTerm = async (profileId, value) => {
     setMusicSearchTerms(prev => ({ ...prev, [profileId]: value }));
+    try {
+      await axios.patch(`/api/profiles/${profileId}`, { music_search: value });
+    } catch (err) {
+      console.error('Failed to save music_search:', err);
+    }
   };
 
   const handleEditProfile = (profileId) => {
+    // Load existing music_search from profile data into the edit state
+    const profile = profiles.find(p => p.id === profileId);
+    if (profile?.music_search) {
+      setMusicSearchTerms(prev => ({ ...prev, [profileId]: profile.music_search }));
+    }
     setEditingProfileId(profileId);
   };
 
