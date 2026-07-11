@@ -2730,7 +2730,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         let searchInput = null;
         const combinedSelector = searchInputSelectors.join(', ');
         try {
-            searchInput = await page.waitForSelector(combinedSelector, { timeout: 10000 });
+            searchInput = await page.waitForSelector(combinedSelector, { timeout: 20000 });
             if (searchInput) {
                 log('Found search input via combined selector');
             }
@@ -2752,6 +2752,9 @@ async function addFavoriteMusic(profile, searchTerm) {
             await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_search.png`) }).catch(() => null);
             return;
         }
+
+        log('Sounds panel loaded. Waiting 5 seconds before typing search term as requested...');
+        await page.waitForTimeout(5000);
 
         // Step 6: Type search term using page.fill() — handles React controlled inputs correctly
         log(`Setting search term: "${searchTerm}"`);
@@ -3532,7 +3535,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             let searchInput = null;
                             const combinedSelector = searchInputSelectors.join(', ');
                             try {
-                                searchInput = await page.waitForSelector(combinedSelector, { timeout: 10000 });
+                                searchInput = await page.waitForSelector(combinedSelector, { timeout: 20000 });
                                 if (searchInput) {
                                     log('Found search input via combined selector');
                                 }
@@ -3553,6 +3556,9 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 log('ERROR: Search input not found in Sounds panel');
                                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_search.png`) }).catch(() => null);
                             } else {
+                                log('Sounds panel loaded. Waiting 5 seconds before typing search term as requested...');
+                                await page.waitForTimeout(5000);
+
                                 // Fill search term and trigger search
                                 log(`Setting search term: "${searchTerm}"`);
                                 await searchInput.fill(searchTerm);
