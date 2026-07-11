@@ -2728,23 +2728,19 @@ async function addFavoriteMusic(profile, searchTerm) {
         ];
 
         let searchInput = null;
-        const combinedSelector = searchInputSelectors.join(', ');
-        try {
-            searchInput = await page.waitForSelector(combinedSelector, { timeout: 20000 });
-            if (searchInput) {
-                log('Found search input via combined selector');
-            }
-        } catch (e) {
-            log('Combined selector timed out, trying individual selectors as fallback...');
+        for (let i = 0; i < 20; i++) {
             for (const sel of searchInputSelectors) {
                 try {
-                    searchInput = await page.waitForSelector(sel, { timeout: 1000 });
-                    if (searchInput) {
-                        log(`Found search input via fallback: ${sel}`);
+                    const el = await page.$(sel);
+                    if (el && await el.isVisible()) {
+                        searchInput = el;
+                        log(`Found search input via: ${sel}`);
                         break;
                     }
                 } catch (err) {}
             }
+            if (searchInput) break;
+            await page.waitForTimeout(1000);
         }
 
         if (!searchInput) {
@@ -3533,23 +3529,19 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             ];
 
                             let searchInput = null;
-                            const combinedSelector = searchInputSelectors.join(', ');
-                            try {
-                                searchInput = await page.waitForSelector(combinedSelector, { timeout: 20000 });
-                                if (searchInput) {
-                                    log('Found search input via combined selector');
-                                }
-                            } catch (e) {
-                                log('Combined selector timed out, trying individual selectors as fallback...');
+                            for (let i = 0; i < 20; i++) {
                                 for (const sel of searchInputSelectors) {
                                     try {
-                                        searchInput = await page.waitForSelector(sel, { timeout: 1000 });
-                                        if (searchInput) {
-                                            log(`Found search input via fallback: ${sel}`);
+                                        const el = await page.$(sel);
+                                        if (el && await el.isVisible()) {
+                                            searchInput = el;
+                                            log(`Found search input via: ${sel}`);
                                             break;
                                         }
                                     } catch (err) {}
                                 }
+                                if (searchInput) break;
+                                await page.waitForTimeout(1000);
                             }
 
                             if (!searchInput) {
