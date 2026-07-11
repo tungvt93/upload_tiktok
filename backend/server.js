@@ -3505,7 +3505,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     if (soundsBtn) {
                         log(`Opening Sounds panel...`);
                         await soundsBtn.click();
-                        await page.waitForTimeout(3000); // Wait for panel to open
+                        await page.waitForTimeout(5000); // Increased from 3000 to 5000ms as requested
 
                         // Screenshot before search
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
@@ -3522,18 +3522,31 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 'input.TextInput__input',
                                 'input[placeholder="Search sounds"]',
                                 'input[role="textbox"][type="text"]',
+                                'input[placeholder*="search" i]',
+                                'input[placeholder*="sound" i]',
+                                'input[placeholder*="music" i]',
                                 'input[type="search"]',
+                                'input[class*="Search"]',
                             ];
 
                             let searchInput = null;
-                            for (const sel of searchInputSelectors) {
-                                try {
-                                    searchInput = await page.waitForSelector(sel, { timeout: 300 });
-                                    if (searchInput) {
-                                        log(`Found search input via: ${sel}`);
-                                        break;
-                                    }
-                                } catch (e) {}
+                            const combinedSelector = searchInputSelectors.join(', ');
+                            try {
+                                searchInput = await page.waitForSelector(combinedSelector, { timeout: 10000 });
+                                if (searchInput) {
+                                    log('Found search input via combined selector');
+                                }
+                            } catch (e) {
+                                log('Combined selector timed out, trying individual selectors as fallback...');
+                                for (const sel of searchInputSelectors) {
+                                    try {
+                                        searchInput = await page.waitForSelector(sel, { timeout: 1000 });
+                                        if (searchInput) {
+                                            log(`Found search input via fallback: ${sel}`);
+                                            break;
+                                        }
+                                    } catch (err) {}
+                                }
                             }
 
                             if (!searchInput) {
