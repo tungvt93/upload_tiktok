@@ -2712,7 +2712,7 @@ async function addFavoriteMusic(profile, searchTerm) {
 
         // Step 5: Wait for Sounds panel to fully open, then find search input
         log('Waiting for Sounds panel to fully open...');
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(5000); // Increased wait time to 5s before searching for music
         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
         log('Looking for search input in Sounds panel...');
 
@@ -3293,7 +3293,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     };
 
     try {
-        const page = await browser.newPage();
+        let page = await browser.newPage();
         log(`Automation started for profile: ${profile.name}`);
 
         if (videos.length === 0) {
