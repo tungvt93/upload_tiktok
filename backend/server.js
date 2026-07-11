@@ -2763,7 +2763,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         await page.waitForTimeout(2000);
         await page.keyboard.press('Enter');
         log('Enter pressed, waiting for results...');
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(6000);
 
         // Step 7: Click star/bookmark on first search result
         // The star button is hidden until real mouse hover — use Playwright's native hover() (not JS dispatchEvent)
@@ -3562,9 +3562,11 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 // Fill search term and trigger search
                                 log(`Setting search term: "${searchTerm}"`);
                                 await searchInput.fill(searchTerm);
+                                log('Search term filled, waiting for suggestions...');
+                                await page.waitForTimeout(2000);
                                 await page.keyboard.press('Enter');
                                 log('Enter pressed, waiting for results...');
-                                await page.waitForTimeout(2000);
+                                await page.waitForTimeout(6000);
 
                                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
 
