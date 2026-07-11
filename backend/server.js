@@ -2728,14 +2728,23 @@ async function addFavoriteMusic(profile, searchTerm) {
         ];
 
         let searchInput = null;
-        for (const sel of searchInputSelectors) {
-            try {
-                searchInput = await page.waitForSelector(sel, { timeout: 300 });
-                if (searchInput) {
-                    log(`Found search input via: ${sel}`);
-                    break;
-                }
-            } catch (e) {}
+        const combinedSelector = searchInputSelectors.join(', ');
+        try {
+            searchInput = await page.waitForSelector(combinedSelector, { timeout: 10000 });
+            if (searchInput) {
+                log('Found search input via combined selector');
+            }
+        } catch (e) {
+            log('Combined selector timed out, trying individual selectors as fallback...');
+            for (const sel of searchInputSelectors) {
+                try {
+                    searchInput = await page.waitForSelector(sel, { timeout: 1000 });
+                    if (searchInput) {
+                        log(`Found search input via fallback: ${sel}`);
+                        break;
+                    }
+                } catch (err) {}
+            }
         }
 
         if (!searchInput) {
