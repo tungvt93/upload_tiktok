@@ -3441,6 +3441,16 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             // Dismiss any onboarding modals that may appear after file selection
             await dismissOnboardingModals(page, log);
 
+            // Wait for upload to complete (Cancel button detaches)
+            try {
+                const cancelBtn = page.locator('button:has-text("Cancel")');
+                await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
+                log('Upload complete (Cancel button gone). UI should now stabilize.');
+                await page.waitForTimeout(2000);
+            } catch (e) {
+                log(`Wait for upload completion timed out or failed: ${e.message}`);
+            }
+
             // --- NEW TASKS: Clear Title & Add Sound ---
             try {
                 log(`Waiting for upload UI components...`);
@@ -3479,23 +3489,23 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             const useSetMusic = Number(profile.set_music) === 1;
             if (useSetMusic) {
                 try {
-                    log(`Task 2: Opening Sounds panel immediately (no wait for processing)...`);
+                    log(`Task 2: Waiting for Sounds panel button to be fully enabled and ready...`);
                     let soundsBtn = null;
                     try {
                         soundsBtn = await page.waitForSelector(
-                            'button[data-button-name="sounds"]',
-                            { timeout: 30000, state: 'visible' }
+                            'button[data-button-name="sounds"]:not([disabled])',
+                            { timeout: 60000, state: 'visible' }
                         );
-                        log(`Sounds button is visible.`);
+                        log(`Sounds button is visible and enabled.`);
                     } catch (e) {
-                        log(`Sounds button not found directly: ${e.message}`);
+                        log(`Sounds button not found directly or still disabled: ${e.message}`);
                         // Try clicking Edit Video first to reveal the sounds button
                         const editButton = await page.$('button:has-text("Edit video"), .edit-video-btn, [data-e2e="edit-video-button"], button:has-text("Edit")');
                         if (editButton && await editButton.isVisible()) {
                             log(`Clicking Edit Video button...`);
                             await editButton.click();
                             soundsBtn = await page.waitForSelector(
-                                'button[data-button-name="sounds"]',
+                                'button[data-button-name="sounds"]:not([disabled])',
                                 { timeout: 30000, state: 'visible' }
                             ).catch(() => null);
                         }
