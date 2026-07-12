@@ -2753,24 +2753,14 @@ async function addFavoriteMusic(profile, searchTerm) {
         log('Search term filled, waiting for suggestions...');
         await page.waitForTimeout(2000);
 
-        // Capture current first item ID to detect refresh
-        const oldFirstItem = await page.$('div[role="listitem"][data-item-id]');
-        const oldId = oldFirstItem ? await page.evaluate(el => el.getAttribute('data-item-id'), oldFirstItem) : null;
-
         await page.keyboard.press('Enter');
         log('Enter pressed, waiting for new search results to load...');
 
-        // Smart wait for the results to refresh
+        // Wait a moment for TikTok to switch to loading state
+        await page.waitForTimeout(1000);
+
         try {
-            if (oldId) {
-                await page.waitForFunction((old) => {
-                    const el = document.querySelector('div[role="listitem"][data-item-id]');
-                    if (!el) return false;
-                    return el.getAttribute('data-item-id') !== old;
-                }, oldId, { timeout: 30000 });
-            } else {
-                await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
-            }
+            await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
             log('Search results refreshed.');
         } catch (e) {
             log('Wait for search results timed out or failed. Proceeding anyway...');
@@ -3578,24 +3568,14 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 log('Search term filled, waiting for suggestions...');
                                 await page.waitForTimeout(2000);
 
-                                // Capture current first item ID to detect refresh
-                                const oldFirstItem = await page.$('div[role="listitem"][data-item-id]');
-                                const oldId = oldFirstItem ? await page.evaluate(el => el.getAttribute('data-item-id'), oldFirstItem) : null;
-
                                 await page.keyboard.press('Enter');
                                 log('Enter pressed, waiting for new search results to load...');
 
-                                // Smart wait for the results to refresh
+                                // Wait a moment for TikTok to switch to loading state
+                                await page.waitForTimeout(1000);
+
                                 try {
-                                    if (oldId) {
-                                        await page.waitForFunction((old) => {
-                                            const el = document.querySelector('div[role="listitem"][data-item-id]');
-                                            if (!el) return false;
-                                            return el.getAttribute('data-item-id') !== old;
-                                        }, oldId, { timeout: 30000 });
-                                    } else {
-                                        await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
-                                    }
+                                    await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
                                     log('Search results refreshed.');
                                 } catch (e) {
                                     log('Wait for search results timed out or failed. Proceeding anyway...');
