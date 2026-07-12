@@ -2717,14 +2717,9 @@ async function addFavoriteMusic(profile, searchTerm) {
         log('Looking for search input in Sounds panel...');
 
         const searchInputSelectors = [
-            'input.TextInput__input',
             'input[placeholder="Search sounds"]',
-            'input[role="textbox"][type="text"]',
-            'input[placeholder*="search" i]',
             'input[placeholder*="sound" i]',
             'input[placeholder*="music" i]',
-            'input[type="search"]',
-            'input[class*="Search"]',
         ];
 
         let searchInput = null;
@@ -3528,14 +3523,9 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                             // Find the search input using multiple selector fallbacks (fast check)
                             const searchInputSelectors = [
-                                'input.TextInput__input',
                                 'input[placeholder="Search sounds"]',
-                                'input[role="textbox"][type="text"]',
-                                'input[placeholder*="search" i]',
                                 'input[placeholder*="sound" i]',
                                 'input[placeholder*="music" i]',
-                                'input[type="search"]',
-                                'input[class*="Search"]',
                             ];
 
                             let searchInput = null;
