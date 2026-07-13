@@ -2242,10 +2242,58 @@ async function sendTelegramNotification(message) {
     }
 }
 
+/**
+ * Kiểm tra trang TikTok Studio Content để xem video đầu tiên có đang scheduled không.
+ * Nếu có, trả về thời gian đã lên lịch để làm mốc cho batch mới.
+ * Nếu video đầu tiên là Public (hoặc có lỗi), trả về null để giữ flow hiện tại.
+ */
+async function checkExistingScheduledTime(page, log) {
+    try {
+        log('Checking TikTok Studio Content for existing scheduled videos...');
+        await page.goto('https://www.tiktok.com/tiktokstudio/content', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        await page.waitForTimeout(3000);
+
+        // Tìm video đầu tiên trong danh sách
+        const firstStatusLabel = page.locator('[data-tt="components_PublishStageLabel_FlexCenter"]').first();
+        await firstStatusLabel.waitFor({ timeout: 15000, state: 'attached' });
+
+        // Check xem có icon Alarm (data-testid="Alarm") = đang Scheduled
+        const alarmIcon = firstStatusLabel.locator('[data-testid="Alarm"]');
+        const hasAlarm = (await alarmIcon.count()) > 0;
+
+        if (!hasAlarm) {
+            log('Top video is Public. Using default upload flow (video 1 = immediate publish).');
+            return null;
+        }
+
+        // Extract thời gian từ label
+        const timeEl = firstStatusLabel.locator('[data-tt="components_PublishStageLabel_TUXText"]');
+        const timeText = (await timeEl.textContent()).trim();
+        log(`Found scheduled video with time: "${timeText}"`);
+
+        // Parse "Jul 13, 3:30 PM" hoặc "Jul 13, 15:30" thành Date
+        const parsed = new Date(timeText);
+        if (Number.isNaN(parsed.getTime())) {
+            log(`Failed to parse scheduled time: "${timeText}". Falling back to default flow.`);
+            return null;
+        }
+
+        log(`Existing schedule detected! Base time: ${parsed.toISOString()}`);
+        return parsed;
+    } catch (e) {
+        log(`Content check failed (${e.message}). Falling back to default upload flow.`);
+        return null;
+    }
+}
+
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
     let lastScheduledTime = null;
+    let hasExistingSchedule = false;
 
     const browserOptions = {
         headless: false,
@@ -2290,6 +2338,17 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 ? profile.upload_count
                 : videos.length;
         const uploadLimit = Math.min(videos.length, maxUploads);
+
+        // --- Check for existing scheduled videos before starting upload loop ---
+        if (!limitUploads && profile.auto_increment_schedule) {
+            const existingTime = await checkExistingScheduledTime(page, log);
+            if (existingTime) {
+                lastScheduledTime = existingTime;
+                hasExistingSchedule = true;
+                log(`Existing schedule detected. ALL ${Math.min(videos.length, maxUploads)} videos will be scheduled from base: ${existingTime.toISOString()}`);
+            }
+        }
+        // --- End content check ---
 
         for (let i = 0; i < videos.length; i++) {
             if (uploadedCount >= maxUploads) {
@@ -2456,29 +2515,9 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             const useSetMusic = Number(profile.set_music) === 1;
             if (useSetMusic) {
                 try {
-                    log(`Task 2: Waiting for video processing to complete (sounds button to be enabled)...`);
-                    // Wait for the sounds button to appear and be enabled (not disabled)
-                    // The button exists but is non-interactable while TikTok processes the video
-                    let soundsBtn = null;
-                    try {
-                        soundsBtn = await page.waitForSelector(
-                            'button[data-button-name="sounds"]:not([disabled])',
-                            { timeout: 300000, state: 'visible' }
-                        );
-                        log(`Video processing complete — sounds button is now enabled.`);
-                    } catch (e) {
-                        log(`Sounds button did not become enabled directly: ${e.message}`);
-                        // Try clicking Edit Video first to reveal the sounds button
-                        const editButton = await page.$('button:has-text("Edit video"), .edit-video-btn, [data-e2e="edit-video-button"], button:has-text("Edit")');
-                        if (editButton && await editButton.isVisible()) {
-                            log(`Clicking Edit Video button...`);
-                            await editButton.click();
-                            soundsBtn = await page.waitForSelector(
-                                'button[data-button-name="sounds"]:not([disabled])',
-                                { timeout: 60000, state: 'visible' }
-                            ).catch(() => null);
-                        }
-                    }
+                    log(`Task 2: Waiting 3s before clicking sounds button...`);
+                    await page.waitForTimeout(3000);
+                    let soundsBtn = await page.$('button[data-button-name="sounds"]').catch(() => null);
 
                     if (soundsBtn) {
                         log(`Opening Sounds panel...`);
@@ -2493,7 +2532,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         log(`Waiting for Favorites tab: ${favTab}`);
 
                         try {
-                            const tab = await page.waitForSelector(favTab, { timeout: 10000, state: 'visible' });
+                            const tab = await page.waitForSelector(favTab, { timeout: 5000, state: 'visible' });
                             if (tab) {
                                 log(`Found tab. Clicking via evaluate...`);
                                 await tab.evaluate(el => el.click());
@@ -2524,7 +2563,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 'div[class*="MusicPanel"] div[role="listitem"]',
                             ];
                             for (const sel of favItemSelectors) {
-                                const item = await page.waitForSelector(sel, { timeout: 10000, state: 'visible' }).catch(() => null);
+                                const item = await page.waitForSelector(sel, { timeout: 4000, state: 'visible' }).catch(() => null);
                                 if (item) {
                                     log(`Favorites content loaded (found item via ${sel}).`);
                                     favContentLoaded = true;
@@ -2541,8 +2580,9 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         // Screenshot after tab click + content wait
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_after_fav_click.png`) }).catch(() => null);
 
-                        // Click the first plus button INSIDE the favorites panel
-                        // We need to be very specific to avoid clicking sidebar or other unrelated plus icons
+                        // Rotate music selection: every 10 uploads, pick the next favorite music
+                        // uploadedCount tracks how many videos have been successfully uploaded
+                        // Math.floor(uploadedCount / 10) % total → cycles through favorites list
                         log(`Looking for Plus button in Favorites panel list...`);
 
                         let soundAdded = false;
@@ -2566,29 +2606,46 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 }
                             }
 
-                            // 2. Find rows/items inside the list
+                            // 2. Find ALL music items (not just the first one)
                             const itemSelectors = ['div[class*="ListItem"]', 'div[class*="item"]', 'div[role="listitem"]', '.music-item'];
-                            let firstItem = null;
+                            let allItems = [];
                             if (listContainer) {
                                 for (const sel of itemSelectors) {
-                                    const found = await listContainer.$(sel);
-                                    if (found && await found.isVisible()) {
-                                        firstItem = found;
-                                        log(`Found first music item via ${sel}`);
+                                    const items = await listContainer.$$(sel);
+                                    const visibleItems = [];
+                                    for (const item of items) {
+                                        if (await item.isVisible()) {
+                                            visibleItems.push(item);
+                                        }
+                                    }
+                                    if (visibleItems.length > 0) {
+                                        allItems = visibleItems;
+                                        log(`Found ${allItems.length} music items via ${sel}`);
                                         break;
                                     }
                                 }
                             }
 
-                            // 3. Find plus icon inside the first item
-                            if (firstItem) {
-                                const icon = await firstItem.$('[data-icon="plus-bold"]');
+                            // 3. Calculate which music to pick: rotate every 10 uploads
+                            const totalMusicItems = allItems.length;
+                            const targetMusicIndex = totalMusicItems > 0
+                                ? Math.floor(uploadedCount / 10) % totalMusicItems
+                                : 0;
+                            const targetItem = totalMusicItems > 0 ? allItems[targetMusicIndex] : null;
+
+                            if (totalMusicItems > 0) {
+                                log(`Music rotation: video #${uploadedCount + 1} → music #${targetMusicIndex + 1}/${totalMusicItems} (every 10 videos switch)`);
+                            }
+
+                            // 4. Find plus icon inside the target item
+                            if (targetItem) {
+                                const icon = await targetItem.$('[data-icon="plus-bold"]');
                                 if (icon) {
-                                    log(`Found plus icon inside music item. Finding parent button...`);
+                                    log(`Found plus icon inside music item #${targetMusicIndex + 1}. Finding parent button...`);
                                     const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
                                     await parentButton.scrollIntoViewIfNeeded();
                                     await parentButton.click({ force: true });
-                                    log(`Favorite sound added via item-specific parent button.`);
+                                    log(`Favorite sound added via item-specific parent button (music #${targetMusicIndex + 1}).`);
                                     soundAdded = true;
 
                                     // After sound is added, enter -50 in the PropSettingInput
@@ -2777,10 +2834,39 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             if (!limitUploads && profile.auto_increment_schedule) {
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
-                    if (i === 0) {
+
+                    if (hasExistingSchedule) {
+                        // ALL videos scheduled — existing scheduled batch detected on TikTok
+                        // No immediate publish for any video
+                        // 1. Click "Schedule" radio
+                        const scheduleRadio = 'input[value="schedule"]';
+                        const scheduleRadioInput = page.locator(scheduleRadio).first();
+                        await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
+                        await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
+                        log(`Selected "Schedule" option (existing batch).`);
+                        await page.waitForTimeout(3000);
+
+                        // 2. Resolve inputs
+                        const scheduleInputs = await resolveScheduleInputs(page, log);
+
+                        // 3. Increment by 10 minutes from existing scheduled time
+                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime });
+                        const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
+                        const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
+
+                        log(`Video ${i + 1}: Scheduling at ${dateValue} ${timeValue} (from existing batch).`);
+                        await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
+                        await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
+                        await page.waitForTimeout(2000);
+
+                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
+
+                    } else if (i === 0) {
                         log(`Video 1: Posting immediately (Public).`);
                         // Public is usually default, but we can ensure it if needed
+
                     } else {
+                        // Normal auto-increment: video 2 captures default, video 3+ increments
                         // 1. Click "Schedule" radio
                         const scheduleRadio = 'input[value="schedule"]';
                         const scheduleRadioInput = page.locator(scheduleRadio).first();
@@ -2806,7 +2892,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, now: new Date() });
                             }
                         } else {
-                            // Video 3+: Increment by 5 minutes
+                            // Video 3+: Increment by 10 minutes
                             lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime });
                             const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                             const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
