@@ -3590,7 +3590,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                     const firstItem = await page.$('div[role="listitem"][data-item-id]');
 
                                     if (emptyResult || !firstItem) {
-                                        log('WARNING: No search results found (empty list or no first item). Triggering Favorites fallback...');
+                                        log('WARNING: No search results found (empty list or no first item). Triggering Recent fallback...');
                                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
 
                                         // Click the 'x' icon in search music
@@ -3607,45 +3607,47 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                         }
                                         await page.waitForTimeout(1500);
 
-                                        // Click Favorites tab
-                                        log('Looking for Favorites tab...');
-                                        let favoritesTab = null;
-                                        const favSelectors = [
-                                            'div[role="tab"]:has-text("Favorites")',
-                                            'div[role="tab"]:has-text("Yêu thích")',
-                                            'div[role="tab"]:has-text("Favorite")',
-                                            'div[role="tab"]:has-text("yêu thích")',
-                                            'span:has-text("Favorites")',
-                                            'span:has-text("Yêu thích")',
-                                            'button:has-text("Favorites")',
-                                            'button:has-text("Yêu thích")',
+                                        // Click Recent tab
+                                        log('Looking for Recent tab...');
+                                        let recentTab = null;
+                                        const recentSelectors = [
+                                            'div[role="tab"]:has-text("Recent")',
+                                            'div[role="tab"]:has-text("Gần đây")',
+                                            'div[role="tab"]:has-text("recent")',
+                                            'div[role="tab"]:has-text("gần đây")',
+                                            'span:has-text("Recent")',
+                                            'span:has-text("Gần đây")',
+                                            'button:has-text("Recent")',
+                                            'button:has-text("Gần đây")',
+                                            'span:has-text("Recents")',
+                                            'button:has-text("Recents")',
                                         ];
-                                        for (const sel of favSelectors) {
+                                        for (const sel of recentSelectors) {
                                             try {
-                                                favoritesTab = await page.waitForSelector(sel, { timeout: 1500, state: 'visible' }).catch(() => null);
-                                                if (favoritesTab) {
-                                                    log(`Found Favorites tab via selector: ${sel}`);
+                                                recentTab = await page.waitForSelector(sel, { timeout: 1500, state: 'visible' }).catch(() => null);
+                                                if (recentTab) {
+                                                    log(`Found Recent tab via selector: ${sel}`);
                                                     break;
                                                 }
                                             } catch (err) {}
                                         }
 
-                                        if (favoritesTab) {
-                                            log('Clicking Favorites tab...');
-                                            await favoritesTab.click();
-                                            await page.waitForTimeout(3000); // Wait for favorites list to load
+                                        if (recentTab) {
+                                            log('Clicking Recent tab...');
+                                            await recentTab.click();
+                                            await page.waitForTimeout(3000); // Wait for recent list to load
 
-                                            // Click the first record in favorites list
-                                            const firstFavItem = await page.$('div[role="listitem"][data-item-id]');
-                                            if (firstFavItem) {
-                                                log('Found first favorites result. Looking for plus button...');
-                                                const icon = await firstFavItem.$('[data-icon="plus-bold"]');
+                                            // Click the first record in recent list
+                                            const firstRecentItem = await page.$('div[role="listitem"][data-item-id]');
+                                            if (firstRecentItem) {
+                                                log('Found first recent result. Looking for plus button...');
+                                                const icon = await firstRecentItem.$('[data-icon="plus-bold"]');
                                                 if (icon) {
-                                                    log(`Found plus icon inside favorites item. Finding parent button...`);
+                                                    log(`Found plus icon inside recent item. Finding parent button...`);
                                                     const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
                                                     await parentButton.scrollIntoViewIfNeeded();
                                                     await parentButton.click({ force: true });
-                                                    log(`Sound added via Favorites tab first result.`);
+                                                    log(`Sound added via Recent tab first result.`);
                                                     soundAdded = true;
 
                                                     // Enter -50 in the PropSettingInput
