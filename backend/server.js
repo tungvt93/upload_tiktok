@@ -3571,12 +3571,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 await page.keyboard.press('Enter');
                                 log('Enter pressed, waiting for new search results to load...');
 
-                                // Wait a moment for TikTok to switch to loading state
-                                await page.waitForTimeout(1000);
+                                 // Wait a moment for TikTok to switch to loading state
+                                 await page.waitForTimeout(1000);
 
                                 try {
-                                    await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
-                                    log('Search results refreshed.');
+                                    await page.waitForSelector('div[role="listitem"][data-item-id], .MusicPanelSearchResultList__empty', { timeout: 30000 });
+                                    log('Search results refreshed or empty state detected.');
                                 } catch (e) {
                                     log('Wait for search results timed out or failed. Proceeding anyway...');
                                 }
@@ -3586,11 +3586,91 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                                 let soundAdded = false;
                                 try {
-                                    // Find first search result and click plus-bold icon
+                                    const emptyResult = await page.$('.MusicPanelSearchResultList__empty');
                                     const firstItem = await page.$('div[role="listitem"][data-item-id]');
-                                    if (!firstItem) {
-                                        log('WARNING: No search results found');
+
+                                    if (emptyResult || !firstItem) {
+                                        log('WARNING: No search results found (empty list or no first item). Triggering Favorites fallback...');
                                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
+
+                                        // Click the 'x' icon in search music
+                                        const clearBtn = await page.$('[data-icon="x-circle-fill"], svg[data-icon="x-circle-fill"]');
+                                        if (clearBtn) {
+                                            log('Clicking x icon to clear search...');
+                                            await clearBtn.click();
+                                        } else {
+                                            log('x-circle-fill icon not found, using keyboard selectAll+Backspace...');
+                                            await searchInput.focus();
+                                            await searchInput.click({ clickCount: 3 });
+                                            await page.keyboard.press('Control+A');
+                                            await page.keyboard.press('Backspace');
+                                        }
+                                        await page.waitForTimeout(1500);
+
+                                        // Click Favorites tab
+                                        log('Looking for Favorites tab...');
+                                        let favoritesTab = null;
+                                        const favSelectors = [
+                                            'div[role="tab"]:has-text("Favorites")',
+                                            'div[role="tab"]:has-text("Yêu thích")',
+                                            'div[role="tab"]:has-text("Favorite")',
+                                            'div[role="tab"]:has-text("yêu thích")',
+                                            'span:has-text("Favorites")',
+                                            'span:has-text("Yêu thích")',
+                                            'button:has-text("Favorites")',
+                                            'button:has-text("Yêu thích")',
+                                        ];
+                                        for (const sel of favSelectors) {
+                                            try {
+                                                favoritesTab = await page.waitForSelector(sel, { timeout: 1500, state: 'visible' }).catch(() => null);
+                                                if (favoritesTab) {
+                                                    log(`Found Favorites tab via selector: ${sel}`);
+                                                    break;
+                                                }
+                                            } catch (err) {}
+                                        }
+
+                                        if (favoritesTab) {
+                                            log('Clicking Favorites tab...');
+                                            await favoritesTab.click();
+                                            await page.waitForTimeout(3000); // Wait for favorites list to load
+
+                                            // Click the first record in favorites list
+                                            const firstFavItem = await page.$('div[role="listitem"][data-item-id]');
+                                            if (firstFavItem) {
+                                                log('Found first favorites result. Looking for plus button...');
+                                                const icon = await firstFavItem.$('[data-icon="plus-bold"]');
+                                                if (icon) {
+                                                    log(`Found plus icon inside favorites item. Finding parent button...`);
+                                                    const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
+                                                    await parentButton.scrollIntoViewIfNeeded();
+                                                    await parentButton.click({ force: true });
+                                                    log(`Sound added via Favorites tab first result.`);
+                                                    soundAdded = true;
+
+                                                    // Enter -50 in the PropSettingInput
+                                                    log(`Waiting for PropSettingInput to appear...`);
+                                                    await page.waitForTimeout(800);
+                                                    const propInput = await page.waitForSelector(
+                                                        'input.PropSettingInput__input, input[class*="PropSettingInput"]',
+                                                        { timeout: 3000, state: 'visible' }
+                                                    ).catch(() => null);
+                                                    if (propInput) {
+                                                        log(`Found PropSettingInput. Entering -50...`);
+                                                        await propInput.click({ clickCount: 3 });
+                                                        await propInput.fill('-50');
+                                                        await page.keyboard.press('Enter');
+                                                        log(`Entered -50 into PropSettingInput.`);
+                                                    }
+                                                } else {
+                                                    log('Plus button not found in first favorites result.');
+                                                }
+                                            } else {
+                                                log('WARNING: No items found in Favorites tab.');
+                                            }
+                                        } else {
+                                            log('ERROR: Favorites tab not found.');
+                                        }
                                     } else {
                                         log('Found first search result. Looking for plus button...');
                                         const icon = await firstItem.$('[data-icon="plus-bold"]');
