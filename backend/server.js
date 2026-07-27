@@ -195,6 +195,18 @@ try {
     console.error('Migration error (needs_render column):', err);
 }
 
+// Migration: render_concat_video — Xác định profile này có nối video render thay vì bypass render không
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasRenderConcatVideo = tableInfo.some((col) => col.name === 'render_concat_video');
+    if (!hasRenderConcatVideo) {
+        db.exec('ALTER TABLE profiles ADD COLUMN render_concat_video INTEGER DEFAULT 0;');
+        console.log('Added render_concat_video column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (render_concat_video column):', err);
+}
+
 // Migration: remove_title — Xác định profile này có xóa tiêu đề mặc định khi upload không
 try {
     const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
@@ -287,6 +299,18 @@ try {
     console.error('Migration error (cookies column):', err);
 }
 
+// Migration: schedule_interval — Khoảng cách thời gian lên lịch (5 hoặc 10 phút, mặc định 5)
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasScheduleInterval = tableInfo.some((col) => col.name === 'schedule_interval');
+    if (!hasScheduleInterval) {
+        db.exec('ALTER TABLE profiles ADD COLUMN schedule_interval INTEGER DEFAULT 5;');
+        console.log('Added schedule_interval column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (schedule_interval column):', err);
+}
+
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
     try {
@@ -376,6 +400,48 @@ function parseProxy(proxyStr) {
     return { server, username, password };
 }
 
+async function injectProfileCookies(browser, profile) {
+    if (profile.cookies && profile.cookies.trim()) {
+        try {
+            let cookies;
+            try {
+                cookies = JSON.parse(profile.cookies);
+            } catch (jsonErr) {
+                // Try parsing raw cookie string format (name1=value1; name2=value2)
+                cookies = profile.cookies.split(';').map(part => {
+                    const equalIdx = part.indexOf('=');
+                    if (equalIdx === -1) return null;
+                    const name = part.substring(0, equalIdx).trim();
+                    const value = part.substring(equalIdx + 1).trim();
+                    if (!name) return null;
+                    return {
+                        name,
+                        value,
+                        domain: '.tiktok.com',
+                        path: '/'
+                    };
+                }).filter(Boolean);
+            }
+            if (Array.isArray(cookies) && cookies.length > 0) {
+                const cleanedCookies = cookies.map(c => {
+                    const clean = { ...c };
+                    if (typeof clean.expires === 'number') {
+                        clean.expires = Math.round(clean.expires);
+                    }
+                    if (clean.sameSite && !['Lax', 'Strict', 'None'].includes(clean.sameSite)) {
+                        delete clean.sameSite;
+                    }
+                    return clean;
+                });
+                await browser.addCookies(cleanedCookies);
+                console.log(`[${profile.name}] Automatically injected ${cleanedCookies.length} cookies into browser context`);
+            }
+        } catch (e) {
+            console.error(`[${profile.name}] Failed to inject cookies:`, e.message);
+        }
+    }
+}
+
 // API Routes
 app.get('/api/profiles', (req, res) => {
     const profiles = db
@@ -398,7 +464,7 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music } = req.body;
+    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music, render_concat_video } = req.body;
 
     try {
         const id = Date.now().toString();
@@ -410,7 +476,8 @@ app.post('/api/profiles', (req, res) => {
             channel_ids,
             need_content_check,
             render_video_long,
-            set_music
+            set_music,
+            render_concat_video
         });
         res.json(profile);
     } catch (err) {
@@ -566,6 +633,126 @@ app.post('/api/profiles/import-csv', (req, res) => {
         res.status(500).json({ error: `Failed to import CSV: ${err.message}` });
     }
 });
+
+app.post('/api/profiles/import-folder', (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath || typeof folderPath !== 'string') {
+        return res.status(400).json({ error: 'folderPath is required' });
+    }
+
+    try {
+        const resolvedPath = path.resolve(folderPath);
+        if (!fs.existsSync(resolvedPath)) {
+            return res.status(400).json({ error: 'Folder path does not exist' });
+        }
+        const stats = fs.statSync(resolvedPath);
+        if (!stats.isDirectory()) {
+            return res.status(400).json({ error: 'Path is not a directory' });
+        }
+
+        const configPath = path.join(resolvedPath, 'config.json');
+        if (!fs.existsSync(configPath)) {
+            return res.status(400).json({ error: 'config.json not found in the directory' });
+        }
+
+        const configContent = fs.readFileSync(configPath, 'utf8');
+        let configData;
+        try {
+            configData = JSON.parse(configContent);
+        } catch (parseErr) {
+            return res.status(400).json({ error: 'Failed to parse config.json as JSON' });
+        }
+
+        const accounts = configData.accounts;
+        if (!Array.isArray(accounts)) {
+            return res.status(400).json({ error: 'accounts list not found in config.json' });
+        }
+
+        const results = { imported: 0, skipped: 0, errors: [] };
+
+        const insertProfile = db.prepare(`
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
+                group_id, video_folder, set_music, upload_count, needs_render, remove_title,
+                need_content_check, account_id, pass, email, pass_email, cookies, music_search, proxy)
+            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const existingNames = new Set(
+            db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
+        );
+
+        const cookiesDir = path.join(resolvedPath, 'cookies');
+
+        for (const account of accounts) {
+            const profileName = (account.name || '').trim();
+            const accountId = (account.id || '').trim();
+
+            if (!profileName) {
+                results.errors.push(`Row skipped: empty account name for id "${accountId}"`);
+                results.skipped++;
+                continue;
+            }
+
+            // Check if cookie file exists first (as requested by the user)
+            const cookieFileName = `${accountId}.json`;
+            const cookieFilePath = path.join(cookiesDir, cookieFileName);
+            if (!accountId || !fs.existsSync(cookieFilePath)) {
+                results.errors.push(`"${profileName}": skipped because no corresponding cookie file "${cookieFileName}" was found`);
+                results.skipped++;
+                continue;
+            }
+
+            if (existingNames.has(profileName.toLowerCase())) {
+                results.errors.push(`"${profileName}": profile name already exists`);
+                results.skipped++;
+                continue;
+            }
+
+            const groupName = (account.group || '').trim();
+            let groupId = null;
+            if (groupName) {
+                groupId = findOrCreateGroupByName(db, groupName);
+            }
+
+            let cookiesContent = null;
+            try {
+                const rawCookies = fs.readFileSync(cookieFilePath, 'utf8');
+                // Validate it is valid JSON
+                JSON.parse(rawCookies);
+                cookiesContent = rawCookies;
+            } catch (err) {
+                results.errors.push(`"${profileName}": failed to parse cookie file "${cookieFileName}"`);
+                results.skipped++;
+                continue;
+            }
+
+            const proxy = (account.proxy || '').trim() || null;
+            const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
+
+            const videoFolder = groupName
+                ? path.join(UPLOADS_DIR, groupName, profileName)
+                : path.join(UPLOADS_DIR, profileName);
+
+            try {
+                if (videoFolder) {
+                    fs.mkdirSync(videoFolder, { recursive: true });
+                }
+                insertProfile.run(id, profileName, groupId, videoFolder, accountId, null, null, null, cookiesContent, null, proxy);
+                existingNames.add(profileName.toLowerCase());
+                results.imported++;
+            } catch (e) {
+                results.errors.push(`"${profileName}": ${e.message}`);
+                results.skipped++;
+            }
+        }
+
+        res.json(results);
+    } catch (err) {
+        console.error('Folder import error:', err);
+        res.status(500).json({ error: `Failed to import folder: ${err.message}` });
+    }
+});
+
 
 app.delete('/api/profiles/:id', async (req, res) => {
     const profileId = req.params.id;
@@ -775,6 +962,11 @@ app.post('/api/profiles/clear-trash', (req, res) => {
         'parcel_tracking_db',
         'Safe Browsing',
         'NativeMessagingHosts',
+        // TikTok video/media cache — chiếm hàng GB mỗi profile
+        'IndexedDB',
+        'blob_storage',
+        'BrowserMetrics',
+        'Crashpad',
     ];
 
     // Also clear specific cache files in Default/ (not directories)
@@ -906,8 +1098,57 @@ app.post('/api/profiles/clear-trash', (req, res) => {
     });
 });
 
+// POST /api/system/clear-debug — Xóa debug PNG + truncate automation.log để giải phóng dung lượng
+app.post('/api/system/clear-debug', (req, res) => {
+    try {
+        let freedBytes = 0;
+
+        // Xóa tất cả file debug_*.png trong thư mục backend
+        const backendDir = __dirname;
+        const entries = fs.readdirSync(backendDir);
+        let deletedFiles = 0;
+        for (const entry of entries) {
+            if (entry.startsWith('debug_') && entry.endsWith('.png')) {
+                const filePath = path.join(backendDir, entry);
+                try {
+                    freedBytes += fs.statSync(filePath).size;
+                    fs.rmSync(filePath, { force: true });
+                    deletedFiles++;
+                } catch (e) {
+                    console.error(`[ClearDebug] Failed to delete ${filePath}: ${e.message}`);
+                }
+            }
+        }
+
+        // Truncate automation.log (xóa nội dung nhưng giữ file)
+        const logPath = path.join(backendDir, 'automation.log');
+        let logFreedBytes = 0;
+        if (fs.existsSync(logPath)) {
+            try {
+                logFreedBytes = fs.statSync(logPath).size;
+                fs.writeFileSync(logPath, `[${new Date().toISOString()}] Log cleared by user\n`);
+                freedBytes += logFreedBytes;
+                console.log(`[ClearDebug] Truncated automation.log (freed ${(logFreedBytes / 1024 / 1024).toFixed(1)} MB)`);
+            } catch (e) {
+                console.error(`[ClearDebug] Failed to truncate automation.log: ${e.message}`);
+            }
+        }
+
+        const freedMB = (freedBytes / 1024 / 1024).toFixed(1);
+        console.log(`[ClearDebug] Deleted ${deletedFiles} debug PNG files, freed ${freedMB} MB total`);
+        res.json({
+            success: true,
+            deletedFiles,
+            freedMB: parseFloat(freedMB),
+            message: `Đã xóa ${deletedFiles} file debug và dọn log, giải phóng ${freedMB} MB`,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -973,6 +1214,10 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = auto_increment_schedule ? 1 : 0;
         db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
     }
+    if (schedule_interval !== undefined) {
+        const val = Number(schedule_interval) === 10 ? 10 : 5;
+        db.prepare('UPDATE profiles SET schedule_interval = ? WHERE id = ?').run(val, profileId);
+    }
     if (upload_count !== undefined) {
         db.prepare('UPDATE profiles SET upload_count = ? WHERE id = ?').run(upload_count, profileId);
     }
@@ -994,6 +1239,10 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (render_video_long !== undefined) {
         const val = render_video_long ? 1 : 0;
         db.prepare('UPDATE profiles SET render_video_long = ? WHERE id = ?').run(val, profileId);
+    }
+    if (render_concat_video !== undefined) {
+        const val = render_concat_video ? 1 : 0;
+        db.prepare('UPDATE profiles SET render_concat_video = ? WHERE id = ?').run(val, profileId);
     }
     if (cookies !== undefined) {
         db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
@@ -1615,6 +1864,41 @@ app.post('/api/upload_new_video', async (req, res) => {
             // Skip the rest of the handler (already responded and launched background job)
             return;
 
+        } else if (profile.render_concat_video !== 0 && profile.render_concat_video !== undefined) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${profile.name}] Starting concat render: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const concatVideosFolder = path.join(__dirname, '..', 'concat_videos');
+
+            if (!fs.existsSync(concatVideosFolder)) {
+                fs.mkdirSync(concatVideosFolder, { recursive: true });
+            }
+
+            const concatArgs = [
+                path.join(__dirname, 'concat.py'),
+                '--video', downloadedFilePath,
+                '--concat-dir', concatVideosFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, concatArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`concat.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${profile.name}] Concat render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${profile.name}] Video fully replaced with concat-rendered version.`);
         } else if (profile.needs_render !== 0) {
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
             console.log(`[${profile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
@@ -2171,6 +2455,41 @@ app.post('/api/upload-profile', async (req, res) => {
             // Skip the rest of the handler (already responded and launched background job)
             return;
 
+        } else if (currentProfile.render_concat_video !== 0 && currentProfile.render_concat_video !== undefined) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${currentProfile.name}] Starting concat render: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const concatVideosFolder = path.join(__dirname, '..', 'concat_videos');
+
+            if (!fs.existsSync(concatVideosFolder)) {
+                fs.mkdirSync(concatVideosFolder, { recursive: true });
+            }
+
+            const concatArgs = [
+                path.join(__dirname, 'concat.py'),
+                '--video', downloadedFilePath,
+                '--concat-dir', concatVideosFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, concatArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`concat.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${currentProfile.name}] Concat render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${currentProfile.name}] Video fully replaced with concat-rendered version.`);
         } else if (currentProfile.needs_render !== 0) {
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
             console.log(`[${currentProfile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
@@ -2310,6 +2629,7 @@ app.post('/api/open-profile', async (req, res) => {
         }
 
         const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+        await injectProfileCookies(browser, profile);
         manualBrowsers.set(profileId, browser);
 
         browser.on('close', () => {
@@ -2349,6 +2669,7 @@ async function changeAvatar(profile, avatarImage) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
     avatarChangingProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
 
@@ -2551,6 +2872,7 @@ async function addFavoriteMusic(profile, searchTerm) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
     addingFavoriteMusicProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
 
@@ -3204,6 +3526,18 @@ async function dismissOnboardingModals(page, log) {
                 }
             }
 
+            // Check for sound guide callouts ("Use these sounds to prevent your 1 Minute+...")
+            const soundGuides = document.querySelectorAll('[class*="DivGuideContainer"], [class*="GuideContainer"]');
+            for (const sg of soundGuides) {
+                const rect = sg.getBoundingClientRect();
+                const style = window.getComputedStyle(sg);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    found.push({ type: 'sound-guide', buttons: [] });
+                    break;
+                }
+            }
+
             return found;
         });
 
@@ -3213,7 +3547,7 @@ async function dismissOnboardingModals(page, log) {
         }
 
         modalsFound = true;
-        log(`Detected ${detection.length} onboarding modal(s): ${detection.map(d => d.type + '(' + d.buttons.join(',') + ')').join('; ')}`);
+        log(`Detected ${detection.length} onboarding modal(s): ${detection.map(d => d.type + '(' + (d.buttons ? d.buttons.join(',') : '') + ')').join('; ')}`);
 
     } catch (e) {
         // evaluate failed (page might be closing/navigating). Skip.
@@ -3222,14 +3556,30 @@ async function dismissOnboardingModals(page, log) {
 
     // Phase 2: Only if modals detected, dismiss them with targeted selectors
 
-    // 1. TUXModal: "Turn on automatic content checks?" → Cancel
-    // ONLY target Cancel inside TUXModal div, never the upload UI Cancel
+    // 1. TUXModal (e.g., "Turn on automatic content checks?" -> ALWAYS Cancel, "Allow video uploads on mobile?" -> Got it)
     try {
-        const el = await page.waitForSelector('div.TUXModal button:has-text("Cancel")', { timeout: 3000 });
-        if (el) {
-            log('✅ Dismissing TUXModal "Turn on automatic content checks" → Cancel');
-            await el.click();
-            await page.waitForTimeout(800);
+        const tuxModal = await page.$('div.TUXModal');
+        if (tuxModal && await tuxModal.isVisible()) {
+            const text = await tuxModal.innerText().catch(() => '');
+            if (text.includes("automatic content checks") || text.includes("content checks")) {
+                const cancelBtn = await tuxModal.$('button:has-text("Cancel")');
+                if (cancelBtn) {
+                    log('✅ Dismissing "Turn on automatic content checks" → Cancel');
+                    await cancelBtn.click();
+                    await page.waitForTimeout(800);
+                }
+            } else {
+                const modalBtns = ['button:has-text("Got it")', 'button:has-text("Allow")', 'button:has-text("Cancel")', 'button:has-text("Skip")'];
+                for (const btnSel of modalBtns) {
+                    const el = await tuxModal.$(btnSel).catch(() => null);
+                    if (el && await el.isVisible()) {
+                        log(`✅ Dismissing TUXModal → ${btnSel}`);
+                        await el.click();
+                        await page.waitForTimeout(800);
+                        break;
+                    }
+                }
+            }
         }
     } catch (e) { /* not found */ }
 
@@ -3271,6 +3621,17 @@ async function dismissOnboardingModals(page, log) {
             await page.waitForTimeout(800);
         }
     } catch (e) { /* not found */ }
+
+    // 4. Sound guide callout ("Use these sounds...") → click or press Escape
+    try {
+        const sgEl = await page.waitForSelector('[class*="DivGuideContainer"], [class*="GuideContainer"]', { timeout: 1500 }).catch(() => null);
+        if (sgEl && await sgEl.isVisible()) {
+            log('✅ Dismissing sound guide callout ("Use these sounds...")');
+            await sgEl.click().catch(() => null);
+            await page.keyboard.press('Escape').catch(() => null);
+            await page.waitForTimeout(500);
+        }
+    } catch (e) { /* not found */ }
 }
 
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
@@ -3294,6 +3655,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
 
     const log = (msg) => {
         const entry = `[${new Date().toISOString()}] [${profile.name}] ${msg}\n`;
@@ -3445,13 +3807,45 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
             // Dismiss any onboarding modals that may appear after file selection
             await dismissOnboardingModals(page, log);
+            await dismissPopups(page);
+            await page.waitForTimeout(1000);
+            // Gọi lần 2 để đảm bảo popup đã được dismiss (popup có thể xuất hiện chậm)
+            await dismissPopups(page);
 
             // Wait for upload to complete (Cancel button detaches)
+            // Chạy dismissPopups liên tục trong khi đợi để tránh popup block upload
             try {
-                const cancelBtn = page.locator('button:has-text("Cancel")');
-                await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
-                log('Upload complete (Cancel button gone). UI should now stabilize.');
+                const uploadCompletedPromise = (async () => {
+                    // Đợi Cancel button của upload progress xuất hiện trước
+                    const uploadProgressCancel = page.locator('.upload-progress button:has-text("Cancel"), [class*="upload"] button:has-text("Cancel"), button[class*="cancel"]').first();
+                    // Nếu không tìm thấy cancel của progress, dùng fallback: detect upload done bằng cách kiểm tra Post button available
+                    let cancelDetected = false;
+                    try {
+                        await uploadProgressCancel.waitFor({ state: 'visible', timeout: 10000 });
+                        cancelDetected = true;
+                    } catch (_) { /* no specific upload cancel found */ }
+
+                    // Loop dismiss popups mỗi 2s trong khi đợi Post button ready
+                    for (let i = 0; i < 600; i++) { // max 20 phút
+                        await page.waitForTimeout(2000);
+                        await dismissPopups(page);
+                        await dismissOnboardingModals(page, log);
+
+                        // Kiểm tra upload xong: Post button enabled và Cancel của upload progress biến mất
+                        const postBtn = await page.$('button[data-e2e="post_video_button"]:not([disabled]), button.common-button-post-video:not([disabled])');
+                        if (postBtn && await postBtn.isVisible()) {
+                            log('Upload complete (Post button is enabled and visible).');
+                            break;
+                        }
+                    }
+                })();
+
+                await uploadCompletedPromise;
                 await page.waitForTimeout(2000);
+
+                // Dismiss popups & tooltips that appeared after video upload completion
+                await dismissOnboardingModals(page, log);
+                await dismissPopups(page);
             } catch (e) {
                 log(`Wait for upload completion timed out or failed: ${e.message}`);
             }
@@ -3495,6 +3889,11 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             if (useSetMusic) {
                 try {
                     log(`Task 2: Waiting for Sounds panel button to be fully enabled and ready...`);
+
+                    // Clear any onboarding / joyride overlays that might block clicking Edit Video
+                    await dismissOnboardingModals(page, log);
+                    await dismissPopups(page);
+
                     let soundsBtn = null;
                     try {
                         soundsBtn = await page.waitForSelector(
@@ -3508,7 +3907,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         const editButton = await page.$('button:has-text("Edit video"), .edit-video-btn, [data-e2e="edit-video-button"], button:has-text("Edit")');
                         if (editButton && await editButton.isVisible()) {
                             log(`Clicking Edit Video button...`);
-                            await editButton.click();
+                            await editButton.click({ force: true }).catch(() => editButton.click());
                             soundsBtn = await page.waitForSelector(
                                 'button[data-button-name="sounds"]:not([disabled])',
                                 { timeout: 30000, state: 'visible' }
@@ -3519,6 +3918,11 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     if (soundsBtn) {
                         log(`Opening Sounds panel...`);
                         await soundsBtn.click();
+                        await page.waitForTimeout(1500);
+
+                        // Dismiss guide tooltips (e.g. "Phone mode" -> Got it) and any editor popups
+                        await dismissOnboardingModals(page, log);
+                        await dismissPopups(page);
 
                         // Screenshot before search
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
@@ -3911,11 +4315,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 log(`Captured base time: ${lastScheduledTime.toISOString()}`);
                             } else {
                                 log(`Warning: Failed to parse default time. Using fallback.`);
-                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, now: new Date() });
+                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, intervalMinutes: profile.schedule_interval || 5, now: new Date() });
                             }
                         } else {
-                            // Video 3+: Increment by 5 minutes
-                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime });
+                            // Video 3+: Increment by intervalMinutes (5 or 10 mins)
+                            const intervalMin = profile.schedule_interval || 5;
+                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
                             const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                             const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
@@ -4307,6 +4712,7 @@ async function runEngageSession(profile) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
     engagingProfiles.set(profileId, session);
@@ -5088,7 +5494,26 @@ async function runTikTokLogin(profile) {
         const hasCookies = profile.cookies && profile.cookies.trim();
         if (hasCookies) {
             try {
-                const cookies = JSON.parse(profile.cookies);
+                let cookies;
+                try {
+                    cookies = JSON.parse(profile.cookies);
+                } catch (jsonErr) {
+                    // Try parsing raw cookie string format (name1=value1; name2=value2)
+                    cookies = profile.cookies.split(';').map(part => {
+                        const equalIdx = part.indexOf('=');
+                        if (equalIdx === -1) return null;
+                        const name = part.substring(0, equalIdx).trim();
+                        const value = part.substring(equalIdx + 1).trim();
+                        if (!name) return null;
+                        return {
+                            name,
+                            value,
+                            domain: '.tiktok.com',
+                            path: '/'
+                        };
+                    }).filter(Boolean);
+                }
+
                 if (Array.isArray(cookies) && cookies.length > 0) {
                     log(`Injecting ${cookies.length} cookies from stored profile...`);
                     await browser.addCookies(cookies);
@@ -5101,7 +5526,12 @@ async function runTikTokLogin(profile) {
                     await tiktokPage.waitForTimeout(3000);
 
                     const currentUrl = tiktokPage.url();
-                    if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+                    log('Checking login state via profile elements...');
+                    const isLoggedIn = await tiktokPage.waitForSelector('#header-profile-avatar, [data-e2e="profile-icon"], [data-e2e="avatar-icon"]', { timeout: 6000, state: 'visible' })
+                        .then(() => true)
+                        .catch(() => false);
+
+                    if (isLoggedIn) {
                         log('Login via cookies successful! Current URL: ' + currentUrl);
                         session.stats.step = 'cookie_login_complete';
                         // Refresh cookies from browser for future use
@@ -5110,7 +5540,7 @@ async function runTikTokLogin(profile) {
                             .run(JSON.stringify(freshCookies), profileId);
                         return;
                     }
-                    log('Cookie login failed (still on login page), falling back to email/password...');
+                    log('Cookie login failed (profile avatar not found), falling back to email/password...');
                 }
             } catch (e) {
                 log(`Cookie injection failed: ${e.message}, falling back to email/password...`);
@@ -5583,30 +6013,75 @@ async function runTikTokLogin(profile) {
 
 const dismissPopups = async (page) => {
     if (!page) return false;
-    const modalSelectors = ['div[role="dialog"]', 'div[class*="modal"]', 'div[class*="Modal"]', 'div[class*="portal"]', 'div[class*="dialog"]'];
+
+    // Các selector để tìm modal/popup - theo thứ tự ưu tiên (cụ thể nhất trước)
+    const modalSelectors = [
+        'div[role="dialog"]',
+        'div.TUXModal:not(.TUXModal-overlay)',   // TikTok modal chính (không phải overlay)
+        'div[class*="common-modal"]:not([class*="overlay"])',
+        'div[class*="modal"]:not([class*="overlay"])',
+        'div[class*="Modal"]:not([class*="overlay"])',
+        'div[class*="portal"]',
+        'div[class*="dialog"]',
+    ];
+
     for (const modalSel of modalSelectors) {
         try {
-            const modal = await page.$(modalSel);
-            if (modal && await modal.isVisible()) {
-                const text = await modal.innerText();
-                if (text.includes("Are you sure you want to exit")) {
-                    const cancelBtn = await modal.$('button:has-text("Cancel")');
-                    if (cancelBtn) await cancelBtn.click();
-                    return true;
-                }
-                const btnSelectors = ['button:has-text("Turn on")', 'button:has-text("Allow")', 'button:has-text("Got it")', 'button:has-text("Skip")', 'button:has-text("Cancel")'];
-                for (const btnSel of btnSelectors) {
-                    const btn = await modal.$(btnSel);
-                    if (btn && await btn.isVisible()) {
-                        await btn.click();
-                        return true;
+            // Dùng $$ để lấy TẤT CẢ elements match, không chỉ phần tử đầu tiên
+            const modals = await page.$$(modalSel);
+            for (const modal of modals) {
+                try {
+                    if (!await modal.isVisible()) continue;
+
+                    const text = await modal.innerText().catch(() => '');
+                    if (!text.trim()) continue;
+
+                    // --- Popup "Turn on automatic content checks?" ---
+                    // → Click Cancel để từ chối (không muốn bật)
+                    if (text.includes("automatic content checks") || text.includes("content checks") || text.includes("Turn on automatic")) {
+                        const cancelBtn = await modal.$('button:has-text("Cancel")');
+                        if (cancelBtn && await cancelBtn.isVisible()) {
+                            await cancelBtn.click();
+                            console.log('[dismissPopups] Dismissed "Turn on automatic content checks" popup → Cancel');
+                            return true;
+                        }
                     }
-                }
+
+                    // --- Popup "Are you sure you want to exit?" ---
+                    // → Click Cancel để ở lại trang upload
+                    if (text.includes("Are you sure you want to exit") || text.includes("want to leave") || text.includes("Leave page")) {
+                        const cancelBtn = await modal.$('button:has-text("Cancel"), button:has-text("Stay"), button:has-text("No")');
+                        if (cancelBtn && await cancelBtn.isVisible()) {
+                            await cancelBtn.click();
+                            console.log('[dismissPopups] Dismissed "exit/leave" confirmation popup → Cancel/Stay');
+                            return true;
+                        }
+                    }
+
+                    // --- Các popup chung: Got it, Allow, Skip, OK ---
+                    const genericBtnSelectors = [
+                        'button:has-text("Got it")',
+                        'button:has-text("Allow")',
+                        'button:has-text("Skip")',
+                        'button:has-text("OK")',
+                        'button:has-text("Okay")',
+                        'button:has-text("Close")',
+                    ];
+                    for (const btnSel of genericBtnSelectors) {
+                        const btn = await modal.$(btnSel);
+                        if (btn && await btn.isVisible()) {
+                            await btn.click();
+                            console.log(`[dismissPopups] Dismissed generic popup → ${btnSel}`);
+                            return true;
+                        }
+                    }
+                } catch (innerE) { /* ignore per-modal errors */ }
             }
-        } catch (e) { }
+        } catch (e) { /* ignore selector errors */ }
     }
     return false;
 };
+
 
 // Background Scheduler
 function checkAndRunSchedules() {

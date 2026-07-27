@@ -372,6 +372,7 @@ const App = () => {
   const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
   const [newProfileChannelIds, setNewProfileChannelIds] = useState('');
   const [newProfileNeedsRender, setNewProfileNeedsRender] = useState(true);
+  const [newProfileRenderConcatVideo, setNewProfileRenderConcatVideo] = useState(false);
   const [newProfileRemoveTitle, setNewProfileRemoveTitle] = useState(true);
   const [newProfileNeedContentCheck, setNewProfileNeedContentCheck] = useState(true);
   const [newProfileRenderVideoLong, setNewProfileRenderVideoLong] = useState(false);
@@ -400,10 +401,12 @@ const App = () => {
   const [limitUploads, setLimitUploads] = useState(false);
   const [uploadLimitCount, setUploadLimitCount] = useState(1);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isImportFolderModalOpen, setIsImportFolderModalOpen] = useState(false);
   const [importCsvText, setImportCsvText] = useState('');
   const [importFileName, setImportFileName] = useState('');
   const [importResults, setImportResults] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [importFolderPath, setImportFolderPath] = useState('');
   const [editingProfileId, setEditingProfileId] = useState(null);
 
   const editingProfile = editingProfileId
@@ -560,6 +563,7 @@ const App = () => {
     setNewProfileVideoFolder('');
     setNewProfileChannelIds('');
     setNewProfileNeedsRender(true);
+    setNewProfileRenderConcatVideo(false);
     setNewProfileRemoveTitle(true);
     setNewProfileNeedContentCheck(true);
     setNewProfileRenderVideoLong(false);
@@ -584,6 +588,7 @@ const App = () => {
         video_folder: newProfileVideoFolder.trim() || null,
         channel_ids: newProfileChannelIds.trim() || null,
         needs_render: newProfileNeedsRender,
+        render_concat_video: newProfileRenderConcatVideo,
         remove_title: newProfileRemoveTitle,
         need_content_check: newProfileNeedContentCheck,
         render_video_long: newProfileRenderVideoLong,
@@ -635,11 +640,42 @@ const App = () => {
     }
   };
 
+  const handleImportFolder = async () => {
+    if (!importFolderPath.trim()) {
+      setMessage({ type: 'error', text: 'Vui lòng nhập đường dẫn thư mục' });
+      return;
+    }
+    setIsImporting(true);
+    setImportResults(null);
+    try {
+      const res = await axios.post('/api/profiles/import-folder', { folderPath: importFolderPath });
+      setImportResults(res.data);
+      await fetchData();
+      setMessage({
+        type: 'success',
+        text: `Import xong: ${res.data.imported} profiles đã tạo, ${res.data.skipped} bỏ qua`
+      });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi import thư mục' });
+      setImportResults(null);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   const closeImportModal = () => {
     if (isImporting) return;
     setIsImportModalOpen(false);
     setImportCsvText('');
     setImportFileName('');
+    setImportResults(null);
+  };
+
+  const closeImportFolderModal = () => {
+    if (isImporting) return;
+    setIsImportFolderModalOpen(false);
+    setImportFolderPath('');
     setImportResults(null);
   };
 
@@ -851,6 +887,19 @@ const App = () => {
     setTimeout(() => setMessage(null), 5000);
   };
 
+  const clearDebugFiles = async () => {
+    if (!window.confirm('Xóa toàn bộ file debug PNG và dọn automation.log?\nHành động này không ảnh hưởng đến profile hay cookie.')) return;
+    setMessage({ type: 'info', text: 'Đang xóa file debug...' });
+    try {
+      const res = await axios.post('/api/system/clear-debug');
+      const { freedMB, deletedFiles } = res.data;
+      setMessage({ type: 'success', text: `Đã xóa ${deletedFiles} file debug PNG + dọn log → giải phóng ${freedMB} MB` });
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi xóa debug' });
+    }
+    setTimeout(() => setMessage(null), 5000);
+  };
+
   const startBulkEngage = async () => {
     const profileIds = [...selectedForRun];
     if (profileIds.length === 0) {
@@ -1013,6 +1062,24 @@ const App = () => {
     }
   };
 
+  const updateProfileRenderConcatVideo = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, render_concat_video: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { render_concat_video: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
   const updateProfileRenderVideoLong = async (id, enabled) => {
     if (processingRef.current.has(id)) return;
     setProfiles((prev) =>
@@ -1075,6 +1142,25 @@ const App = () => {
     processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { auto_increment_schedule: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const updateProfileScheduleInterval = async (id, interval) => {
+    if (processingRef.current.has(id)) return;
+    const intervalVal = Number(interval) === 10 ? 10 : 5;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, schedule_interval: intervalVal } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { schedule_interval: intervalVal });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
@@ -1423,6 +1509,14 @@ const App = () => {
                     Import CSV
                   </button>
                   <button
+                    className="btn btn-secondary"
+                    onClick={() => setIsImportFolderModalOpen(true)}
+                    style={{ gap: '10px' }}
+                  >
+                    <FolderOpen size={18} />
+                    Import Folder
+                  </button>
+                  <button
                     className="btn"
                     onClick={clearTrash}
                     disabled={selectedForRun.size === 0}
@@ -1439,6 +1533,21 @@ const App = () => {
                   >
                     <Trash2 size={18} />
                     Clear Trash
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={clearDebugFiles}
+                    title="Xóa file debug PNG và dọn automation.log để giải phóng dung lượng (~300-600MB)"
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(139, 92, 246, 0.08)',
+                      color: '#8B5CF6',
+                      border: '1px solid rgba(139, 92, 246, 0.25)',
+                      fontWeight: '700',
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Clear Debug
                   </button>
                   <button
                     className="btn"
@@ -1769,6 +1878,22 @@ const App = () => {
                           <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                             <input
                               type="checkbox"
+                              checked={newProfileRenderConcatVideo}
+                              onChange={(e) => setNewProfileRenderConcatVideo(e.target.checked)}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Render concat video</span>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Nối video tải về với 1 video ngẫu nhiên trong thư mục concat_videos.</span>
+                            </div>
+                          </label>
+                        </div>
+
+                        <div className="input-group" style={{ marginBottom: '12px' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                            <input
+                              type="checkbox"
                               checked={newProfileRemoveTitle}
                               onChange={(e) => setNewProfileRemoveTitle(e.target.checked)}
                               disabled={isCreatingProfile || isSelectingFolder}
@@ -1988,6 +2113,156 @@ const App = () => {
                 )}
               </AnimatePresence>
 
+              {/* Import Folder Modal */}
+              <AnimatePresence>
+                {isImportFolderModalOpen && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    style={{
+                      position: 'fixed',
+                      inset: 0,
+                      background: 'rgba(15, 23, 42, 0.7)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      zIndex: 1000,
+                      padding: '24px'
+                    }}
+                    onClick={() => closeImportFolderModal()}
+                  >
+                    <motion.div
+                      initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                      className="glass"
+                      style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <div>
+                          <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Import Export Folder</h3>
+                          <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+                            Import danh sách tài khoản kèm cookie từ thư mục export
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => closeImportFolderModal()}
+                          disabled={isImporting}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: isImporting ? 'not-allowed' : 'pointer',
+                            opacity: isImporting ? 0.45 : 1
+                          }}
+                          aria-label="Close import folder modal"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: '16px' }}>
+                        <div style={{ display: 'grid', gap: '8px' }}>
+                          <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                            Đường dẫn thư mục tuyệt đối trên server:
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Ví dụ: D:\TIKTOK\upload_tiktok\TikTok_Export_checked_1TK_20260724"
+                            value={importFolderPath}
+                            onChange={(e) => setImportFolderPath(e.target.value)}
+                            disabled={isImporting}
+                            style={{
+                              padding: '12px',
+                              borderRadius: '10px',
+                              background: 'rgba(0,0,0,0.3)',
+                              color: 'white',
+                              border: '1px solid var(--border)',
+                              fontSize: '0.85rem',
+                              width: '100%',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+                            * Thư mục này phải chứa file <code>config.json</code> và thư mục con <code>cookies/</code> chứa các file <code>.json</code> cookie.<br/>
+                            * Tài khoản nào không có cookie tương ứng sẽ bị tự động bỏ qua.
+                          </p>
+                        </div>
+
+                        {importResults && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            style={{
+                              padding: '16px',
+                              borderRadius: '12px',
+                              background: importResults.errors.length > 0
+                                ? 'rgba(234, 179, 8, 0.08)'
+                                : 'rgba(16, 185, 129, 0.08)',
+                              border: `1px solid ${importResults.errors.length > 0
+                                ? 'rgba(234, 179, 8, 0.25)'
+                                : 'rgba(16, 185, 129, 0.25)'}`
+                            }}
+                          >
+                            <div style={{ display: 'flex', gap: '20px', marginBottom: importResults.errors.length > 0 ? '12px' : 0 }}>
+                              <span style={{ fontSize: '0.85rem', color: 'var(--success)' }}>
+                                Đã import: <strong>{importResults.imported}</strong>
+                              </span>
+                              <span style={{ fontSize: '0.85rem', color: '#EAB308' }}>
+                                Bỏ qua: <strong>{importResults.skipped}</strong>
+                              </span>
+                            </div>
+                            {importResults.errors.length > 0 && (
+                              <div style={{
+                                maxHeight: '120px',
+                                overflowY: 'auto',
+                                fontSize: '0.75rem',
+                                color: '#EAB308',
+                                lineHeight: 1.5
+                              }}>
+                                {importResults.errors.slice(0, 15).map((err, i) => (
+                                  <div key={i}>{err}</div>
+                                ))}
+                                {importResults.errors.length > 15 && (
+                                  <div>... và {importResults.errors.length - 15} lỗi khác</div>
+                                )}
+                              </div>
+                            )}
+                          </motion.div>
+                        )}
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+                          <button type="button" className="btn btn-secondary" onClick={() => closeImportFolderModal()} disabled={isImporting}>
+                            Đóng
+                          </button>
+                          <button
+                            className="btn btn-primary"
+                            onClick={handleImportFolder}
+                            disabled={isImporting || !importFolderPath.trim()}
+                            style={{ gap: '8px' }}
+                          >
+                            {isImporting ? (
+                              <>
+                                <RefreshCw size={16} className="animate-pulse" />
+                                Đang import...
+                              </>
+                            ) : (
+                              <>
+                                <Upload size={16} />
+                                Import
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               {/* Edit Profile Modal */}
               <EditProfileModal
                 isOpen={editingProfileId !== null}
@@ -2004,8 +2279,10 @@ const App = () => {
                 onUpdateSchedules={updateProfileSchedules}
                 onUpdateSetMusic={updateProfileSetMusic}
                 onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
+                onUpdateScheduleInterval={updateProfileScheduleInterval}
                 onUpdateUploadCount={updateProfileUploadCount}
                 onUpdateNeedsRender={updateProfileNeedsRender}
+                onUpdateRenderConcatVideo={updateProfileRenderConcatVideo}
                 onUpdateRenderVideoLong={updateProfileRenderVideoLong}
                 onUpdateRemoveTitle={updateProfileRemoveTitle}
                 onUpdateNeedContentCheck={updateProfileNeedContentCheck}
