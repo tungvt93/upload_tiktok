@@ -186,6 +186,18 @@ try {
     console.error('Migration error (needs_render column):', err);
 }
 
+// Migration: render_concat_video — Xác định profile này có nối video render thay vì bypass render không
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasRenderConcatVideo = tableInfo.some((col) => col.name === 'render_concat_video');
+    if (!hasRenderConcatVideo) {
+        db.exec('ALTER TABLE profiles ADD COLUMN render_concat_video INTEGER DEFAULT 0;');
+        console.log('Added render_concat_video column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (render_concat_video column):', err);
+}
+
 // Migration: remove_title — Xác định profile này có xóa tiêu đề mặc định khi upload không
 try {
     const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
@@ -252,6 +264,30 @@ try {
     }
 } catch (err) {
     console.error('Migration error (music_search column):', err);
+}
+
+// Migration: cookies — JSON cookie array for cookie-based login
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasCookies = tableInfo.some((col) => col.name === 'cookies');
+    if (!hasCookies) {
+        db.exec('ALTER TABLE profiles ADD COLUMN cookies TEXT;');
+        console.log('Added cookies column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (cookies column):', err);
+}
+
+// Migration: schedule_interval — Khoảng cách thời gian lên lịch (5 hoặc 10 phút, mặc định 5)
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasScheduleInterval = tableInfo.some((col) => col.name === 'schedule_interval');
+    if (!hasScheduleInterval) {
+        db.exec('ALTER TABLE profiles ADD COLUMN schedule_interval INTEGER DEFAULT 5;');
+        console.log('Added schedule_interval column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (schedule_interval column):', err);
 }
 
 // Migration from db.json
@@ -343,6 +379,48 @@ function parseProxy(proxyStr) {
     return { server, username, password };
 }
 
+async function injectProfileCookies(browser, profile) {
+    if (profile.cookies && profile.cookies.trim()) {
+        try {
+            let cookies;
+            try {
+                cookies = JSON.parse(profile.cookies);
+            } catch (jsonErr) {
+                // Try parsing raw cookie string format (name1=value1; name2=value2)
+                cookies = profile.cookies.split(';').map(part => {
+                    const equalIdx = part.indexOf('=');
+                    if (equalIdx === -1) return null;
+                    const name = part.substring(0, equalIdx).trim();
+                    const value = part.substring(equalIdx + 1).trim();
+                    if (!name) return null;
+                    return {
+                        name,
+                        value,
+                        domain: '.tiktok.com',
+                        path: '/'
+                    };
+                }).filter(Boolean);
+            }
+            if (Array.isArray(cookies) && cookies.length > 0) {
+                const cleanedCookies = cookies.map(c => {
+                    const clean = { ...c };
+                    if (typeof clean.expires === 'number') {
+                        clean.expires = Math.round(clean.expires);
+                    }
+                    if (clean.sameSite && !['Lax', 'Strict', 'None'].includes(clean.sameSite)) {
+                        delete clean.sameSite;
+                    }
+                    return clean;
+                });
+                await browser.addCookies(cleanedCookies);
+                console.log(`[${profile.name}] Automatically injected ${cleanedCookies.length} cookies into browser context`);
+            }
+        } catch (e) {
+            console.error(`[${profile.name}] Failed to inject cookies:`, e.message);
+        }
+    }
+}
+
 // API Routes
 app.get('/api/profiles', (req, res) => {
     const profiles = db
@@ -365,7 +443,7 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name, group_id, video_folder, channel_ids, need_content_check } = req.body;
+    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music, render_concat_video } = req.body;
 
     try {
         const id = Date.now().toString();
@@ -375,7 +453,10 @@ app.post('/api/profiles', (req, res) => {
             group_id,
             video_folder,
             channel_ids,
-            need_content_check
+            need_content_check,
+            render_video_long,
+            set_music,
+            render_concat_video
         });
         res.json(profile);
     } catch (err) {
@@ -530,7 +611,127 @@ app.post('/api/profiles/import-csv', (req, res) => {
     }
 });
 
-app.delete('/api/profiles/:id', (req, res) => {
+app.post('/api/profiles/import-folder', (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath || typeof folderPath !== 'string') {
+        return res.status(400).json({ error: 'folderPath is required' });
+    }
+
+    try {
+        const resolvedPath = path.resolve(folderPath);
+        if (!fs.existsSync(resolvedPath)) {
+            return res.status(400).json({ error: 'Folder path does not exist' });
+        }
+        const stats = fs.statSync(resolvedPath);
+        if (!stats.isDirectory()) {
+            return res.status(400).json({ error: 'Path is not a directory' });
+        }
+
+        const configPath = path.join(resolvedPath, 'config.json');
+        if (!fs.existsSync(configPath)) {
+            return res.status(400).json({ error: 'config.json not found in the directory' });
+        }
+
+        const configContent = fs.readFileSync(configPath, 'utf8');
+        let configData;
+        try {
+            configData = JSON.parse(configContent);
+        } catch (parseErr) {
+            return res.status(400).json({ error: 'Failed to parse config.json as JSON' });
+        }
+
+        const accounts = configData.accounts;
+        if (!Array.isArray(accounts)) {
+            return res.status(400).json({ error: 'accounts list not found in config.json' });
+        }
+
+        const results = { imported: 0, skipped: 0, errors: [] };
+
+        const insertProfile = db.prepare(`
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
+                group_id, video_folder, set_music, upload_count, needs_render, remove_title,
+                need_content_check, account_id, pass, email, pass_email, cookies, music_search, proxy)
+            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const existingNames = new Set(
+            db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
+        );
+
+        const cookiesDir = path.join(resolvedPath, 'cookies');
+
+        for (const account of accounts) {
+            const profileName = (account.name || '').trim();
+            const accountId = (account.id || '').trim();
+
+            if (!profileName) {
+                results.errors.push(`Row skipped: empty account name for id "${accountId}"`);
+                results.skipped++;
+                continue;
+            }
+
+            // Check if cookie file exists first (as requested by the user)
+            const cookieFileName = `${accountId}.json`;
+            const cookieFilePath = path.join(cookiesDir, cookieFileName);
+            if (!accountId || !fs.existsSync(cookieFilePath)) {
+                results.errors.push(`"${profileName}": skipped because no corresponding cookie file "${cookieFileName}" was found`);
+                results.skipped++;
+                continue;
+            }
+
+            if (existingNames.has(profileName.toLowerCase())) {
+                results.errors.push(`"${profileName}": profile name already exists`);
+                results.skipped++;
+                continue;
+            }
+
+            const groupName = (account.group || '').trim();
+            let groupId = null;
+            if (groupName) {
+                groupId = findOrCreateGroupByName(db, groupName);
+            }
+
+            let cookiesContent = null;
+            try {
+                const rawCookies = fs.readFileSync(cookieFilePath, 'utf8');
+                // Validate it is valid JSON
+                JSON.parse(rawCookies);
+                cookiesContent = rawCookies;
+            } catch (err) {
+                results.errors.push(`"${profileName}": failed to parse cookie file "${cookieFileName}"`);
+                results.skipped++;
+                continue;
+            }
+
+            const proxy = (account.proxy || '').trim() || null;
+            const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
+
+            const videoFolder = groupName
+                ? path.join(UPLOADS_DIR, groupName, profileName)
+                : path.join(UPLOADS_DIR, profileName);
+
+            try {
+                if (videoFolder) {
+                    fs.mkdirSync(videoFolder, { recursive: true });
+                }
+                insertProfile.run(id, profileName, groupId, videoFolder, accountId, null, null, null, cookiesContent, null, proxy);
+                existingNames.add(profileName.toLowerCase());
+                results.imported++;
+            } catch (e) {
+                results.errors.push(`"${profileName}": ${e.message}`);
+                results.skipped++;
+            }
+        }
+
+        res.json(results);
+    } catch (err) {
+        console.error('Folder import error:', err);
+        res.status(500).json({ error: `Failed to import folder: ${err.message}` });
+    }
+});
+
+
+app.delete('/api/profiles/:id', async (req, res) => {
     const profileId = req.params.id;
     try {
         // 1. Get profile info before deleting from DB
@@ -625,6 +826,11 @@ app.post('/api/profiles/clear-trash', (req, res) => {
         'parcel_tracking_db',
         'Safe Browsing',
         'NativeMessagingHosts',
+        // TikTok video/media cache — chiếm hàng GB mỗi profile
+        'IndexedDB',
+        'blob_storage',
+        'BrowserMetrics',
+        'Crashpad',
     ];
 
     // Also clear specific cache files in Default/ (not directories)
@@ -756,8 +962,57 @@ app.post('/api/profiles/clear-trash', (req, res) => {
     });
 });
 
+// POST /api/system/clear-debug — Xóa debug PNG + truncate automation.log để giải phóng dung lượng
+app.post('/api/system/clear-debug', (req, res) => {
+    try {
+        let freedBytes = 0;
+
+        // Xóa tất cả file debug_*.png trong thư mục backend
+        const backendDir = __dirname;
+        const entries = fs.readdirSync(backendDir);
+        let deletedFiles = 0;
+        for (const entry of entries) {
+            if (entry.startsWith('debug_') && entry.endsWith('.png')) {
+                const filePath = path.join(backendDir, entry);
+                try {
+                    freedBytes += fs.statSync(filePath).size;
+                    fs.rmSync(filePath, { force: true });
+                    deletedFiles++;
+                } catch (e) {
+                    console.error(`[ClearDebug] Failed to delete ${filePath}: ${e.message}`);
+                }
+            }
+        }
+
+        // Truncate automation.log (xóa nội dung nhưng giữ file)
+        const logPath = path.join(backendDir, 'automation.log');
+        let logFreedBytes = 0;
+        if (fs.existsSync(logPath)) {
+            try {
+                logFreedBytes = fs.statSync(logPath).size;
+                fs.writeFileSync(logPath, `[${new Date().toISOString()}] Log cleared by user\n`);
+                freedBytes += logFreedBytes;
+                console.log(`[ClearDebug] Truncated automation.log (freed ${(logFreedBytes / 1024 / 1024).toFixed(1)} MB)`);
+            } catch (e) {
+                console.error(`[ClearDebug] Failed to truncate automation.log: ${e.message}`);
+            }
+        }
+
+        const freedMB = (freedBytes / 1024 / 1024).toFixed(1);
+        console.log(`[ClearDebug] Deleted ${deletedFiles} debug PNG files, freed ${freedMB} MB total`);
+        res.json({
+            success: true,
+            deletedFiles,
+            freedMB: parseFloat(freedMB),
+            message: `Đã xóa ${deletedFiles} file debug và dọn log, giải phóng ${freedMB} MB`,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -823,6 +1078,10 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = auto_increment_schedule ? 1 : 0;
         db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
     }
+    if (schedule_interval !== undefined) {
+        const val = Number(schedule_interval) === 10 ? 10 : 5;
+        db.prepare('UPDATE profiles SET schedule_interval = ? WHERE id = ?').run(val, profileId);
+    }
     if (upload_count !== undefined) {
         db.prepare('UPDATE profiles SET upload_count = ? WHERE id = ?').run(upload_count, profileId);
     }
@@ -840,6 +1099,20 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (need_content_check !== undefined) {
         const val = need_content_check ? 1 : 0;
         db.prepare('UPDATE profiles SET need_content_check = ? WHERE id = ?').run(val, profileId);
+    }
+    if (render_video_long !== undefined) {
+        const val = render_video_long ? 1 : 0;
+        db.prepare('UPDATE profiles SET render_video_long = ? WHERE id = ?').run(val, profileId);
+    }
+    if (render_concat_video !== undefined) {
+        const val = render_concat_video ? 1 : 0;
+        db.prepare('UPDATE profiles SET render_concat_video = ? WHERE id = ?').run(val, profileId);
+    }
+    if (cookies !== undefined) {
+        db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
+    }
+    if (music_search !== undefined) {
+        db.prepare('UPDATE profiles SET music_search = ? WHERE id = ?').run(music_search, profileId);
     }
 
     res.json({ success: true });
@@ -1293,7 +1566,149 @@ app.post('/api/upload_new_video', async (req, res) => {
         }
 
         // Check if render is needed based on profile configuration
-        if (profile.needs_render !== 0) {
+        let forceUploadAll = false;
+        if (profile.render_video_long !== 0 && profile.render_video_long !== undefined) {
+            console.log(`[${profile.name}] Starting long render pipeline (render-then-upload per segment)...`);
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+
+            // Step 1: Get video info (duration + segment count) without rendering
+            const videoInfo = await new Promise((resolve) => {
+                const child = safeSpawn(pythonBinary, [
+                    path.join(__dirname, 'render_long.py'),
+                    '--video', downloadedFilePath,
+                    '--title', originalTitle || 'Video',
+                    '--info-only'
+                ]);
+                let out = '';
+                child.stdout.on('data', d => out += d.toString());
+                child.stderr.on('data', d => console.error(`[${profile.name}][render_long info stderr] ${d.toString().trim()}`));
+                child.on('close', () => {
+                    const info = {};
+                    out.split('\n').forEach(line => {
+                        const [key, val] = line.trim().split(':');
+                        if (key === 'DURATION') info.totalDuration = parseFloat(val);
+                        if (key === 'NUM_SEGMENTS') info.numSegments = parseInt(val);
+                        if (key === 'SEGMENT_DURATION') info.segmentDuration = parseFloat(val);
+                    });
+                    resolve(info);
+                });
+                child.on('error', err => {
+                    console.error(`[${profile.name}] render_long.py info error:`, err.message);
+                    resolve({});
+                });
+            });
+
+            const totalDuration = videoInfo.totalDuration || 0;
+            const numSegments = videoInfo.numSegments || 1;
+            const segmentDuration = videoInfo.segmentDuration || 120;
+            const baseName = path.basename(downloadedFilePath, path.extname(downloadedFilePath));
+
+            console.log(`[${profile.name}] Video: ${totalDuration.toFixed(1)}s → ${numSegments} segment(s), ${segmentDuration}s each`);
+
+            // Respond to client BEFORE starting the long render+upload process
+            res.json({
+                success: true,
+                message: `Video downloaded. Starting render+upload for ${numSegments} segment(s)...`,
+                profile: profile.name,
+                profileId: profile.id,
+                filePath: downloadedFilePath
+            });
+
+            // Run render+upload in background (do not await — already responded)
+            (async () => {
+                try {
+                    for (let i = 0; i < numSegments; i++) {
+                        const startTime = i * segmentDuration;
+                        const duration = Math.min(segmentDuration, totalDuration - startTime);
+                        const outputFile = path.join(videoFolder, `${baseName}_part${i + 1}.mp4`);
+
+                        console.log(`[${profile.name}] Rendering segment ${i + 1}/${numSegments}: ${outputFile}`);
+
+                        // Render single segment
+                        await new Promise((resolve) => {
+                            const child = safeSpawn(pythonBinary, [
+                                path.join(__dirname, 'render_long.py'),
+                                '--video', downloadedFilePath,
+                                '--title', originalTitle || 'Video',
+                                '--start-time', String(startTime),
+                                '--duration', String(duration),
+                                '--output', outputFile
+                            ]);
+                            child.stdout.on('data', d => console.log(`[${profile.name}][render_long] ${d.toString().trim()}`));
+                            child.stderr.on('data', d => console.error(`[${profile.name}][render_long stderr] ${d.toString().trim()}`));
+                            child.on('close', (code) => {
+                                if (code !== 0) console.warn(`[${profile.name}] Segment ${i + 1} render exited with code ${code}`);
+                                resolve();
+                            });
+                            child.on('error', (err) => {
+                                console.error(`[${profile.name}] Segment ${i + 1} spawn error:`, err.message);
+                                resolve();
+                            });
+                        });
+
+                        // Check if output file was created
+                        if (!fs.existsSync(outputFile)) {
+                            console.error(`[${profile.name}] Segment ${i + 1} output not found, skipping upload for this part.`);
+                            continue;
+                        }
+
+                        console.log(`[${profile.name}] Segment ${i + 1} rendered. Uploading immediately...`);
+
+                        // Upload this single segment immediately (opens and closes browser each time)
+                        await runSingleProfile(profile, false, 0, false, outputFile);
+
+                        console.log(`[${profile.name}] Segment ${i + 1}/${numSegments} upload done.`);
+                    }
+
+                    // Delete original downloaded video after all segments are done
+                    if (fs.existsSync(downloadedFilePath)) {
+                        fs.unlinkSync(downloadedFilePath);
+                        console.log(`[${profile.name}] Original video deleted after all segments processed.`);
+                    }
+                } catch (bgErr) {
+                    console.error(`[${profile.name}] Background render+upload error:`, bgErr.message);
+                }
+            })();
+
+            // Skip the rest of the handler (already responded and launched background job)
+            return;
+
+        } else if (profile.render_concat_video !== 0 && profile.render_concat_video !== undefined) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${profile.name}] Starting concat render: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const concatVideosFolder = path.join(__dirname, '..', 'concat_videos');
+
+            if (!fs.existsSync(concatVideosFolder)) {
+                fs.mkdirSync(concatVideosFolder, { recursive: true });
+            }
+
+            const concatArgs = [
+                path.join(__dirname, 'concat.py'),
+                '--video', downloadedFilePath,
+                '--concat-dir', concatVideosFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, concatArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`concat.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${profile.name}] Concat render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${profile.name}] Video fully replaced with concat-rendered version.`);
+        } else if (profile.needs_render !== 0) {
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
             console.log(`[${profile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
 
@@ -1355,6 +1770,594 @@ app.post('/api/upload_new_video', async (req, res) => {
         processingProfiles.delete(profile.id);
         processingVideoIds.delete(video_id);
         console.log(`[${profile.name}] Processing lock released for video_id=${video_id}`);
+    }
+});
+
+app.post('/api/upload-profile', async (req, res) => {
+    const { profile_name, video_url } = req.body;
+
+    if (!profile_name) {
+        return res.status(400).json({ error: 'profile_name is required' });
+    }
+
+    // Find profile by name
+    const profile = db.prepare('SELECT * FROM profiles WHERE name = ?').get(profile_name);
+    if (!profile) {
+        return res.status(404).json({ error: `Profile not found: ${profile_name}` });
+    }
+
+    // Lock: Check if profile is already running automation or processing
+    if (runningProfiles.has(profile.id) || processingProfiles.has(profile.id)) {
+        return res.status(400).json({ error: `Profile '${profile.name}' is already running automation or processing a video` });
+    }
+
+    // Acquire lock
+    processingProfiles.add(profile.id);
+
+    let downloadedFilePath = null;
+    const activeProcesses = [];
+
+    const safeSpawn = (cmd, args, timeoutMs = 300000) => {
+        const child = spawn(cmd, args);
+        activeProcesses.push(child);
+
+        let timeout = null;
+        if (timeoutMs > 0) {
+            timeout = setTimeout(() => {
+                console.log(`[${profile.name}] Process '${cmd} ${args.join(' ')}' timed out after ${timeoutMs}ms. Killing it.`);
+                try { child.kill('SIGKILL'); } catch (e) {}
+            }, timeoutMs);
+        }
+
+        const cleanup = () => {
+            if (timeout) clearTimeout(timeout);
+            const idx = activeProcesses.indexOf(child);
+            if (idx !== -1) activeProcesses.splice(idx, 1);
+        };
+
+        child.on('close', cleanup);
+        child.on('error', cleanup);
+        return child;
+    };
+
+    req.on('close', () => {
+        if (activeProcesses.length > 0) {
+            console.log(`[${profile.name}] Request closed/aborted. Killing ${activeProcesses.length} active process(es)...`);
+            for (const child of activeProcesses) {
+                try { child.kill('SIGKILL'); } catch (e) {}
+            }
+        }
+    });
+
+    try {
+        // Determine destination folder
+        const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        if (!fs.existsSync(videoFolder)) {
+            fs.mkdirSync(videoFolder, { recursive: true });
+        }
+
+        // Ensure backgrounds folder exists (for render pipeline)
+        const backgroundsFolder = path.join(__dirname, 'backgrounds');
+        if (!fs.existsSync(backgroundsFolder)) {
+            fs.mkdirSync(backgroundsFolder, { recursive: true });
+        }
+
+        // Detect if the URL is a YouTube link
+        const isYouTube = /(?:youtube\.com\/(?:shorts\/|watch\?v=|embed\/|v\/)|youtu\.be\/)/.test(video_url);
+
+        let baseName = 'video';
+        const fileExt = '.mp4';
+        let safeFileName;
+
+        if (!video_url) {
+            // --- No video_url: pick a video from the profile's upload folder ---
+            const videoFiles = fs.readdirSync(videoFolder).filter(f => {
+                const ext = path.extname(f).toLowerCase();
+                return ['.mp4', '.mov', '.avi', '.mkv', '.webm'].includes(ext);
+            });
+
+            if (videoFiles.length === 0) {
+                throw new Error(`No video files found in folder: ${videoFolder}`);
+            }
+
+            // Pick the first available video
+            const pickedFile = videoFiles[0];
+            downloadedFilePath = path.join(videoFolder, pickedFile);
+            const pickedExt = path.extname(pickedFile);
+            baseName = path.basename(pickedFile, pickedExt);
+            safeFileName = pickedFile;
+            console.log(`[${profile.name}] No video_url provided. Using local video: ${downloadedFilePath}`);
+
+        } else if (isYouTube) {
+            // --- YouTube download via yt-dlp ---
+            // Extract video_id from URL
+            const ytMatch = video_url.match(/(?:youtube\.com\/(?:shorts\/|watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]+)/);
+            const videoId = ytMatch ? ytMatch[1] : null;
+
+            const cookiesPath = path.join(__dirname, 'cookies.txt');
+            const cookieArgs = fs.existsSync(cookiesPath) ? ['--cookies', cookiesPath] : [];
+
+            // Try Shorts format first, then fallback to long format
+            let targetUrl = videoId ? `https://youtube.com/shorts/${videoId}` : video_url;
+            console.log(`[${profile.name}] YouTube detected. Checking if video is a Short: ${targetUrl}`);
+
+            let originalTitle = await new Promise((resolve) => {
+                const child = safeSpawn('yt-dlp', ['--js-runtimes', `node:${process.execPath}`, '--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
+                let titleData = '';
+                child.stdout.on('data', (data) => { titleData += data.toString(); });
+                child.on('close', (code) => {
+                    if (code === 0 && titleData.trim()) resolve(titleData.trim());
+                    else resolve(null);
+                });
+                child.on('error', () => resolve(null));
+            });
+
+            if (!originalTitle && videoId) {
+                targetUrl = `https://youtube.com/watch?v=${videoId}`;
+                console.log(`[${profile.name}] Short not found. Falling back to Long video format: ${targetUrl}`);
+                originalTitle = await new Promise((resolve) => {
+                    const child = safeSpawn('yt-dlp', ['--js-runtimes', `node:${process.execPath}`, '--get-title', '--no-playlist', ...cookieArgs, targetUrl]);
+                    let titleData = '';
+                    child.stdout.on('data', (data) => { titleData += data.toString(); });
+                    child.on('close', (code) => {
+                        if (code === 0 && titleData.trim()) resolve(titleData.trim());
+                        else resolve('video');
+                    });
+                    child.on('error', () => resolve('video'));
+                });
+            }
+
+            console.log(`[${profile.name}] Original title: "${originalTitle}"`);
+            const cleanTitle = sanitizeToAscii(originalTitle || 'video').substring(0, 80);
+            baseName = cleanTitle || 'video';
+            safeFileName = `${baseName}_${Date.now()}_${randomUUID().slice(0, 8)}${fileExt}`;
+            downloadedFilePath = path.join(videoFolder, safeFileName);
+
+            console.log(`[${profile.name}] Starting yt-dlp download to: ${downloadedFilePath}`);
+
+            const downloadArgs = [
+                '--js-runtimes', `node:${process.execPath}`,
+                targetUrl,
+                '-o', downloadedFilePath,
+                '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
+                '--merge-output-format', 'mp4',
+                '--no-playlist',
+                ...cookieArgs
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn('yt-dlp', downloadArgs);
+                let stderrData = '';
+                child.stdout.on('data', () => {});
+                child.stderr.on('data', (data) => { stderrData += data.toString(); });
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${profile.name}] YouTube download complete via yt-dlp.`);
+
+        } else {
+            // --- Direct URL download via HTTP stream (R2, etc.) ---
+            const urlBasename = path.basename(new URL(video_url).pathname) || 'video.mp4';
+            const ext = path.extname(urlBasename).toLowerCase();
+            baseName = path.basename(urlBasename, ext) || 'video';
+            safeFileName = `${baseName}_${Date.now()}_${randomUUID().slice(0, 8)}${ext || fileExt}`;
+            downloadedFilePath = path.join(videoFolder, safeFileName);
+
+            console.log(`[${profile.name}] Direct URL detected. Downloading via HTTP from: ${video_url} to: ${downloadedFilePath}`);
+
+            const httpResponse = await axios({
+                method: 'GET',
+                url: video_url,
+                responseType: 'stream',
+                timeout: 600000, // 10 min timeout for large files
+            });
+
+            const writer = fs.createWriteStream(downloadedFilePath);
+            httpResponse.data.pipe(writer);
+
+            await new Promise((resolve, reject) => {
+                writer.on('finish', resolve);
+                writer.on('error', (err) => {
+                    console.error(`[${profile.name}] Write stream error:`, err.message);
+                    reject(err);
+                });
+                httpResponse.data.on('error', (err) => {
+                    console.error(`[${profile.name}] Download stream error:`, err.message);
+                    reject(err);
+                });
+            });
+
+            console.log(`[${profile.name}] HTTP download complete.`);
+        }
+
+        // Check video duration - skip if less than 5 seconds
+        let videoDuration = await new Promise((resolve) => {
+            const ffprobe = safeSpawn('ffprobe', [
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                downloadedFilePath
+            ]);
+            let output = '';
+            ffprobe.stdout.on('data', (data) => output += data.toString());
+            ffprobe.on('close', () => {
+                const dur = parseFloat(output.trim());
+                resolve(isNaN(dur) ? 0 : dur);
+            });
+            ffprobe.on('error', () => resolve(0));
+        });
+
+        console.log(`[${profile.name}] Video duration: ${videoDuration.toFixed(2)}s`);
+
+        if (videoDuration < 5.0) {
+            console.log(`[${profile.name}] Video duration is under 5s (${videoDuration.toFixed(2)}s). Slowing down by factor 0.9.`);
+            const speedFactor = 0.9;
+            const slowedFilePath = downloadedFilePath.replace('.mp4', '_slowed.mp4');
+
+            // Check if there is an audio stream
+            const hasAudio = await new Promise((resolve) => {
+                const ffprobe = safeSpawn('ffprobe', [
+                    '-v', 'error',
+                    '-select_streams', 'a',
+                    '-show_entries', 'stream=codec_type',
+                    '-of', 'csv=p=0',
+                    downloadedFilePath
+                ]);
+                let output = '';
+                ffprobe.stdout.on('data', (data) => output += data.toString());
+                ffprobe.on('close', () => resolve(output.trim() === 'audio'));
+                ffprobe.on('error', () => resolve(false));
+            });
+
+            const ffmpegArgs = [
+                '-y',
+                '-i', downloadedFilePath,
+                '-filter_complex', hasAudio ? `[0:v]setpts=PTS/${speedFactor}[v];[0:a]atempo=${speedFactor}[a]` : `[0:v]setpts=PTS/${speedFactor}[v]`,
+                '-map', '[v]'
+            ];
+            if (hasAudio) ffmpegArgs.push('-map', '[a]');
+            ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', slowedFilePath);
+
+            try {
+                await new Promise((resolve, reject) => {
+                    const ffmpegProcess = safeSpawn('ffmpeg', ffmpegArgs);
+                    ffmpegProcess.on('close', (code) => {
+                        if (code === 0) resolve(true);
+                        else reject(new Error(`ffmpeg exited with code ${code}`));
+                    });
+                    ffmpegProcess.on('error', (err) => reject(err));
+                });
+                if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+                fs.renameSync(slowedFilePath, downloadedFilePath);
+                console.log(`[${profile.name}] Successfully slowed down video.`);
+
+                // Re-measure duration
+                videoDuration = await new Promise((resolve) => {
+                    const ffprobe = safeSpawn('ffprobe', [
+                        '-v', 'error',
+                        '-show_entries', 'format=duration',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        downloadedFilePath
+                    ]);
+                    let output = '';
+                    ffprobe.stdout.on('data', (data) => output += data.toString());
+                    ffprobe.on('close', () => {
+                        const dur = parseFloat(output.trim());
+                        resolve(isNaN(dur) ? 0 : dur);
+                    });
+                    ffprobe.on('error', () => resolve(0));
+                });
+                console.log(`[${profile.name}] Duration after slowing down: ${videoDuration.toFixed(2)}s`);
+            } catch (err) {
+                console.error(`[${profile.name}] Failed to slow down video:`, err.message);
+                if (fs.existsSync(slowedFilePath)) {
+                    try { fs.unlinkSync(slowedFilePath); } catch (e) {}
+                }
+            }
+        }
+
+        // If still under 5 seconds, pad it by appending a random slice of itself
+        if (videoDuration < 5.0 && videoDuration > 0) {
+            const neededDuration = 5.1 - videoDuration;
+            console.log(`[${profile.name}] Video duration still under 5s (${videoDuration.toFixed(2)}s). Appending a random chunk of ${neededDuration.toFixed(2)}s.`);
+
+            const sliceDuration = Math.min(neededDuration, videoDuration);
+            const maxStart = Math.max(0, videoDuration - sliceDuration);
+            const startPos = Math.random() * maxStart;
+
+            const slicePath = downloadedFilePath.replace('.mp4', '_slice.mp4');
+            const concatFilePath = downloadedFilePath.replace('.mp4', '_concat.mp4');
+            const listFilePath = downloadedFilePath.replace('.mp4', '_list.txt');
+
+            try {
+                // Extract the slice
+                await new Promise((resolve, reject) => {
+                    const sliceArgs = [
+                        '-y',
+                        '-ss', startPos.toString(),
+                        '-t', sliceDuration.toString(),
+                        '-i', downloadedFilePath,
+                        '-c', 'copy',
+                        slicePath
+                    ];
+                    const child = safeSpawn('ffmpeg', sliceArgs);
+                    child.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`Extract slice exited with code ${code}`));
+                    });
+                    child.on('error', reject);
+                });
+
+                // Generate concat list file
+                const fileContent = `file '${downloadedFilePath.replace(/\\/g, '/')}'\nfile '${slicePath.replace(/\\/g, '/')}'\n`;
+                fs.writeFileSync(listFilePath, fileContent);
+
+                // Concatenate original and slice
+                await new Promise((resolve, reject) => {
+                    const concatArgs = [
+                        '-y',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', listFilePath,
+                        '-c', 'copy',
+                        concatFilePath
+                    ];
+                    const child = safeSpawn('ffmpeg', concatArgs);
+                    child.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`Concat exited with code ${code}`));
+                    });
+                    child.on('error', reject);
+                });
+
+                // Clean up and swap files
+                if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+                fs.renameSync(concatFilePath, downloadedFilePath);
+                console.log(`[${profile.name}] Successfully padded video to over 5s.`);
+
+                // Re-measure final duration
+                videoDuration = await new Promise((resolve) => {
+                    const ffprobe = safeSpawn('ffprobe', [
+                        '-v', 'error',
+                        '-show_entries', 'format=duration',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        downloadedFilePath
+                    ]);
+                    let output = '';
+                    ffprobe.stdout.on('data', (data) => output += data.toString());
+                    ffprobe.on('close', () => {
+                        const dur = parseFloat(output.trim());
+                        resolve(isNaN(dur) ? 0 : dur);
+                    });
+                    ffprobe.on('error', () => resolve(0));
+                });
+                console.log(`[${profile.name}] Final video duration: ${videoDuration.toFixed(2)}s`);
+
+            } catch (err) {
+                console.error(`[${profile.name}] Failed to pad video:`, err.message);
+                if (fs.existsSync(concatFilePath)) {
+                    try { fs.unlinkSync(concatFilePath); } catch (e) {}
+                }
+            } finally {
+                // Clean up temporary files
+                if (fs.existsSync(slicePath)) {
+                    try { fs.unlinkSync(slicePath); } catch (e) {}
+                }
+                if (fs.existsSync(listFilePath)) {
+                    try { fs.unlinkSync(listFilePath); } catch (e) {}
+                }
+            }
+        }
+
+        // Re-fetch profile to get the latest settings
+        const latestProfile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile.id);
+        const currentProfile = latestProfile || profile;
+
+        // Check if render is needed based on profile configuration
+        if (currentProfile.render_video_long !== 0 && currentProfile.render_video_long !== undefined) {
+            console.log(`[${currentProfile.name}] Starting long render pipeline (render-then-upload per segment)...`);
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+
+            // Step 1: Get video info (duration + segment count) without rendering
+            const videoInfo = await new Promise((resolve) => {
+                const child = safeSpawn(pythonBinary, [
+                    path.join(__dirname, 'render_long.py'),
+                    '--video', downloadedFilePath,
+                    '--title', baseName,
+                    '--info-only'
+                ]);
+                let out = '';
+                child.stdout.on('data', d => out += d.toString());
+                child.stderr.on('data', d => console.error(`[${currentProfile.name}][render_long info stderr] ${d.toString().trim()}`));
+                child.on('close', () => {
+                    const info = {};
+                    out.split('\n').forEach(line => {
+                        const [key, val] = line.trim().split(':');
+                        if (key === 'DURATION') info.totalDuration = parseFloat(val);
+                        if (key === 'NUM_SEGMENTS') info.numSegments = parseInt(val);
+                        if (key === 'SEGMENT_DURATION') info.segmentDuration = parseFloat(val);
+                    });
+                    resolve(info);
+                });
+                child.on('error', err => {
+                    console.error(`[${currentProfile.name}] render_long.py info error:`, err.message);
+                    resolve({});
+                });
+            });
+
+            const totalDuration = videoInfo.totalDuration || 0;
+            const numSegments = videoInfo.numSegments || 1;
+            const segmentDuration = videoInfo.segmentDuration || 120;
+
+            console.log(`[${currentProfile.name}] Video: ${totalDuration.toFixed(1)}s → ${numSegments} segment(s), ${segmentDuration}s each`);
+
+            // Respond to client BEFORE starting the long render+upload process
+            res.json({
+                success: true,
+                message: `Video downloaded. Starting render+upload for ${numSegments} segment(s)...`,
+                profile: currentProfile.name,
+                profileId: currentProfile.id,
+                filePath: downloadedFilePath
+            });
+
+            // Run render+upload in background
+            (async () => {
+                try {
+                    for (let i = 0; i < numSegments; i++) {
+                        const startTime = i * segmentDuration;
+                        const duration = Math.min(segmentDuration, totalDuration - startTime);
+                        const outputFile = path.join(videoFolder, `${baseName}_part${i + 1}.mp4`);
+
+                        console.log(`[${currentProfile.name}] Rendering segment ${i + 1}/${numSegments}: ${outputFile}`);
+
+                        // Render single segment
+                        await new Promise((resolve) => {
+                            const child = safeSpawn(pythonBinary, [
+                                path.join(__dirname, 'render_long.py'),
+                                '--video', downloadedFilePath,
+                                '--title', baseName,
+                                '--start-time', String(startTime),
+                                '--duration', String(duration),
+                                '--output', outputFile
+                            ]);
+                            child.stdout.on('data', d => console.log(`[${currentProfile.name}][render_long] ${d.toString().trim()}`));
+                            child.stderr.on('data', d => console.error(`[${currentProfile.name}][render_long stderr] ${d.toString().trim()}`));
+                            child.on('close', (code) => {
+                                if (code !== 0) console.warn(`[${currentProfile.name}] Segment ${i + 1} render exited with code ${code}`);
+                                resolve();
+                            });
+                            child.on('error', (err) => {
+                                console.error(`[${currentProfile.name}] Segment ${i + 1} spawn error:`, err.message);
+                                resolve();
+                            });
+                        });
+
+                        // Check if output file was created
+                        if (!fs.existsSync(outputFile)) {
+                            console.error(`[${currentProfile.name}] Segment ${i + 1} output not found, skipping upload for this part.`);
+                            continue;
+                        }
+
+                        console.log(`[${currentProfile.name}] Segment ${i + 1} rendered. Uploading immediately...`);
+
+                        // Upload this single segment immediately
+                        await runSingleProfile(currentProfile, false, 0, false, outputFile);
+
+                        console.log(`[${currentProfile.name}] Segment ${i + 1}/${numSegments} upload done.`);
+                    }
+
+                    // Delete original downloaded video after all segments are done
+                    if (fs.existsSync(downloadedFilePath)) {
+                        fs.unlinkSync(downloadedFilePath);
+                        console.log(`[${currentProfile.name}] Original video deleted after all segments processed.`);
+                    }
+                } catch (bgErr) {
+                    console.error(`[${currentProfile.name}] Background render+upload error:`, bgErr.message);
+                }
+            })();
+
+            // Skip the rest of the handler (already responded and launched background job)
+            return;
+
+        } else if (currentProfile.render_concat_video !== 0 && currentProfile.render_concat_video !== undefined) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${currentProfile.name}] Starting concat render: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const concatVideosFolder = path.join(__dirname, '..', 'concat_videos');
+
+            if (!fs.existsSync(concatVideosFolder)) {
+                fs.mkdirSync(concatVideosFolder, { recursive: true });
+            }
+
+            const concatArgs = [
+                path.join(__dirname, 'concat.py'),
+                '--video', downloadedFilePath,
+                '--concat-dir', concatVideosFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, concatArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`concat.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${currentProfile.name}] Concat render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${currentProfile.name}] Video fully replaced with concat-rendered version.`);
+        } else if (currentProfile.needs_render !== 0) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${currentProfile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const renderArgs = [
+                path.join(__dirname, 'render.py'),
+                '--video', downloadedFilePath,
+                '--backgrounds', backgroundsFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, renderArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`render.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${currentProfile.name}] Render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${currentProfile.name}] Video fully replaced with bypass-rendered version.`);
+        } else {
+            console.log(`[${currentProfile.name}] Bypass Render is enabled for this profile. Skipping render pipeline.`);
+        }
+
+        // Respond immediately before triggering the browser automation
+        res.json({
+            success: true,
+            message: 'Video downloaded and processed. Upload automation starting...',
+            profile: currentProfile.name,
+            profileId: currentProfile.id,
+            filePath: downloadedFilePath
+        });
+
+        // Trigger upload in background AFTER responding
+        console.log(`[${currentProfile.name}] Triggering runSingleProfile now...`);
+        runSingleProfile(currentProfile, false, 0, false, downloadedFilePath);
+
+    } catch (error) {
+        console.error(`Error in /api/upload-profile:`, error.message);
+        // Clean up partially downloaded file if it exists
+        if (downloadedFilePath && fs.existsSync(downloadedFilePath)) {
+            try { fs.unlinkSync(downloadedFilePath); } catch (e) {}
+        }
+        // Only send error response if headers not sent yet
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Failed to process video: ${error.message}` });
+        }
+    } finally {
+        // Always release lock
+        processingProfiles.delete(profile.id);
+        console.log(`[${profile.name}] Processing lock released for upload-profile`);
     }
 });
 
@@ -1434,6 +2437,7 @@ app.post('/api/open-profile', async (req, res) => {
         }
 
         const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+        await injectProfileCookies(browser, profile);
         manualBrowsers.set(profileId, browser);
 
         browser.on('close', () => {
@@ -1473,6 +2477,7 @@ async function changeAvatar(profile, avatarImage) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
     avatarChangingProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
 
@@ -1675,6 +2680,7 @@ async function addFavoriteMusic(profile, searchTerm) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
     addingFavoriteMusicProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
 
@@ -2269,10 +3275,8 @@ async function checkExistingScheduledTime(page, log) {
             return null;
         }
 
-        // Extract thời gian từ label
-        const timeEl = firstStatusLabel.locator('[data-tt="components_PublishStageLabel_TUXText"]');
-        const timeText = (await timeEl.textContent()).trim();
-        log(`Found scheduled video with time: "${timeText}"`);
+        modalsFound = true;
+        log(`Detected ${detection.length} onboarding modal(s): ${detection.map(d => d.type + '(' + (d.buttons ? d.buttons.join(',') : '') + ')').join('; ')}`);
 
         // Parse "Jul 13, 3:30 PM" hoặc "Jul 13, 15:30" thành Date
         const parsed = new Date(timeText);
@@ -2287,6 +3291,254 @@ async function checkExistingScheduledTime(page, log) {
         log(`Content check failed (${e.message}). Falling back to default upload flow.`);
         return null;
     }
+
+    // Phase 2: Only if modals detected, dismiss them with targeted selectors
+
+    // 1. TUXModal (e.g., "Turn on automatic content checks?" -> ALWAYS Cancel, "Allow video uploads on mobile?" -> Got it)
+    try {
+        const tuxModal = await page.$('div.TUXModal');
+        if (tuxModal && await tuxModal.isVisible()) {
+            const text = await tuxModal.innerText().catch(() => '');
+            if (text.includes("automatic content checks") || text.includes("content checks")) {
+                const cancelBtn = await tuxModal.$('button:has-text("Cancel")');
+                if (cancelBtn) {
+                    log('✅ Dismissing "Turn on automatic content checks" → Cancel');
+                    await cancelBtn.click();
+                    await page.waitForTimeout(800);
+                }
+            } else {
+                const modalBtns = ['button:has-text("Got it")', 'button:has-text("Allow")', 'button:has-text("Cancel")', 'button:has-text("Skip")'];
+                for (const btnSel of modalBtns) {
+                    const el = await tuxModal.$(btnSel).catch(() => null);
+                    if (el && await el.isVisible()) {
+                        log(`✅ Dismissing TUXModal → ${btnSel}`);
+                        await el.click();
+                        await page.waitForTimeout(800);
+                        break;
+                    }
+                }
+            }
+        }
+    } catch (e) { /* not found */ }
+
+    // 2. Tutorial tooltip: "New editing features added" → Got it
+    try {
+        const el = await page.waitForSelector(
+            '[class*="tutorial-tooltip"] button:has-text("Got it"), .react-joyride__tooltip button:has-text("Got it")',
+            { timeout: 3000 }
+        );
+        if (el) {
+            log('✅ Dismissing tutorial/joyride tooltip → Got it');
+            await el.click();
+            await page.waitForTimeout(800);
+
+            // Joyride may have multiple steps
+            try {
+                const el2 = await page.waitForSelector(
+                    '[class*="joyride"] button:has-text("Got it")',
+                    { timeout: 2000 }
+                );
+                if (el2) {
+                    log('✅ Dismissing joyride step 2 → Got it');
+                    await el2.click();
+                    await page.waitForTimeout(500);
+                }
+            } catch (e) { /* no second step */ }
+        }
+    } catch (e) { /* not found */ }
+
+    // 3. Editor guide tooltip: "Phone mode" → Got it
+    try {
+        const el = await page.waitForSelector(
+            '[class*="editor-guide"] button:has-text("Got it")',
+            { timeout: 3000 }
+        );
+        if (el) {
+            log('✅ Dismissing editor guide tooltip → Got it');
+            await el.click();
+            await page.waitForTimeout(800);
+        }
+    } catch (e) { /* not found */ }
+
+    // 4. Sound guide callout ("Use these sounds...") → click or press Escape
+    try {
+        const sgEl = await page.waitForSelector('[class*="DivGuideContainer"], [class*="GuideContainer"]', { timeout: 1500 }).catch(() => null);
+        if (sgEl && await sgEl.isVisible()) {
+            log('✅ Dismissing sound guide callout ("Use these sounds...")');
+            await sgEl.click().catch(() => null);
+            await page.keyboard.press('Escape').catch(() => null);
+            await page.waitForTimeout(500);
+        }
+    } catch (e) { /* not found */ }
+}
+
+async function dismissOnboardingModals(page, log) {
+    // Phase 1: Instant detection via page.evaluate (no timeout waits)
+    // Check if ANY known onboarding modal/tooltip exists. If nothing, return immediately.
+    let modalsFound = false;
+
+    try {
+        const detection = await page.evaluate(() => {
+            const found = [];
+
+            // Check TUXModal (e.g., "Turn on automatic content checks?")
+            const tuxModal = document.querySelector('div.TUXModal');
+            if (tuxModal) {
+                const rect = tuxModal.getBoundingClientRect();
+                const style = window.getComputedStyle(tuxModal);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const cancelBtn = tuxModal.querySelector('button');
+                    const btns = Array.from(tuxModal.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'TUXModal', buttons: btns });
+                }
+            }
+
+            // Check tutorial tooltip ("New editing features added")
+            const tutorialTips = document.querySelectorAll('[class*="tutorial-tooltip"], .react-joyride__tooltip');
+            for (const tip of tutorialTips) {
+                const rect = tip.getBoundingClientRect();
+                const style = window.getComputedStyle(tip);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const btns = Array.from(tip.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'tutorial-tooltip', buttons: btns });
+                    break;
+                }
+            }
+
+            // Check editor guide tooltip ("Phone mode")
+            const guideTips = document.querySelectorAll('[class*="editor-guide"]');
+            for (const tip of guideTips) {
+                const rect = tip.getBoundingClientRect();
+                const style = window.getComputedStyle(tip);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const btns = Array.from(tip.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'editor-guide', buttons: btns });
+                    break;
+                }
+            }
+
+            // Check for any joyride tooltip (not in tutorial above)
+            const joyrides = document.querySelectorAll('[class*="joyride"], [data-joyride]');
+            for (const jr of joyrides) {
+                const rect = jr.getBoundingClientRect();
+                const style = window.getComputedStyle(jr);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const btns = Array.from(jr.querySelectorAll('button')).map(b => b.textContent.trim());
+                    found.push({ type: 'joyride', buttons: btns });
+                    break;
+                }
+            }
+
+            // Check for sound guide callouts ("Use these sounds to prevent your 1 Minute+...")
+            const soundGuides = document.querySelectorAll('[class*="DivGuideContainer"], [class*="GuideContainer"]');
+            for (const sg of soundGuides) {
+                const rect = sg.getBoundingClientRect();
+                const style = window.getComputedStyle(sg);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    found.push({ type: 'sound-guide', buttons: [] });
+                    break;
+                }
+            }
+
+            return found;
+        });
+
+        if (detection.length === 0) {
+            // No onboarding modals detected — skip all dismissal attempts
+            return;
+        }
+
+        modalsFound = true;
+        log(`Detected ${detection.length} onboarding modal(s): ${detection.map(d => d.type + '(' + (d.buttons ? d.buttons.join(',') : '') + ')').join('; ')}`);
+
+    } catch (e) {
+        // evaluate failed (page might be closing/navigating). Skip.
+        return;
+    }
+
+    // Phase 2: Only if modals detected, dismiss them with targeted selectors
+
+    // 1. TUXModal (e.g., "Turn on automatic content checks?" -> ALWAYS Cancel, "Allow video uploads on mobile?" -> Got it)
+    try {
+        const tuxModal = await page.$('div.TUXModal');
+        if (tuxModal && await tuxModal.isVisible()) {
+            const text = await tuxModal.innerText().catch(() => '');
+            if (text.includes("automatic content checks") || text.includes("content checks")) {
+                const cancelBtn = await tuxModal.$('button:has-text("Cancel")');
+                if (cancelBtn) {
+                    log('✅ Dismissing "Turn on automatic content checks" → Cancel');
+                    await cancelBtn.click();
+                    await page.waitForTimeout(800);
+                }
+            } else {
+                const modalBtns = ['button:has-text("Got it")', 'button:has-text("Allow")', 'button:has-text("Cancel")', 'button:has-text("Skip")'];
+                for (const btnSel of modalBtns) {
+                    const el = await tuxModal.$(btnSel).catch(() => null);
+                    if (el && await el.isVisible()) {
+                        log(`✅ Dismissing TUXModal → ${btnSel}`);
+                        await el.click();
+                        await page.waitForTimeout(800);
+                        break;
+                    }
+                }
+            }
+        }
+    } catch (e) { /* not found */ }
+
+    // 2. Tutorial tooltip: "New editing features added" → Got it
+    try {
+        const el = await page.waitForSelector(
+            '[class*="tutorial-tooltip"] button:has-text("Got it"), .react-joyride__tooltip button:has-text("Got it")',
+            { timeout: 3000 }
+        );
+        if (el) {
+            log('✅ Dismissing tutorial/joyride tooltip → Got it');
+            await el.click();
+            await page.waitForTimeout(800);
+
+            // Joyride may have multiple steps
+            try {
+                const el2 = await page.waitForSelector(
+                    '[class*="joyride"] button:has-text("Got it")',
+                    { timeout: 2000 }
+                );
+                if (el2) {
+                    log('✅ Dismissing joyride step 2 → Got it');
+                    await el2.click();
+                    await page.waitForTimeout(500);
+                }
+            } catch (e) { /* no second step */ }
+        }
+    } catch (e) { /* not found */ }
+
+    // 3. Editor guide tooltip: "Phone mode" → Got it
+    try {
+        const el = await page.waitForSelector(
+            '[class*="editor-guide"] button:has-text("Got it")',
+            { timeout: 3000 }
+        );
+        if (el) {
+            log('✅ Dismissing editor guide tooltip → Got it');
+            await el.click();
+            await page.waitForTimeout(800);
+        }
+    } catch (e) { /* not found */ }
+
+    // 4. Sound guide callout ("Use these sounds...") → click or press Escape
+    try {
+        const sgEl = await page.waitForSelector('[class*="DivGuideContainer"], [class*="GuideContainer"]', { timeout: 1500 }).catch(() => null);
+        if (sgEl && await sgEl.isVisible()) {
+            log('✅ Dismissing sound guide callout ("Use these sounds...")');
+            await sgEl.click().catch(() => null);
+            await page.keyboard.press('Escape').catch(() => null);
+            await page.waitForTimeout(500);
+        }
+    } catch (e) { /* not found */ }
 }
 
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0) {
@@ -2311,6 +3563,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
 
     const log = (msg) => {
         const entry = `[${new Date().toISOString()}] [${profile.name}] ${msg}\n`;
@@ -2461,8 +3714,50 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
             if (!uploaded) throw new Error('Could not find file input or upload button');
 
-            log(`Video file selection complete. Waiting for UI...`);
-            await page.waitForTimeout(3000);
+            // Dismiss any onboarding modals that may appear after file selection
+            await dismissOnboardingModals(page, log);
+            await dismissPopups(page);
+            await page.waitForTimeout(1000);
+            // Gọi lần 2 để đảm bảo popup đã được dismiss (popup có thể xuất hiện chậm)
+            await dismissPopups(page);
+
+            // Wait for upload to complete (Cancel button detaches)
+            // Chạy dismissPopups liên tục trong khi đợi để tránh popup block upload
+            try {
+                const uploadCompletedPromise = (async () => {
+                    // Đợi Cancel button của upload progress xuất hiện trước
+                    const uploadProgressCancel = page.locator('.upload-progress button:has-text("Cancel"), [class*="upload"] button:has-text("Cancel"), button[class*="cancel"]').first();
+                    // Nếu không tìm thấy cancel của progress, dùng fallback: detect upload done bằng cách kiểm tra Post button available
+                    let cancelDetected = false;
+                    try {
+                        await uploadProgressCancel.waitFor({ state: 'visible', timeout: 10000 });
+                        cancelDetected = true;
+                    } catch (_) { /* no specific upload cancel found */ }
+
+                    // Loop dismiss popups mỗi 2s trong khi đợi Post button ready
+                    for (let i = 0; i < 600; i++) { // max 20 phút
+                        await page.waitForTimeout(2000);
+                        await dismissPopups(page);
+                        await dismissOnboardingModals(page, log);
+
+                        // Kiểm tra upload xong: Post button enabled và Cancel của upload progress biến mất
+                        const postBtn = await page.$('button[data-e2e="post_video_button"]:not([disabled]), button.common-button-post-video:not([disabled])');
+                        if (postBtn && await postBtn.isVisible()) {
+                            log('Upload complete (Post button is enabled and visible).');
+                            break;
+                        }
+                    }
+                })();
+
+                await uploadCompletedPromise;
+                await page.waitForTimeout(2000);
+
+                // Dismiss popups & tooltips that appeared after video upload completion
+                await dismissOnboardingModals(page, log);
+                await dismissPopups(page);
+            } catch (e) {
+                log(`Wait for upload completion timed out or failed: ${e.message}`);
+            }
 
             // --- NEW TASKS: Clear Title & Add Sound ---
             try {
@@ -2498,25 +3793,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             }
             // --- END CLEAR TITLE ---
 
-            // --- TASK: Wait for video upload to complete ---
-            try {
-                log("Waiting for video upload to complete...");
-                const cancelBtn = page.locator('button:has-text("Cancel")');
-                await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
-                log("Upload complete (Cancel button is gone). Waiting 5s for UI to settle...");
-                await page.waitForTimeout(5000);
-            } catch (uploadErr) {
-                log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
-            }
-
             // --- TASK: Wait for video processing to complete & Add Sound ---
             // TikTok now requires video processing to finish before the edit sound button
             // becomes enabled. We wait for the sounds button to be visible and not disabled.
             const useSetMusic = Number(profile.set_music) === 1;
             if (useSetMusic) {
                 try {
-                    log(`Task 2: Waiting 3s before clicking sounds button...`);
-                    await page.waitForTimeout(3000);
                     let soundsBtn = await page.$('button[data-button-name="sounds"]').catch(() => null);
 
                     if (soundsBtn) {
@@ -2889,11 +4171,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 log(`Captured base time: ${lastScheduledTime.toISOString()}`);
                             } else {
                                 log(`Warning: Failed to parse default time. Using fallback.`);
-                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, now: new Date() });
+                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, intervalMinutes: profile.schedule_interval || 5, now: new Date() });
                             }
                         } else {
-                            // Video 3+: Increment by 10 minutes
-                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime });
+                            // Video 3+: Increment by intervalMinutes (5 or 10 mins)
+                            const intervalMin = profile.schedule_interval || 5;
+                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
                             const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                             const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
@@ -3285,6 +4568,7 @@ async function runEngageSession(profile) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
     engagingProfiles.set(profileId, session);
@@ -4062,6 +5346,63 @@ async function runTikTokLogin(profile) {
     try {
         const tiktokPage = await browser.newPage();
 
+        // --- STEP 0: Try cookie-based login first ---
+        const hasCookies = profile.cookies && profile.cookies.trim();
+        if (hasCookies) {
+            try {
+                let cookies;
+                try {
+                    cookies = JSON.parse(profile.cookies);
+                } catch (jsonErr) {
+                    // Try parsing raw cookie string format (name1=value1; name2=value2)
+                    cookies = profile.cookies.split(';').map(part => {
+                        const equalIdx = part.indexOf('=');
+                        if (equalIdx === -1) return null;
+                        const name = part.substring(0, equalIdx).trim();
+                        const value = part.substring(equalIdx + 1).trim();
+                        if (!name) return null;
+                        return {
+                            name,
+                            value,
+                            domain: '.tiktok.com',
+                            path: '/'
+                        };
+                    }).filter(Boolean);
+                }
+
+                if (Array.isArray(cookies) && cookies.length > 0) {
+                    log(`Injecting ${cookies.length} cookies from stored profile...`);
+                    await browser.addCookies(cookies);
+
+                    // Navigate to TikTok to check login state
+                    await tiktokPage.goto('https://www.tiktok.com/', {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 30000
+                    });
+                    await tiktokPage.waitForTimeout(3000);
+
+                    const currentUrl = tiktokPage.url();
+                    log('Checking login state via profile elements...');
+                    const isLoggedIn = await tiktokPage.waitForSelector('#header-profile-avatar, [data-e2e="profile-icon"], [data-e2e="avatar-icon"]', { timeout: 6000, state: 'visible' })
+                        .then(() => true)
+                        .catch(() => false);
+
+                    if (isLoggedIn) {
+                        log('Login via cookies successful! Current URL: ' + currentUrl);
+                        session.stats.step = 'cookie_login_complete';
+                        // Refresh cookies from browser for future use
+                        const freshCookies = await browser.cookies();
+                        db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?')
+                            .run(JSON.stringify(freshCookies), profileId);
+                        return;
+                    }
+                    log('Cookie login failed (profile avatar not found), falling back to email/password...');
+                }
+            } catch (e) {
+                log(`Cookie injection failed: ${e.message}, falling back to email/password...`);
+            }
+        }
+
         // --- STEP 1: Navigate to TikTok login ---
         log('Navigating to TikTok login page...');
         await tiktokPage.goto('https://www.tiktok.com/login?redirect_url=https%3A%2F%2Fwww.tiktok.com%2Ftiktokstudio&enter_method=redirect&enter_from=tiktokstudio', {
@@ -4582,30 +5923,75 @@ async function runTikTokLogin(profile) {
 
 const dismissPopups = async (page) => {
     if (!page) return false;
-    const modalSelectors = ['div[role="dialog"]', 'div[class*="modal"]', 'div[class*="Modal"]', 'div[class*="portal"]', 'div[class*="dialog"]'];
+
+    // Các selector để tìm modal/popup - theo thứ tự ưu tiên (cụ thể nhất trước)
+    const modalSelectors = [
+        'div[role="dialog"]',
+        'div.TUXModal:not(.TUXModal-overlay)',   // TikTok modal chính (không phải overlay)
+        'div[class*="common-modal"]:not([class*="overlay"])',
+        'div[class*="modal"]:not([class*="overlay"])',
+        'div[class*="Modal"]:not([class*="overlay"])',
+        'div[class*="portal"]',
+        'div[class*="dialog"]',
+    ];
+
     for (const modalSel of modalSelectors) {
         try {
-            const modal = await page.$(modalSel);
-            if (modal && await modal.isVisible()) {
-                const text = await modal.innerText();
-                if (text.includes("Are you sure you want to exit")) {
-                    const cancelBtn = await modal.$('button:has-text("Cancel")');
-                    if (cancelBtn) await cancelBtn.click();
-                    return true;
-                }
-                const btnSelectors = ['button:has-text("Turn on")', 'button:has-text("Allow")', 'button:has-text("Got it")', 'button:has-text("Skip")', 'button:has-text("Cancel")'];
-                for (const btnSel of btnSelectors) {
-                    const btn = await modal.$(btnSel);
-                    if (btn && await btn.isVisible()) {
-                        await btn.click();
-                        return true;
+            // Dùng $$ để lấy TẤT CẢ elements match, không chỉ phần tử đầu tiên
+            const modals = await page.$$(modalSel);
+            for (const modal of modals) {
+                try {
+                    if (!await modal.isVisible()) continue;
+
+                    const text = await modal.innerText().catch(() => '');
+                    if (!text.trim()) continue;
+
+                    // --- Popup "Turn on automatic content checks?" ---
+                    // → Click Cancel để từ chối (không muốn bật)
+                    if (text.includes("automatic content checks") || text.includes("content checks") || text.includes("Turn on automatic")) {
+                        const cancelBtn = await modal.$('button:has-text("Cancel")');
+                        if (cancelBtn && await cancelBtn.isVisible()) {
+                            await cancelBtn.click();
+                            console.log('[dismissPopups] Dismissed "Turn on automatic content checks" popup → Cancel');
+                            return true;
+                        }
                     }
-                }
+
+                    // --- Popup "Are you sure you want to exit?" ---
+                    // → Click Cancel để ở lại trang upload
+                    if (text.includes("Are you sure you want to exit") || text.includes("want to leave") || text.includes("Leave page")) {
+                        const cancelBtn = await modal.$('button:has-text("Cancel"), button:has-text("Stay"), button:has-text("No")');
+                        if (cancelBtn && await cancelBtn.isVisible()) {
+                            await cancelBtn.click();
+                            console.log('[dismissPopups] Dismissed "exit/leave" confirmation popup → Cancel/Stay');
+                            return true;
+                        }
+                    }
+
+                    // --- Các popup chung: Got it, Allow, Skip, OK ---
+                    const genericBtnSelectors = [
+                        'button:has-text("Got it")',
+                        'button:has-text("Allow")',
+                        'button:has-text("Skip")',
+                        'button:has-text("OK")',
+                        'button:has-text("Okay")',
+                        'button:has-text("Close")',
+                    ];
+                    for (const btnSel of genericBtnSelectors) {
+                        const btn = await modal.$(btnSel);
+                        if (btn && await btn.isVisible()) {
+                            await btn.click();
+                            console.log(`[dismissPopups] Dismissed generic popup → ${btnSel}`);
+                            return true;
+                        }
+                    }
+                } catch (innerE) { /* ignore per-modal errors */ }
             }
-        } catch (e) { }
+        } catch (e) { /* ignore selector errors */ }
     }
     return false;
 };
+
 
 // Background Scheduler
 function checkAndRunSchedules() {
