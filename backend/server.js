@@ -2340,7 +2340,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         const uploadLimit = Math.min(videos.length, maxUploads);
 
         // --- Check for existing scheduled videos before starting upload loop ---
-        if (!limitUploads && profile.auto_increment_schedule) {
+        if (profile.auto_increment_schedule) {
             const existingTime = await checkExistingScheduledTime(page, log);
             if (existingTime) {
                 lastScheduledTime = existingTime;
@@ -2831,7 +2831,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             // --- END TASK: Content Check Lite ---
 
             // --- TASK 3: Scheduled Publishing ---
-            if (!limitUploads && profile.auto_increment_schedule) {
+            if (profile.auto_increment_schedule) {
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
 
@@ -2908,7 +2908,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 } catch (e) {
                     log(`Auto-increment scheduling failed: ${e.message}`);
                 }
-            } else if (!limitUploads && profile.is_scheduled && i >= 3) {
+            } else if (profile.is_scheduled && i >= 3) {
                 try {
                     log(`Task 3: Scheduling video ${i + 1}...`);
 
