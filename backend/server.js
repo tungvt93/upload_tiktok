@@ -4064,7 +4064,7 @@ async function runTikTokLogin(profile) {
 
         // --- STEP 1: Navigate to TikTok login ---
         log('Navigating to TikTok login page...');
-        await tiktokPage.goto('https://www.tiktok.com/login', {
+        await tiktokPage.goto('https://www.tiktok.com/login?redirect_url=https%3A%2F%2Fwww.tiktok.com%2Ftiktokstudio&enter_method=redirect&enter_from=tiktokstudio', {
             waitUntil: 'domcontentloaded',
             timeout: 30000
         });
@@ -4138,7 +4138,7 @@ async function runTikTokLogin(profile) {
 
         await emailInput.click();
         await emailInput.fill('');
-        await emailInput.type(profile.email, { delay: 80 });
+        await emailInput.type(profile.account_id, { delay: 80 });
         log('Email entered');
         session.stats.step = 'email_entered';
 
@@ -4436,6 +4436,7 @@ async function runTikTokLogin(profile) {
 
                 // Always re-find code input — page may have changed during Hotmail retrieval
                 codeInput = null;
+				await tiktokPage.waitForTimeout(2000);
                 for (const sel of codeInputSelectors) {
                     codeInput = await tiktokPage.$(sel);
                     if (codeInput && await codeInput.isVisible().catch(() => false)) break;
@@ -4446,33 +4447,98 @@ async function runTikTokLogin(profile) {
                     break;
                 }
 
-                // Use JS to set value directly — TikTok floating UI may intercept clicks
+                // Focus and type code character by character, plus set native value as fallback
+                try {
+                    await codeInput.focus().catch(() => {});
+                    await codeInput.click().catch(() => {});
+                    await tiktokPage.keyboard.press('Control+A').catch(() => {});
+                    await tiktokPage.keyboard.press('Backspace').catch(() => {});
+                    await codeInput.type(code, { delay: 100 }).catch(() => {});
+                } catch (e) {}
+
                 await codeInput.evaluate((el, val) => {
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value'
-                    ).set;
-                    nativeInputValueSetter.call(el, val);
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (el.value !== val) {
+                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeInputValueSetter.call(el, val);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
                 }, code);
-                log('Verification code entered');
+
+                log(`Verification code ${code} entered.`);
                 await tiktokPage.waitForTimeout(1000);
 
-                const verifyBtn = await tiktokPage.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Next")');
+                // Press Enter & Click submit button
+                await tiktokPage.keyboard.press('Enter').catch(() => {});
+                const verifyBtn = await tiktokPage.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Next"), button[type="submit"]');
                 if (verifyBtn && await verifyBtn.isVisible().catch(() => false)) {
-                    await verifyBtn.click({ force: true });
-                    log('Clicked verify button');
+                    await verifyBtn.click({ force: true }).catch(() => {});
+                    log('Clicked verify/submit button');
                 }
 
-                await tiktokPage.waitForTimeout(5000);
+                // Poll for login success or explicit error for up to 15 seconds
+                log('Waiting for TikTok login verification response...');
+                let isSuccess = false;
+                let hasExplicitError = false;
 
-                const finalUrl = tiktokPage.url();
-                if (!finalUrl.includes('/login') && !finalUrl.includes('/passport')) {
+                for (let poll = 0; poll < 15; poll++) {
+                    await tiktokPage.waitForTimeout(1000);
+                    const currentUrl = tiktokPage.url();
+
+                    // Check URL redirection
+                    if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+                        isSuccess = true;
+                        break;
+                    }
+
+                    // Check session cookies
+                    try {
+                        const cookies = await browser.cookies();
+                        const hasSessionCookie = cookies.some(c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_tt');
+                        if (hasSessionCookie) {
+                            isSuccess = true;
+                            break;
+                        }
+                    } catch (e) {}
+
+                    // Check avatar / logged in elements
+                    const avatarFound = await tiktokPage.$('[data-e2e="user-avatar"], [data-e2e="profile-icon"], header img, a[href*="/@"]').catch(() => null);
+                    if (avatarFound && await avatarFound.isVisible().catch(() => false)) {
+                        isSuccess = true;
+                        break;
+                    }
+
+                    // Check for explicit error message on page
+                    const pageText = await tiktokPage.evaluate(() => (document.body.innerText || '').toLowerCase()).catch(() => '');
+                    if (pageText.includes('incorrect code') || pageText.includes('invalid code') || pageText.includes('mã không đúng') || pageText.includes('expired') || pageText.includes('too many attempts')) {
+                        hasExplicitError = true;
+                        log('TikTok reported incorrect/invalid verification code.');
+                        break;
+                    }
+                }
+
+                if (isSuccess) {
                     log('Login successful after verification!');
+                    verified = true;
                     session.stats.step = 'complete';
                     return;
                 }
-                log(`Verification code ${code} rejected. Will retry with different code...`);
+
+                if (!hasExplicitError) {
+                    log('Verification submitted. Waiting additional 10s for page transition...');
+                    await tiktokPage.waitForTimeout(10000);
+                    const checkUrl = tiktokPage.url();
+                    if (!checkUrl.includes('/login') && !checkUrl.includes('/passport')) {
+                        log('Login successful after verification!');
+                        verified = true;
+                        session.stats.step = 'complete';
+                        return;
+                    }
+                }
+
+                log(`Verification code ${code} rejected or expired. Will retry...`);
                 session.stats.step = 'verification_retrying';
             }
 
@@ -4501,6 +4567,8 @@ async function runTikTokLogin(profile) {
         session.stats.step = 'error';
         session.stats.error = err.message;
     } finally {
+		log('Login successful! Keeping browser open for 10 seconds before closing...');
+        await tiktokPage.waitForTimeout(10000).catch(() => new Promise(r => setTimeout(r, 10000)));
         loggingInProfiles.delete(profileId);
         await browser.close().catch(() => null);
         db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
