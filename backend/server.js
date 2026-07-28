@@ -222,6 +222,18 @@ try {
     console.error('Migration error (need_content_check column):', err);
 }
 
+// Migration: render_video_long — Xác định profile này có render video dài không
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasRenderVideoLong = tableInfo.some((col) => col.name === 'render_video_long');
+    if (!hasRenderVideoLong) {
+        db.exec('ALTER TABLE profiles ADD COLUMN render_video_long INTEGER DEFAULT 0;');
+        console.log('Added render_video_long column to profiles table with default 0');
+    }
+} catch (err) {
+    console.error('Migration error (render_video_long column):', err);
+}
+
 // Migration: account_id, pass, email, pass_email — CSV import fields
 const csvImportFields = [
     { name: 'account_id', type: 'TEXT' },

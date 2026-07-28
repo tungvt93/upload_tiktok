@@ -96,7 +96,8 @@ export function createProfileRecord(db, { id, name, group_id, video_folder, chan
                 409
             );
         }
-        throw createStoreError('Could not create profile', 500);
+        console.error('[profile-store] Failed to create profile record:', e);
+        throw createStoreError('Could not create profile: ' + e.message, 500);
     }
 
     return db
