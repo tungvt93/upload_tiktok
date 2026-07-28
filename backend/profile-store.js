@@ -61,7 +61,7 @@ export function createProfileRecord(db, { id, name, group_id, video_folder, chan
             0,
             normalizedGroupId ?? null,
             normalizedVideoFolder,
-            0,
+            normalizedSetMusic,
             1,
             normalizedChannelIds,
             normalizedNeedsRender,

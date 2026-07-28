@@ -443,7 +443,8 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music, render_concat_video } = req.body;
+    console.log('[API] POST /api/profiles - Request body:', req.body);
+    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music, render_concat_video, needs_render, remove_title } = req.body;
 
     try {
         const id = Date.now().toString();
@@ -456,10 +457,14 @@ app.post('/api/profiles', (req, res) => {
             need_content_check,
             render_video_long,
             set_music,
-            render_concat_video
+            render_concat_video,
+            needs_render,
+            remove_title
         });
+        console.log('[API] POST /api/profiles - Success, created profile:', profile.name, '(ID:', profile.id, ')');
         res.json(profile);
     } catch (err) {
+        console.error('[API] POST /api/profiles - Error creating profile:', err);
         res.status(err.status || 400).json({
             error: err.message || 'Profile already exists or database error'
         });
