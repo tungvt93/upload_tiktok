@@ -316,28 +316,19 @@ const EditProfileModal = ({
                   {profile.auto_increment_schedule === 1 && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingLeft: '28px' }}>
                       <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)' }}>Khoảng cách:</span>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
-                        <input
-                          type="radio"
-                          name={`schedule_interval_${profile.id}`}
-                          value="5"
-                          checked={(profile.schedule_interval || 5) === 5}
-                          onChange={() => onUpdateScheduleInterval && onUpdateScheduleInterval(profile.id, 5)}
-                          style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
-                        />
-                        5 phút
-                      </label>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
-                        <input
-                          type="radio"
-                          name={`schedule_interval_${profile.id}`}
-                          value="10"
-                          checked={profile.schedule_interval === 10}
-                          onChange={() => onUpdateScheduleInterval && onUpdateScheduleInterval(profile.id, 10)}
-                          style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
-                        />
-                        10 phút
-                      </label>
+                      {[5, 10, 15, 20].map((mins) => (
+                        <label key={mins} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                          <input
+                            type="radio"
+                            name={`schedule_interval_${profile.id}`}
+                            value={mins}
+                            checked={(profile.schedule_interval || 5) === mins}
+                            onChange={() => onUpdateScheduleInterval && onUpdateScheduleInterval(profile.id, mins)}
+                            style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          />
+                          {mins} phút
+                        </label>
+                      ))}
                     </div>
                   )}
                 </div>

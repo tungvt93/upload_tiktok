@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
 import Database from 'better-sqlite3';
-import { exec, spawn } from 'child_process';
+import { exec, spawn, execSync, execFileSync } from 'child_process';
 import axios from 'axios';
 import {
     computeNextScheduledTime,
@@ -72,6 +72,7 @@ if (!fs.existsSync(DUMMY_VIDEOS_DIR)) fs.mkdirSync(DUMMY_VIDEOS_DIR);
 // Init SQLite DB
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
+db.pragma('busy_timeout = 10000');
 
 // Create tables
 db.exec(`
@@ -753,6 +754,181 @@ app.post('/api/profiles/import-folder', (req, res) => {
     }
 });
 
+app.post('/api/profiles/export-folder', async (req, res) => {
+    try {
+        const { profileIds, exportPath, downloadZip } = req.body;
+
+        if (!Array.isArray(profileIds) || profileIds.length === 0) {
+            return res.status(400).json({ error: 'Chưa chọn profile nào để xuất' });
+        }
+
+        // Fetch selected profiles
+        const placeholders = profileIds.map(() => '?').join(',');
+        const profiles = db.prepare(`SELECT * FROM profiles WHERE id IN (${placeholders})`).all(...profileIds);
+
+        if (!profiles || profiles.length === 0) {
+            return res.status(400).json({ error: 'Không tìm thấy profile nào phù hợp' });
+        }
+
+        // Fetch group names mapping
+        const groupRows = db.prepare('SELECT id, name FROM groups').all();
+        const groupMap = new Map(groupRows.map(g => [g.id, g.name]));
+
+        // Determine output directory
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const folderName = `TikTok_Export_selected_${profiles.length}TK_${dateStr}`;
+        let targetDir;
+        if (exportPath && exportPath.trim()) {
+            targetDir = path.resolve(exportPath.trim());
+        } else {
+            targetDir = path.join(__dirname, '..', folderName);
+        }
+
+        fs.mkdirSync(targetDir, { recursive: true });
+
+        const cookiesDir = path.join(targetDir, 'cookies');
+        fs.mkdirSync(cookiesDir, { recursive: true });
+
+        const accounts = [];
+        let exportedCookiesCount = 0;
+        let missingCookiesCount = 0;
+
+        const updateAccountIdStmt = db.prepare('UPDATE profiles SET account_id = ? WHERE id = ?');
+
+        for (const profile of profiles) {
+            let accountId = (profile.account_id || '').trim();
+            if (!accountId) {
+                accountId = 'qr' + Math.random().toString(36).substring(2, 12);
+                try {
+                    updateAccountIdStmt.run(accountId, profile.id);
+                } catch (e) {}
+            }
+
+            const rawCookies = (profile.cookies || '').trim();
+            const cookieFilePath = path.join(cookiesDir, `${accountId}.json`);
+
+            if (rawCookies) {
+                try {
+                    let cookieObj;
+                    if (rawCookies.startsWith('[') || rawCookies.startsWith('{')) {
+                        cookieObj = JSON.parse(rawCookies);
+                    } else {
+                        cookieObj = rawCookies.split(';').map(part => {
+                            const [name, ...val] = part.trim().split('=');
+                            return { name, value: val.join('='), domain: '.tiktok.com', path: '/' };
+                        });
+                    }
+                    fs.writeFileSync(cookieFilePath, JSON.stringify(cookieObj, null, 2), 'utf8');
+                    exportedCookiesCount++;
+                } catch (err) {
+                    fs.writeFileSync(cookieFilePath, '[]', 'utf8');
+                    missingCookiesCount++;
+                }
+            } else {
+                fs.writeFileSync(cookieFilePath, '[]', 'utf8');
+                missingCookiesCount++;
+            }
+
+            const groupName = groupMap.get(profile.group_id) || '';
+
+            accounts.push({
+                id: accountId,
+                name: profile.name,
+                browser_data_dir: `C:\\Users\\PC\\Desktop\\TikTokAllInOne3.exe\\data\\browser_data\\acc_${accountId}`,
+                proxy: (profile.proxy || '').trim(),
+                note: "exported cookie login",
+                group: groupName,
+                video_folder: "",
+                youtube_channels: [],
+                music_claim: "",
+                folder_enabled: true,
+                need_login: false
+            });
+        }
+
+        const instanceId = (Math.random().toString(36).substring(2, 11) + '-' + Math.random().toString(36).substring(2, 5)).toUpperCase();
+        const configData = {
+            instance_id: instanceId,
+            accounts: accounts,
+            check_interval_seconds: 300,
+            max_concurrent_uploads: 2,
+            download_dir: "",
+            videos_per_account: 1,
+            folder_threads: 2,
+            delete_after_upload: false,
+            music_claim: "",
+            telegram_bot_token: "",
+            telegram_chat_id: "",
+            vps_id: "",
+            hmcaptcha_apikey: "",
+            backup_keep_startup: 5,
+            backup_keep_daily: 7,
+            groups: [],
+            recently_deleted: [],
+            keep_original_audio: false,
+            folder_schedule: false,
+            folder_schedule_gap: 0,
+            folder_schedule_perday: 0,
+            folder_schedule_mode: "even",
+            folder_schedule_perbatch: 1,
+            yt_freshness: "all",
+            acc_alive: {}
+        };
+
+        fs.writeFileSync(path.join(targetDir, 'config.json'), JSON.stringify(configData, null, 2), 'utf8');
+        fs.writeFileSync(path.join(targetDir, 'archive.json'), JSON.stringify({ known_ids: [] }, null, 2), 'utf8');
+
+        let zipPath = null;
+        let downloadUrl = null;
+
+        if (downloadZip) {
+            zipPath = `${targetDir}.zip`;
+            try {
+                execFileSync('powershell.exe', [
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-Command',
+                    `Compress-Archive -Path '${targetDir.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`
+                ], { windowsHide: true });
+                downloadUrl = `/api/profiles/download-export-zip?file=${encodeURIComponent(path.basename(zipPath))}`;
+            } catch (zErr) {
+                console.error('ZIP creation error:', zErr);
+            }
+        }
+
+        return res.json({
+            success: true,
+            exportPath: targetDir,
+            zipPath: zipPath,
+            downloadUrl: downloadUrl,
+            total: profiles.length,
+            exportedCookies: exportedCookiesCount,
+            missingCookies: missingCookiesCount
+        });
+
+    } catch (err) {
+        console.error('Export folder error:', err);
+        return res.status(500).json({ error: `Failed to export folder: ${err.message}` });
+    }
+});
+
+app.get('/api/profiles/download-export-zip', (req, res) => {
+    try {
+        const fileName = req.query.file;
+        if (!fileName || !fileName.endsWith('.zip')) {
+            return res.status(400).send('Invalid file parameter');
+        }
+        const safeFileName = path.basename(fileName);
+        const zipPath = path.join(__dirname, '..', safeFileName);
+        if (!fs.existsSync(zipPath)) {
+            return res.status(404).send('ZIP file not found');
+        }
+        res.download(zipPath, safeFileName);
+    } catch (err) {
+        res.status(500).send('Error downloading zip file');
+    }
+});
+
 
 app.delete('/api/profiles/:id', async (req, res) => {
     const profileId = req.params.id;
@@ -1215,7 +1391,8 @@ app.patch('/api/profiles/:id', (req, res) => {
         db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
     }
     if (schedule_interval !== undefined) {
-        const val = Number(schedule_interval) === 10 ? 10 : 5;
+        const intervalNum = Number(schedule_interval);
+        const val = [5, 10, 15, 20].includes(intervalNum) ? intervalNum : 5;
         db.prepare('UPDATE profiles SET schedule_interval = ? WHERE id = ?').run(val, profileId);
     }
     if (upload_count !== undefined) {
@@ -3568,8 +3745,22 @@ async function dismissOnboardingModals(page, log) {
                     await cancelBtn.click();
                     await page.waitForTimeout(800);
                 }
+            } else if (text.includes("Discard this post") || text.includes("discarded permanently")) {
+                const notNowBtn = await tuxModal.$('button:has-text("Not now")');
+                if (notNowBtn && await notNowBtn.isVisible()) {
+                    log('✅ Dismissing "Discard this post?" → Not now');
+                    await notNowBtn.click();
+                    await page.waitForTimeout(800);
+                } else {
+                    const discardBtn = await tuxModal.$('button:has-text("Discard")');
+                    if (discardBtn && await discardBtn.isVisible()) {
+                        log('✅ Dismissing "Discard this post?" → Discard');
+                        await discardBtn.click();
+                        await page.waitForTimeout(800);
+                    }
+                }
             } else {
-                const modalBtns = ['button:has-text("Got it")', 'button:has-text("Allow")', 'button:has-text("Cancel")', 'button:has-text("Skip")'];
+                const modalBtns = ['button:has-text("Got it")', 'button:has-text("Allow")', 'button:has-text("Not now")', 'button:has-text("Cancel")', 'button:has-text("Skip")'];
                 for (const btnSel of modalBtns) {
                     const el = await tuxModal.$(btnSel).catch(() => null);
                     if (el && await el.isVisible()) {
@@ -5549,7 +5740,7 @@ async function runTikTokLogin(profile) {
 
         // --- STEP 1: Navigate to TikTok login ---
         log('Navigating to TikTok login page...');
-        await tiktokPage.goto('https://www.tiktok.com/login', {
+        await tiktokPage.goto('https://www.tiktok.com/login?redirect_url=https%3A%2F%2Fwww.tiktok.com%2Ftiktokstudio&enter_method=redirect&enter_from=tiktokstudio', {
             waitUntil: 'domcontentloaded',
             timeout: 30000
         });
@@ -5919,6 +6110,9 @@ async function runTikTokLogin(profile) {
                     break;
                 }
 
+                log(`Retrieved verification code (${code}). Hotmail tab closed. Waiting 2s before entering code...`);
+                await tiktokPage.waitForTimeout(2000);
+
                 // Always re-find code input — page may have changed during Hotmail retrieval
                 codeInput = null;
                 for (const sel of codeInputSelectors) {
@@ -5931,33 +6125,98 @@ async function runTikTokLogin(profile) {
                     break;
                 }
 
-                // Use JS to set value directly — TikTok floating UI may intercept clicks
+                // Focus and type code character by character, plus set native value as fallback
+                try {
+                    await codeInput.focus().catch(() => {});
+                    await codeInput.click().catch(() => {});
+                    await tiktokPage.keyboard.press('Control+A').catch(() => {});
+                    await tiktokPage.keyboard.press('Backspace').catch(() => {});
+                    await codeInput.type(code, { delay: 100 }).catch(() => {});
+                } catch (e) {}
+
                 await codeInput.evaluate((el, val) => {
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value'
-                    ).set;
-                    nativeInputValueSetter.call(el, val);
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (el.value !== val) {
+                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeInputValueSetter.call(el, val);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
                 }, code);
-                log('Verification code entered');
+
+                log(`Verification code ${code} entered.`);
                 await tiktokPage.waitForTimeout(1000);
 
-                const verifyBtn = await tiktokPage.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Next")');
+                // Press Enter & Click submit button
+                await tiktokPage.keyboard.press('Enter').catch(() => {});
+                const verifyBtn = await tiktokPage.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Next"), button[type="submit"]');
                 if (verifyBtn && await verifyBtn.isVisible().catch(() => false)) {
-                    await verifyBtn.click({ force: true });
-                    log('Clicked verify button');
+                    await verifyBtn.click({ force: true }).catch(() => {});
+                    log('Clicked verify/submit button');
                 }
 
-                await tiktokPage.waitForTimeout(5000);
+                // Poll for login success or explicit error for up to 15 seconds
+                log('Waiting for TikTok login verification response...');
+                let isSuccess = false;
+                let hasExplicitError = false;
 
-                const finalUrl = tiktokPage.url();
-                if (!finalUrl.includes('/login') && !finalUrl.includes('/passport')) {
+                for (let poll = 0; poll < 15; poll++) {
+                    await tiktokPage.waitForTimeout(1000);
+                    const currentUrl = tiktokPage.url();
+
+                    // Check URL redirection
+                    if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+                        isSuccess = true;
+                        break;
+                    }
+
+                    // Check session cookies
+                    try {
+                        const cookies = await browser.cookies();
+                        const hasSessionCookie = cookies.some(c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_tt');
+                        if (hasSessionCookie) {
+                            isSuccess = true;
+                            break;
+                        }
+                    } catch (e) {}
+
+                    // Check avatar / logged in elements
+                    const avatarFound = await tiktokPage.$('[data-e2e="user-avatar"], [data-e2e="profile-icon"], header img, a[href*="/@"]').catch(() => null);
+                    if (avatarFound && await avatarFound.isVisible().catch(() => false)) {
+                        isSuccess = true;
+                        break;
+                    }
+
+                    // Check for explicit error message on page
+                    const pageText = await tiktokPage.evaluate(() => (document.body.innerText || '').toLowerCase()).catch(() => '');
+                    if (pageText.includes('incorrect code') || pageText.includes('invalid code') || pageText.includes('mã không đúng') || pageText.includes('expired') || pageText.includes('too many attempts')) {
+                        hasExplicitError = true;
+                        log('TikTok reported incorrect/invalid verification code.');
+                        break;
+                    }
+                }
+
+                if (isSuccess) {
                     log('Login successful after verification!');
+                    verified = true;
                     session.stats.step = 'complete';
                     return;
                 }
-                log(`Verification code ${code} rejected. Will retry with different code...`);
+
+                if (!hasExplicitError) {
+                    log('Verification submitted. Waiting additional 10s for page transition...');
+                    await tiktokPage.waitForTimeout(10000);
+                    const checkUrl = tiktokPage.url();
+                    if (!checkUrl.includes('/login') && !checkUrl.includes('/passport')) {
+                        log('Login successful after verification!');
+                        verified = true;
+                        session.stats.step = 'complete';
+                        return;
+                    }
+                }
+
+                log(`Verification code ${code} rejected or expired. Will retry...`);
                 session.stats.step = 'verification_retrying';
             }
 
@@ -5999,6 +6258,8 @@ async function runTikTokLogin(profile) {
             } catch (e) {
                 log(`Failed to save cookies: ${e.message}`);
             }
+            log('Login successful! Keeping browser open for 10 seconds before closing...');
+            await tiktokPage.waitForTimeout(10000).catch(() => new Promise(r => setTimeout(r, 10000)));
         }
         loggingInProfiles.delete(profileId);
         await browser.close().catch(() => null);
@@ -6013,6 +6274,21 @@ async function runTikTokLogin(profile) {
 
 const dismissPopups = async (page) => {
     if (!page) return false;
+
+    // --- Xử lý banner "A video you were editing wasn't saved" (không phải modal) ---
+    // Banner này xuất hiện ở TOP trang, không phải role="dialog"
+    try {
+        const draftBanner = await page.$('div:has-text("wasn\'t saved"):has(button:has-text("Discard")), div:has-text("Continue editing?"):has(button:has-text("Discard"))');
+        if (draftBanner && await draftBanner.isVisible()) {
+            const discardBtn = await page.$('button:has-text("Discard")');
+            if (discardBtn && await discardBtn.isVisible()) {
+                await discardBtn.click();
+                console.log('[dismissPopups] Dismissed draft banner "wasn\'t saved" → Discard');
+                await page.waitForTimeout(500);
+                return true;
+            }
+        }
+    } catch (e) { /* ignore */ }
 
     // Các selector để tìm modal/popup - theo thứ tự ưu tiên (cụ thể nhất trước)
     const modalSelectors = [
@@ -6058,10 +6334,27 @@ const dismissPopups = async (page) => {
                         }
                     }
 
+                    // --- Popup "Discard this post?" ---
+                    if (text.includes("Discard this post") || text.includes("discarded permanently")) {
+                        const notNowBtn = await modal.$('button:has-text("Not now")');
+                        if (notNowBtn && await notNowBtn.isVisible()) {
+                            await notNowBtn.click();
+                            console.log('[dismissPopups] Dismissed "Discard this post?" popup → Not now');
+                            return true;
+                        }
+                        const discardBtn = await modal.$('button:has-text("Discard")');
+                        if (discardBtn && await discardBtn.isVisible()) {
+                            await discardBtn.click();
+                            console.log('[dismissPopups] Dismissed "Discard this post?" popup → Discard');
+                            return true;
+                        }
+                    }
+
                     // --- Các popup chung: Got it, Allow, Skip, OK ---
                     const genericBtnSelectors = [
                         'button:has-text("Got it")',
                         'button:has-text("Allow")',
+                        'button:has-text("Not now")',
                         'button:has-text("Skip")',
                         'button:has-text("OK")',
                         'button:has-text("Okay")',
@@ -6081,6 +6374,7 @@ const dismissPopups = async (page) => {
     }
     return false;
 };
+
 
 
 // Background Scheduler
