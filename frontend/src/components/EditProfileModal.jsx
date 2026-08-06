@@ -14,13 +14,13 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { getStatusColor } from '../status';
 
 const EditProfileModal = ({
   isOpen,
   onClose,
   profile,
   groups,
-  getStatusColor,
   onUpdateGroup,
   onUpdateFolder,
   onSelectFolder,
