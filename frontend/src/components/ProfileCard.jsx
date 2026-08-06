@@ -4,7 +4,9 @@ import ProfileCardHeader from './ProfileCardHeader';
 import ProfileCardActions from './ProfileCardActions';
 
 // Composes the profile card: header (opens edit modal on click) + action row.
-const ProfileCard = ({
+// forwardRef is required so framer-motion's AnimatePresence (popLayout) can
+// measure this component for layout animations.
+const ProfileCard = React.forwardRef(({
   profile,
   isSelected,
   onToggleSelected,
@@ -29,8 +31,9 @@ const ProfileCard = ({
   editingValue,
   setEditingValue,
   onEdit
-}) => (
+}, ref) => (
   <motion.div
+    ref={ref}
     layout
     initial={{ opacity: 0, scale: 0.95 }}
     animate={{ opacity: 1, scale: 1 }}
@@ -69,6 +72,6 @@ const ProfileCard = ({
       musicSearchTerm={musicSearchTerm}
     />
   </motion.div>
-);
+));
 
 export default ProfileCard;

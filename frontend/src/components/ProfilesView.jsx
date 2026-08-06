@@ -99,6 +99,7 @@ const ProfilesView = ({
   // import / export
   isImportModalOpen,
   isImporting,
+  isExporting,
   importFileName,
   importResults,
   importCsvText,
