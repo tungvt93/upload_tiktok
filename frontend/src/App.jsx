@@ -30,7 +30,8 @@ import {
   Upload,
   LogIn,
   Image,
-  Camera
+  Camera,
+  Share2
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -415,6 +416,17 @@ const App = () => {
   const [exportResults, setExportResults] = useState(null);
   const [editingProfileId, setEditingProfileId] = useState(null);
 
+  // Distribution feature state
+  const [distributionProfiles, setDistributionProfiles] = useState([]);
+  const [showAddDistProfileModal, setShowAddDistProfileModal] = useState(false);
+  const [showDistributeModal, setShowDistributeModal] = useState(false);
+  const [distGroupFilter, setDistGroupFilter] = useState('all');
+  const [selectedProfileIds, setSelectedProfileIds] = useState(new Set());
+  const [sourceFolder, setSourceFolder] = useState('');
+  const [videosPerProfile, setVideosPerProfile] = useState(1);
+  const [isDistributing, setIsDistributing] = useState(false);
+  const [distributeResult, setDistributeResult] = useState(null);
+
   const editingProfile = editingProfileId
     ? profiles.find(p => p.id === editingProfileId)
     : null;
@@ -443,10 +455,11 @@ const App = () => {
 
   const fetchData = async () => {
     try {
-      const [pRes, cRes, gRes] = await Promise.all([
+      const [pRes, cRes, gRes, dpRes] = await Promise.all([
         axios.get('/api/profiles'),
         axios.get('/api/config'),
-        axios.get('/api/groups')
+        axios.get('/api/groups'),
+        axios.get('/api/distribution/profiles')
       ]);
 
       const newProfiles = pRes.data || [];
@@ -463,6 +476,7 @@ const App = () => {
 
       setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
       setGroups(gRes.data || []);
+      setDistributionProfiles(dpRes.data || []);
 
       // Sync engaging status from profile status field
       setEngagingProfiles(prev => {
@@ -1355,6 +1369,99 @@ const App = () => {
     setEditingProfileId(null);
   };
 
+  const handleRemoveDistProfile = async (profileId) => {
+    try {
+      await axios.delete(`/api/distribution/profiles/${profileId}`);
+      setDistributionProfiles(prev => prev.filter(p => p.profile_id !== profileId));
+      setMessage({ type: 'success', text: 'Đã xoá profile khỏi danh sách phân phối' });
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi xoá profile' });
+    }
+  };
+
+  const handleAddDistProfiles = async () => {
+    const ids = [...selectedProfileIds];
+    if (ids.length === 0) return;
+
+    let added = 0;
+    let errors = 0;
+    let lastError = '';
+    for (const profileId of ids) {
+      try {
+        await axios.post('/api/distribution/profiles', { profile_id: profileId });
+        added++;
+      } catch (err) {
+        if (err.response?.status === 409) {
+          // Already in list, skip
+        } else {
+          errors++;
+          lastError = err.response?.data?.error || err.message;
+        }
+      }
+    }
+
+    setSelectedProfileIds(new Set());
+    setShowAddDistProfileModal(false);
+
+    // Refresh distribution list
+    try {
+      const dpRes = await axios.get('/api/distribution/profiles');
+      setDistributionProfiles(dpRes.data || []);
+    } catch (e) { /* ignore */ }
+
+    if (added > 0) {
+      setMessage({ type: 'success', text: `Đã thêm ${added} profile vào danh sách phân phối` });
+    }
+    if (errors > 0) {
+      setMessage({ type: 'error', text: `Có ${errors} lỗi khi thêm profile${lastError ? ': ' + lastError : ''}` });
+    }
+  };
+
+  const handleDistribute = async () => {
+    if (!sourceFolder.trim()) {
+      setMessage({ type: 'error', text: 'Vui lòng nhập folder nguồn' });
+      return;
+    }
+    if (videosPerProfile < 1) {
+      setMessage({ type: 'error', text: 'Số lượng video mỗi profile phải >= 1' });
+      return;
+    }
+
+    setIsDistributing(true);
+    setDistributeResult(null);
+    try {
+      const res = await axios.post('/api/distribution/distribute', {
+        sourceFolder: sourceFolder.trim(),
+        videosPerProfile
+      });
+      setDistributeResult(res.data);
+      if (res.data.missing > 0) {
+        setMessage({ type: 'warning', text: `Đã phân phối ${res.data.totalDistributed}/${res.data.totalExpected} video. Thiếu ${res.data.missing} video.` });
+      } else {
+        setMessage({ type: 'success', text: `Đã phân phối thành công ${res.data.totalDistributed} video!` });
+      }
+    } catch (err) {
+      setDistributeResult({ error: err.response?.data?.error || 'Lỗi khi phân phối video' });
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi phân phối video' });
+    } finally {
+      setIsDistributing(false);
+    }
+  };
+
+  // Compute profiles NOT already in distribution (for the modal)
+  const availableForDist = useMemo(() => {
+    const distIds = new Set(distributionProfiles.map(p => p.profile_id));
+    return profiles.filter(p => !distIds.has(p.id));
+  }, [profiles, distributionProfiles]);
+
+  const filteredDistAvailable = useMemo(() => {
+    if (distGroupFilter === 'all') return availableForDist;
+    if (distGroupFilter === 'ungrouped') {
+      return availableForDist.filter(p => !p.group_id);
+    }
+    return availableForDist.filter(p => p.group_id === distGroupFilter);
+  }, [availableForDist, distGroupFilter]);
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'uploading': return 'var(--accent)';
@@ -1455,6 +1562,26 @@ const App = () => {
             >
               <Settings size={20} /> System Settings
             </button>
+            <button
+              onClick={() => setActiveTab('distribution')}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '12px 16px',
+                borderRadius: '12px',
+                background: activeTab === 'distribution' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
+                color: activeTab === 'distribution' ? 'var(--primary)' : 'var(--text-muted)',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: '600',
+                marginTop: '8px',
+                transition: 'all 0.2s'
+              }}
+            >
+              <Share2 size={20} /> Phân Phối Video
+            </button>
           </nav>
 
           <div className="glass" style={{ padding: '24px', borderRadius: '20px', marginTop: 'auto' }}>
@@ -1484,9 +1611,29 @@ const App = () => {
               style={{
                 padding: '16px 24px',
                 borderRadius: '16px',
-                background: message.type === 'error' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)',
-                color: message.type === 'error' ? '#EF4444' : '#10B981',
-                border: `1px solid ${message.type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)'}`,
+                background: message.type === 'error'
+                  ? 'rgba(239, 68, 68, 0.1)'
+                  : message.type === 'warning'
+                    ? 'rgba(251, 191, 36, 0.1)'
+                    : message.type === 'info'
+                      ? 'rgba(59, 130, 246, 0.1)'
+                      : 'rgba(16, 185, 129, 0.1)',
+                color: message.type === 'error'
+                  ? '#EF4444'
+                  : message.type === 'warning'
+                    ? '#FBBF24'
+                    : message.type === 'info'
+                      ? '#3B82F6'
+                      : '#10B981',
+                border: `1px solid ${
+                  message.type === 'error'
+                    ? 'rgba(239, 68, 68, 0.2)'
+                    : message.type === 'warning'
+                      ? 'rgba(251, 191, 36, 0.2)'
+                      : message.type === 'info'
+                        ? 'rgba(59, 130, 246, 0.2)'
+                        : 'rgba(16, 185, 129, 0.2)'
+                }`,
                 marginBottom: '32px',
                 display: 'flex',
                 alignItems: 'center',
@@ -1494,7 +1641,7 @@ const App = () => {
                 zIndex: 100
               }}
             >
-              {message.type === 'error' ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
+              {message.type === 'error' ? <AlertCircle size={20} /> : message.type === 'warning' ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
               <span style={{ fontWeight: '600' }}>{message.text}</span>
             </motion.div>
           )}
@@ -2508,6 +2655,108 @@ const App = () => {
                 onUpdateMusicSearchTerm={handleUpdateMusicSearchTerm}
               />
             </section>
+          ) : activeTab === 'distribution' ? (
+            <section>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+                <div>
+                  <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '4px' }}>Phân Phối Video</h2>
+                  <p style={{ color: 'var(--text-muted)' }}>Chọn profile và phân phối video vào các folder upload</p>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => setShowAddDistProfileModal(true)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                >
+                  <Plus size={18} /> Thêm Profile
+                </button>
+              </div>
+
+              {/* Distribution profile cards */}
+              <div style={{ marginBottom: '24px' }}>
+                {distributionProfiles.length === 0 ? (
+                  <div className="glass" style={{ padding: '48px 24px', borderRadius: '20px', textAlign: 'center' }}>
+                    <Share2 size={40} color="var(--text-muted)" style={{ marginBottom: '16px', opacity: 0.5 }} />
+                    <h3 style={{ fontWeight: '600', marginBottom: '8px', color: 'var(--text-muted)' }}>Chưa có profile nào được chọn</h3>
+                    <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>Thêm profile để bắt đầu phân phối video</p>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => setShowAddDistProfileModal(true)}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                    >
+                      <Plus size={18} /> Thêm Profile
+                    </button>
+                  </div>
+                ) : (
+                  <div className="profile-grid">
+                    {distributionProfiles.map(dp => (
+                      <motion.div
+                        key={dp.profile_id}
+                        layout
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="glass card"
+                        style={{ overflow: 'hidden' }}
+                      >
+                        <div style={{ padding: '16px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                            <div>
+                              <div style={{ fontWeight: '600', fontSize: '1rem', marginBottom: '4px' }}>{dp.profile_name}</div>
+                              {dp.group_name && (
+                                <span className="badge" style={{ fontSize: '0.75rem' }}>{dp.group_name}</span>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => handleRemoveDistProfile(dp.profile_id)}
+                              className="btn btn-secondary"
+                              style={{ padding: '6px 10px', minWidth: 'unset' }}
+                              title="Xoá khỏi danh sách"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <FolderOpen size={14} />
+                            <span style={{
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}>{dp.video_folder || '(default)'}</span>
+                          </div>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Distribute button */}
+              {distributionProfiles.length > 0 && (
+                <div style={{ marginTop: '24px' }}>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => {
+                      setSourceFolder('');
+                      setVideosPerProfile(1);
+                      setDistributeResult(null);
+                      setShowDistributeModal(true);
+                    }}
+                    disabled={isDistributing}
+                    style={{
+                      width: '100%',
+                      padding: '14px 20px',
+                      fontSize: '1.05rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '10px'
+                    }}
+                  >
+                    <Share2 size={20} /> Phân Phối Video
+                  </button>
+                </div>
+              )}
+            </section>
           ) : activeTab === 'groups' ? (
             <section>
               <div style={{ marginBottom: '28px' }}>
@@ -2707,6 +2956,360 @@ const App = () => {
           )}
         </main>
       </div>
+
+      {/* Add Distribution Profile Modal */}
+      <AnimatePresence>
+        {showAddDistProfileModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(15, 23, 42, 0.7)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+              padding: '24px'
+            }}
+            onClick={() => {
+              setSelectedProfileIds(new Set());
+              setShowAddDistProfileModal(false);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              className="glass"
+              style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Thêm Profile</h3>
+                  <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Chọn profile để thêm vào danh sách phân phối</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProfileIds(new Set());
+                    setShowAddDistProfileModal(false);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer'
+                  }}
+                  aria-label="Close modal"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Group
+                  <select
+                    className="input"
+                    style={{ padding: '8px 12px', minWidth: '180px' }}
+                    value={distGroupFilter}
+                    onChange={(e) => setDistGroupFilter(e.target.value)}
+                  >
+                    <option value="all">Tất cả</option>
+                    <option value="ungrouped">Ungrouped</option>
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div style={{ maxHeight: '360px', overflowY: 'auto', marginBottom: '20px' }}>
+                {filteredDistAvailable.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-muted)' }}>
+                    <p>Không có profile nào khả dụng</p>
+                  </div>
+                ) : (
+                  filteredDistAvailable.map(p => (
+                    <label
+                      key={p.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '12px 16px',
+                        borderRadius: '12px',
+                        cursor: 'pointer',
+                        transition: 'background 0.15s',
+                        background: selectedProfileIds.has(p.id) ? 'rgba(255, 63, 182, 0.08)' : 'transparent'
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedProfileIds.has(p.id)}
+                        onChange={() => {
+                          setSelectedProfileIds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(p.id)) next.delete(p.id);
+                            else next.add(p.id);
+                            return next;
+                          });
+                        }}
+                        style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{p.name}</div>
+                        {p.group_name && (
+                          <span className="badge" style={{ fontSize: '0.7rem', marginTop: '2px' }}>{p.group_name}</span>
+                        )}
+                      </div>
+                    </label>
+                  ))
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setSelectedProfileIds(new Set());
+                    setShowAddDistProfileModal(false);
+                  }}
+                >
+                  Huỷ
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleAddDistProfiles}
+                  disabled={selectedProfileIds.size === 0}
+                >
+                  Thêm ({selectedProfileIds.size})
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Distribute Video Modal */}
+      <AnimatePresence>
+        {showDistributeModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(15, 23, 42, 0.7)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+              padding: '24px'
+            }}
+            onClick={() => {
+              if (!isDistributing) {
+                setDistributeResult(null);
+                setShowDistributeModal(false);
+              }
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              className="glass"
+              style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <div>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Phân Phối Video</h3>
+                  <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {distributionProfiles.length} profile được chọn
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isDistributing) {
+                      setDistributeResult(null);
+                      setShowDistributeModal(false);
+                    }
+                  }}
+                  disabled={isDistributing}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: isDistributing ? 'not-allowed' : 'pointer',
+                    opacity: isDistributing ? 0.45 : 1
+                  }}
+                  aria-label="Close modal"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {!distributeResult ? (
+                <>
+                  <div style={{ display: 'grid', gap: '16px', marginBottom: '20px' }}>
+                    <div className="input-group">
+                      <label>Folder Nguồn</label>
+                      <input
+                        className="input"
+                        placeholder="/path/to/videos"
+                        value={sourceFolder}
+                        onChange={(e) => setSourceFolder(e.target.value)}
+                        disabled={isDistributing}
+                        autoFocus
+                      />
+                    </div>
+
+                    <div className="input-group">
+                      <label>Số lượng video mỗi profile</label>
+                      <input
+                        className="input"
+                        type="number"
+                        min={1}
+                        value={videosPerProfile}
+                        onChange={(e) => setVideosPerProfile(Math.max(1, parseInt(e.target.value) || 1))}
+                        disabled={isDistributing}
+                      />
+                    </div>
+
+                    <div style={{
+                      padding: '12px 16px',
+                      borderRadius: '12px',
+                      background: 'rgba(99, 102, 241, 0.08)',
+                      fontSize: '0.9rem',
+                      color: 'var(--text-muted)'
+                    }}>
+                      <strong>{distributionProfiles.length}</strong> profile × <strong>{videosPerProfile}</strong> video = <strong style={{ color: 'var(--accent)' }}>{distributionProfiles.length * videosPerProfile} video</strong> cần phân phối
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        setDistributeResult(null);
+                        setShowDistributeModal(false);
+                      }}
+                      disabled={isDistributing}
+                    >
+                      Huỷ
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleDistribute}
+                      disabled={isDistributing || !sourceFolder.trim()}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                      {isDistributing ? (
+                        <>
+                          <RefreshCw size={18} className="animate-pulse" />
+                          Đang phân phối...
+                        </>
+                      ) : (
+                        <>
+                          <Play size={18} />
+                          Phân Phối
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Result display */}
+                  {distributeResult.error ? (
+                    <div style={{
+                      padding: '20px',
+                      borderRadius: '16px',
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      marginBottom: '20px'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--danger)', marginBottom: '8px' }}>
+                        <AlertCircle size={20} />
+                        <span style={{ fontWeight: '600' }}>Lỗi</span>
+                      </div>
+                      <p style={{ color: 'var(--text-muted)', margin: 0 }}>{distributeResult.error}</p>
+                    </div>
+                  ) : (
+                    <div style={{
+                      padding: '20px',
+                      borderRadius: '16px',
+                      background: distributeResult.missing > 0
+                        ? 'rgba(251, 191, 36, 0.08)'
+                        : 'rgba(34, 197, 94, 0.08)',
+                      marginBottom: '20px'
+                    }}>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '10px',
+                        color: distributeResult.missing > 0 ? '#FBBF24' : 'var(--success)',
+                        marginBottom: '12px'
+                      }}>
+                        {distributeResult.missing > 0 ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
+                        <span style={{ fontWeight: '600' }}>
+                          {distributeResult.missing > 0
+                            ? `Đã phân phối ${distributeResult.totalDistributed}/${distributeResult.totalExpected} video`
+                            : `Đã phân phối thành công ${distributeResult.totalDistributed} video!`
+                          }
+                        </span>
+                      </div>
+                      {distributeResult.missing > 0 && (
+                        <p style={{ color: 'var(--text-muted)', margin: '0 0 12px 0', fontSize: '0.9rem' }}>
+                          Thiếu {distributeResult.missing} video (folder nguồn không đủ)
+                        </p>
+                      )}
+                      {/* Per-profile breakdown */}
+                      <div style={{ display: 'grid', gap: '6px' }}>
+                        {distributeResult.profiles.map(p => (
+                          <div key={p.profileId} style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '8px 12px',
+                            borderRadius: '8px',
+                            background: 'rgba(255,255,255,0.04)',
+                            fontSize: '0.85rem'
+                          }}>
+                            <span style={{ fontWeight: '500' }}>{p.profileName}</span>
+                            <span style={{ color: 'var(--text-muted)' }}>
+                              {p.count} video → <span style={{ fontSize: '0.78rem', color: 'var(--accent)' }}>{p.folder}</span>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        setDistributeResult(null);
+                        setShowDistributeModal(false);
+                        setSourceFolder('');
+                      }}
+                    >
+                      Đóng
+                    </button>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Folder Selection Loading Overlay */}
       <AnimatePresence>
         {isSelectingFolder && (

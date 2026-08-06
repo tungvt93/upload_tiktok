@@ -96,6 +96,12 @@ db.exec(`
         time TEXT,
         FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS distribution_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id TEXT NOT NULL UNIQUE,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+    );
 `);
 
 // Migration: Add proxy column if not exists
@@ -4875,6 +4881,179 @@ app.get('/api/login-tiktok/status/:profileId', (req, res) => {
         loggingIn: !!session,
         stats: session ? session.stats : null
     });
+});
+
+app.get('/api/distribution/profiles', (req, res) => {
+    try {
+        const profiles = db.prepare(`
+            SELECT
+                dp.id,
+                dp.profile_id,
+                p.name AS profile_name,
+                g.name AS group_name,
+                p.video_folder,
+                dp.created_at
+            FROM distribution_profiles dp
+            JOIN profiles p ON p.id = dp.profile_id
+            LEFT JOIN groups g ON g.id = p.group_id
+            ORDER BY dp.created_at ASC
+        `).all();
+        res.json(profiles);
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+app.post('/api/distribution/profiles', (req, res) => {
+    try {
+        const { profile_id } = req.body;
+        console.log('[DIST] POST /api/distribution/profiles - received profile_id:', profile_id, 'type:', typeof profile_id);
+        if (!profile_id) {
+            return res.status(400).json({ error: 'profile_id is required' });
+        }
+
+        // Ensure profile_id is string for TEXT primary key comparison
+        const pid = String(profile_id);
+
+        // Check profile exists
+        const profile = db.prepare('SELECT id FROM profiles WHERE id = ?').get(pid);
+        console.log('[DIST] profile lookup result:', profile);
+        if (!profile) {
+            return res.status(404).json({ error: 'Profile not found' });
+        }
+
+        // Check not already in distribution list
+        const existing = db.prepare('SELECT id FROM distribution_profiles WHERE profile_id = ?').get(pid);
+        if (existing) {
+            return res.status(409).json({ error: 'Profile already in distribution list' });
+        }
+
+        const result = db.prepare('INSERT INTO distribution_profiles (profile_id) VALUES (?)').run(pid);
+        res.json({ id: result.lastInsertRowid, profile_id: pid, created_at: new Date().toISOString() });
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+app.delete('/api/distribution/profiles/:profileId', (req, res) => {
+    try {
+        const { profileId } = req.params;
+        const result = db.prepare('DELETE FROM distribution_profiles WHERE profile_id = ?').run(profileId);
+        if (result.changes === 0) {
+            return res.status(404).json({ error: 'Profile not in distribution list' });
+        }
+        res.json({ success: true });
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+app.post('/api/distribution/distribute', (req, res) => {
+    try {
+        const { sourceFolder, videosPerProfile } = req.body;
+
+        // Validate inputs
+        if (!sourceFolder || typeof sourceFolder !== 'string') {
+            return res.status(400).json({ error: 'sourceFolder is required' });
+        }
+        if (!videosPerProfile || !Number.isInteger(videosPerProfile) || videosPerProfile < 1) {
+            return res.status(400).json({ error: 'videosPerProfile must be a positive integer' });
+        }
+
+        // Check source folder exists
+        if (!fs.existsSync(sourceFolder)) {
+            return res.status(400).json({ error: 'Source folder does not exist' });
+        }
+        const sourceStat = fs.statSync(sourceFolder);
+        if (!sourceStat.isDirectory()) {
+            return res.status(400).json({ error: 'Source path is not a directory' });
+        }
+
+        // Get distribution profiles
+        const distProfiles = db.prepare(`
+            SELECT
+                dp.profile_id,
+                p.name AS profile_name,
+                p.video_folder
+            FROM distribution_profiles dp
+            JOIN profiles p ON p.id = dp.profile_id
+            ORDER BY dp.created_at ASC
+        `).all();
+
+        if (distProfiles.length === 0) {
+            return res.status(400).json({ error: 'No profiles in distribution list' });
+        }
+
+        // Scan source folder for video files
+        const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
+        const videoFiles = fs.readdirSync(sourceFolder)
+            .filter(f => VIDEO_EXTENSIONS.includes(path.extname(f).toLowerCase()))
+            .map(f => ({ name: f, fullPath: path.join(sourceFolder, f) }));
+
+        if (videoFiles.length === 0) {
+            return res.status(400).json({ error: 'No video files found in source folder' });
+        }
+
+        const totalExpected = distProfiles.length * videosPerProfile;
+
+        // Initialize profile counters
+        const profileCounts = distProfiles.map(p => ({
+            ...p,
+            count: 0,
+            target: videosPerProfile
+        }));
+
+        let totalDistributed = 0;
+        let videoIndex = 0;
+
+        // Round-robin distribution
+        while (videoIndex < videoFiles.length) {
+            let assigned = false;
+            for (const pc of profileCounts) {
+                if (pc.count >= pc.target) continue;
+                if (videoIndex >= videoFiles.length) break;
+
+                const video = videoFiles[videoIndex];
+                const destDir = pc.video_folder || path.join(UPLOADS_DIR, pc.profile_name);
+                const destFile = path.join(destDir, video.name);
+
+                // Create destination directory if it doesn't exist
+                if (!fs.existsSync(destDir)) {
+                    fs.mkdirSync(destDir, { recursive: true });
+                }
+
+                // Move file
+                try {
+                    fs.renameSync(video.fullPath, destFile);
+                    pc.count++;
+                    totalDistributed++;
+                    videoIndex++;
+                    assigned = true;
+                } catch (moveErr) {
+                    console.error(`[Distribution] Failed to move ${video.name} to ${destFile}:`, moveErr.message);
+                    videoIndex++; // Skip this file
+                    assigned = true;
+                }
+            }
+            if (!assigned) break; // All profiles have reached their target
+        }
+
+        const missing = totalExpected - totalDistributed;
+
+        res.json({
+            profiles: profileCounts.map(p => ({
+                profileId: p.profile_id,
+                profileName: p.profile_name,
+                count: p.count,
+                folder: p.video_folder || path.join(UPLOADS_DIR, p.profile_name)
+            })),
+            totalDistributed,
+            totalExpected,
+            missing
+        });
+    } catch (err) {
+        res.status(err.status || 400).json({ error: err.message });
+    }
 });
 
 async function runEngageSession(profile) {
