@@ -1182,6 +1182,39 @@ const App = () => {
     }
   };
 
+  const updateProfileUseFingerprint = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, use_fingerprint: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.post(`/api/profiles/${id}/toggle-fingerprint`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const resetProfileFingerprint = async (id) => {
+    if (processingRef.current.has(id)) return;
+    processingRef.current.add(id);
+    try {
+      await axios.post(`/api/profiles/${id}/random-fingerprint`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
   const updateProfileAutoIncrementSchedule = async (id, enabled) => {
     if (processingRef.current.has(id)) return;
     setProfiles((prev) =>
@@ -2502,6 +2535,8 @@ const App = () => {
                 onUpdateRenderVideoLong={updateProfileRenderVideoLong}
                 onUpdateRemoveTitle={updateProfileRemoveTitle}
                 onUpdateNeedContentCheck={updateProfileNeedContentCheck}
+                onUpdateUseFingerprint={updateProfileUseFingerprint}
+                onResetFingerprint={resetProfileFingerprint}
                 onSelectAvatar={handleSelectAvatar}
                 selectedAvatarPath={editingProfileId ? (avatarSelections[editingProfileId] || '') : ''}
                 musicSearchTerm={editingProfileId ? (musicSearchTerms[editingProfileId] || '') : ''}

@@ -5,6 +5,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
 import Database from 'better-sqlite3';
+import { FingerprintGenerator } from 'fingerprint-generator';
+import { FingerprintInjector } from 'fingerprint-injector';
 import { exec, spawn, execSync, execFileSync } from 'child_process';
 import axios from 'axios';
 import {
@@ -29,6 +31,12 @@ import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const fingerprintGenerator = new FingerprintGenerator({
+    browsers: [{ name: 'chrome', minVersion: 110 }],
+    operatingSystems: ['windows'],
+    devices: ['desktop'],
+});
 
 const app = express();
 const PORT = 3010;
@@ -261,6 +269,98 @@ for (const field of csvImportFields) {
         }
     } catch (err) {
         console.error(`Migration error (${field.name} column):`, err);
+    }
+}
+
+// Migration: fingerprint & use_fingerprint
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasFingerprint = tableInfo.some((col) => col.name === 'fingerprint');
+    if (!hasFingerprint) {
+        db.exec('ALTER TABLE profiles ADD COLUMN fingerprint TEXT;');
+        console.log('Added fingerprint column to profiles table');
+    }
+    const hasUseFingerprint = tableInfo.some((col) => col.name === 'use_fingerprint');
+    if (!hasUseFingerprint) {
+        db.exec('ALTER TABLE profiles ADD COLUMN use_fingerprint INTEGER DEFAULT 1;');
+        console.log('Added use_fingerprint column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (fingerprint columns):', err);
+}
+
+function getOrGenerateFingerprint(profileId) {
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return null;
+
+    if (profile.use_fingerprint === 0) {
+        return null;
+    }
+
+    if (profile.fingerprint) {
+        try {
+            return JSON.parse(profile.fingerprint);
+        } catch (e) {
+            console.error(`Error parsing fingerprint JSON for profile ${profileId}:`, e);
+        }
+    }
+
+    // Generate new fingerprint
+    const generated = fingerprintGenerator.getFingerprint();
+    db.prepare('UPDATE profiles SET fingerprint = ? WHERE id = ?').run(JSON.stringify(generated), profileId);
+    console.log(`[${profile.name}] Generated and saved new fingerprint`);
+    return generated;
+}
+
+async function applyProfileFingerprint(browserContext, profile) {
+    try {
+        if (!profile || profile.use_fingerprint === 0) return;
+        const fpData = getOrGenerateFingerprint(profile.id);
+        if (!fpData) return;
+
+        const fp = fpData.fingerprint || fpData;
+        const userAgent = fp.navigator?.userAgent;
+        const hardwareConcurrency = fp.navigator?.hardwareConcurrency || 8;
+        const deviceMemory = fp.navigator?.deviceMemory || 8;
+        const videoCard = fp.videoCard || { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)' };
+
+        // Inject lightweight stealth & unique hardware fingerprint without touching network/headers/codecs
+        await browserContext.addInitScript(({ ua, concurrency, memory, gpu }) => {
+            // Remove Playwright / Chrome automation flag
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+            // Override hardware concurrency & memory
+            if (concurrency) Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => concurrency });
+            if (memory) Object.defineProperty(navigator, 'deviceMemory', { get: () => memory });
+            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+
+            // Override WebGL Vendor & Renderer for unique GPU fingerprint per profile
+            try {
+                const getParameterFn = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function (parameter) {
+                    if (parameter === 37445) return gpu.vendor || 'Google Inc. (NVIDIA)';
+                    if (parameter === 37446) return gpu.renderer || 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060)';
+                    return getParameterFn.apply(this, arguments);
+                };
+                if (typeof WebGL2RenderingContext !== 'undefined') {
+                    const getParameter2Fn = WebGL2RenderingContext.prototype.getParameter;
+                    WebGL2RenderingContext.prototype.getParameter = function (parameter) {
+                        if (parameter === 37445) return gpu.vendor || 'Google Inc. (NVIDIA)';
+                        if (parameter === 37446) return gpu.renderer || 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060)';
+                        return getParameter2Fn.apply(this, arguments);
+                    };
+                }
+            } catch (e) {}
+        }, {
+            ua: userAgent,
+            concurrency: hardwareConcurrency,
+            memory: deviceMemory,
+            gpu: videoCard
+        });
+
+        console.log(`[${profile.name}] Applied lightweight fingerprint successfully (GPU: ${videoCard.renderer ? videoCard.renderer.split(' ')[0] : 'Standard'})`);
+    } catch (err) {
+        console.error(`[${profile?.name || 'Profile'}] Failed to apply fingerprint:`, err);
     }
 }
 
@@ -1427,8 +1527,34 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (music_search !== undefined) {
         db.prepare('UPDATE profiles SET music_search = ? WHERE id = ?').run(music_search, profileId);
     }
+    if (req.body.use_fingerprint !== undefined) {
+        const val = req.body.use_fingerprint ? 1 : 0;
+        db.prepare('UPDATE profiles SET use_fingerprint = ? WHERE id = ?').run(val, profileId);
+    }
 
     res.json({ success: true });
+});
+
+// Fingerprint management endpoints
+app.post('/api/profiles/:id/random-fingerprint', (req, res) => {
+    const profileId = req.params.id;
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+    const generated = fingerprintGenerator.getFingerprint();
+    db.prepare('UPDATE profiles SET fingerprint = ?, use_fingerprint = 1 WHERE id = ?').run(JSON.stringify(generated), profileId);
+    console.log(`[${profile.name}] Reset/randomized fingerprint`);
+    res.json({ success: true, fingerprint: generated });
+});
+
+app.post('/api/profiles/:id/toggle-fingerprint', (req, res) => {
+    const profileId = req.params.id;
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+    const newUseVal = profile.use_fingerprint === 0 ? 1 : 0;
+    db.prepare('UPDATE profiles SET use_fingerprint = ? WHERE id = ?').run(newUseVal, profileId);
+    res.json({ success: true, use_fingerprint: newUseVal });
 });
 
 app.get('/api/groups', (req, res) => {
@@ -2806,6 +2932,7 @@ app.post('/api/open-profile', async (req, res) => {
         }
 
         const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+        await applyProfileFingerprint(browser, profile);
         await injectProfileCookies(browser, profile);
         manualBrowsers.set(profileId, browser);
 
@@ -2846,6 +2973,7 @@ async function changeAvatar(profile, avatarImage) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
     avatarChangingProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
@@ -3049,6 +3177,7 @@ async function addFavoriteMusic(profile, searchTerm) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
     addingFavoriteMusicProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
@@ -3825,10 +3954,100 @@ async function dismissOnboardingModals(page, log) {
     } catch (e) { /* not found */ }
 }
 
+/**
+ * Kiểm tra trang TikTok Studio Content để xem video đầu tiên có đang scheduled không.
+ * Thử lại (retry) nhiều lần nếu trang load chậm, có lỗi network hoặc bị popup chắn.
+ * Chỉ khi đã load và đọc thành công màn content mới trả về kết quả (Date hoặc null).
+ * Nếu thử lại tối đa maxAttempts lần mà vẫn lỗi thì ném ra Error để dừng upload an toàn.
+ */
+async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
+    log(`Checking TikTok Studio Content for existing scheduled videos (max ${maxAttempts} attempts)...`);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            log(`[Content Check Attempt ${attempt}/${maxAttempts}] Navigating to TikTok Studio Content...`);
+            await page.goto('https://www.tiktok.com/tiktokstudio/content', {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
+            });
+            await page.waitForTimeout(3000);
+
+            // Tự động đóng các popup có thể xuất hiện chắn màn hình
+            await dismissPopups(page).catch(() => null);
+
+            // Kiểm tra xem có bị redirect sang login không
+            if (page.url().includes('login') || page.url().includes('passport')) {
+                throw new Error('Redirected to login page while checking content list.');
+            }
+
+            // Tìm video đầu tiên hoặc kiểm tra container danh sách video
+            const firstStatusLabel = page.locator('[data-tt="components_PublishStageLabel_FlexCenter"]').first();
+            const tableContainer = page.locator('table, [class*="Table"], [class*="content-list"], [data-e2e="studio-content-list"], div:has-text("No content"), div:has-text("No videos")').first();
+
+            // Đợi phần tử xuất hiện (tối đa 15s)
+            let statusLabelVisible = false;
+            try {
+                await firstStatusLabel.waitFor({ timeout: 15000, state: 'attached' });
+                statusLabelVisible = true;
+            } catch (waitErr) {
+                // Kiểm tra xem container có load được không nếu danh sách trống
+                const containerCount = await tableContainer.count().catch(() => 0);
+                if (containerCount === 0) {
+                    throw new Error('Content list elements failed to render within timeout.');
+                }
+            }
+
+            if (!statusLabelVisible) {
+                log('[Content Check] Content list loaded, but no video status label found (empty list or no videos).');
+                return null;
+            }
+
+            // Check xem có icon Alarm (data-testid="Alarm") = đang Scheduled
+            const alarmIcon = firstStatusLabel.locator('[data-testid="Alarm"]');
+            const hasAlarm = (await alarmIcon.count()) > 0;
+
+            if (!hasAlarm) {
+                log('Top video is Public / not scheduled. Using default upload flow (video 1 = immediate publish).');
+                return null;
+            }
+
+            // Extract thời gian từ label
+            const timeEl = firstStatusLabel.locator('[data-tt="components_PublishStageLabel_TUXText"]');
+            await timeEl.waitFor({ timeout: 5000, state: 'visible' }).catch(() => null);
+            const timeText = (await timeEl.textContent() || '').trim();
+            log(`Found scheduled video with time: "${timeText}"`);
+
+            if (!timeText) {
+                throw new Error('Scheduled time text is empty.');
+            }
+
+            // Parse "Jul 13, 3:30 PM" hoặc "Jul 13, 15:30" thành Date
+            const parsed = new Date(timeText);
+            if (Number.isNaN(parsed.getTime())) {
+                throw new Error(`Failed to parse scheduled time text: "${timeText}".`);
+            }
+
+            log(`Existing schedule detected! Base time: ${parsed.toISOString()}`);
+            return parsed;
+        } catch (e) {
+            log(`[Content Check Attempt ${attempt}/${maxAttempts}] Failed: ${e.message}`);
+            if (attempt < maxAttempts) {
+                log(`Retrying content check (attempt ${attempt + 1}/${maxAttempts}) in 3 seconds...`);
+                await page.waitForTimeout(3000);
+                await dismissPopups(page).catch(() => null);
+                await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null);
+            } else {
+                throw new Error(`Failed to load TikTok Studio Content page after ${maxAttempts} attempts: ${e.message}`);
+            }
+        }
+    }
+}
+
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
     let lastScheduledTime = null;
+    let hasExistingSchedule = false;
 
     const browserOptions = {
         headless: false,
@@ -3846,6 +4065,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
 
     const log = (msg) => {
@@ -3876,6 +4096,17 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     ? profile.upload_count
                     : videos.length;
         const uploadLimit = Math.min(videos.length, maxUploads);
+
+        // --- Check for existing scheduled videos before starting upload loop ---
+        if (!limitUploads && profile.auto_increment_schedule) {
+            const existingTime = await checkExistingScheduledTime(page, log);
+            if (existingTime) {
+                lastScheduledTime = existingTime;
+                hasExistingSchedule = true;
+                log(`Existing schedule detected. ALL ${Math.min(videos.length, maxUploads)} videos will be scheduled from base: ${existingTime.toISOString()}`);
+            }
+        }
+        // --- End content check ---
 
         for (let i = 0; i < videos.length; i++) {
             if (uploadedCount >= maxUploads) {
@@ -4480,7 +4711,34 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             if (!limitUploads && profile.auto_increment_schedule) {
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
-                    if (i === 0) {
+                    if (hasExistingSchedule) {
+                        // ALL videos scheduled — existing scheduled batch detected on TikTok
+                        // No immediate publish for any video
+                        // 1. Click "Schedule" radio
+                        const scheduleRadio = 'input[value="schedule"]';
+                        const scheduleRadioInput = page.locator(scheduleRadio).first();
+                        await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
+                        await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
+                        log(`Selected "Schedule" option (existing batch).`);
+                        await page.waitForTimeout(3000);
+
+                        // 2. Resolve inputs
+                        const scheduleInputs = await resolveScheduleInputs(page, log);
+
+                        // 3. Increment from lastScheduledTime
+                        const intervalMin = profile.schedule_interval || 5;
+                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
+                        const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
+                        const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
+
+                        log(`Video ${i + 1}: Scheduling at ${dateValue} ${timeValue} (from existing batch).`);
+                        await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
+                        await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
+                        await page.waitForTimeout(2000);
+
+                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
+
+                    } else if (i === 0) {
                         log(`Video 1: Posting immediately (Public).`);
                         // Public is usually default, but we can ensure it if needed
                     } else {
@@ -4903,6 +5161,7 @@ async function runEngageSession(profile) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
@@ -5668,6 +5927,7 @@ async function runTikTokLogin(profile) {
     }
 
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await applyProfileFingerprint(browser, profile);
     const session = {
         browser,
         stop: false,

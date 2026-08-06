@@ -11,7 +11,9 @@ import {
   Music,
   Zap,
   Trash2,
-  ShieldCheck
+  ShieldCheck,
+  Fingerprint,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -37,6 +39,8 @@ const EditProfileModal = ({
   onUpdateRemoveTitle,
   onUpdateNeedContentCheck,
   onUpdateRenderVideoLong,
+  onUpdateUseFingerprint,
+  onResetFingerprint,
   onSelectAvatar,
   selectedAvatarPath,
   musicSearchTerm,
@@ -458,6 +462,45 @@ const EditProfileModal = ({
                     </span>
                   </div>
                 </label>
+              </div>
+
+              {/* Browser Fingerprint */}
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={profile.use_fingerprint !== 0}
+                      onChange={(e) => onUpdateUseFingerprint && onUpdateUseFingerprint(profile.id, e.target.checked)}
+                      style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                    />
+                    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                        <Fingerprint size={14} color="#3b82f6" style={{ flexShrink: 0 }} />
+                        Giả lập Vân tay Trình duyệt (Browser Fingerprint)
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        Bật: tự động gán & duy trì vân tay trình duyệt cố định cho profile. Tắt: chạy Chrome mặc định.
+                      </span>
+                    </div>
+                  </label>
+                  {profile.use_fingerprint !== 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '6px', paddingTop: '6px', borderTop: '1px dashed rgba(255, 255, 255, 0.1)' }}>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        {profile.fingerprint ? 'Đã có vân tay cố định trong DB' : 'Chưa có vân tay (Sẽ tự tạo khi mở Chrome)'}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => onResetFingerprint && onResetFingerprint(profile.id)}
+                        style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      >
+                        <RefreshCw size={12} />
+                        Tạo Vân Tay Mới
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
