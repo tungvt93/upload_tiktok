@@ -1,27 +1,57 @@
 :root {
+  /* Brand & status colors */
   --primary: #FF3FB6;
   --secondary: #6366F1;
   --accent: #38BDF8;
-  --bg: #0B0E14;
-  --card-bg: rgba(23, 27, 34, 0.8);
-  --text: #F1F5F9;
-  --text-muted: #94A3B8;
   --success: #10B981;
   --warning: #FBBF24;
   --error: #EF4444;
-  --border: rgba(255, 255, 255, 0.08);
 
+  /* Theme tokens — dark is the default */
+  --bg: #0B0E14;
+  --bg-gradient-from: #1e1b4b;
+  --card-bg: rgba(23, 27, 34, 0.8);
+  --text: #F1F5F9;
+  --text-muted: #94A3B8;
+  --border: rgba(255, 255, 255, 0.08);
+  --surface-1: rgba(255, 255, 255, 0.05);
+  --surface-2: rgba(255, 255, 255, 0.03);
+  --surface-hover: rgba(255, 255, 255, 0.1);
+  --surface-row: rgba(255, 255, 255, 0.04);
+  --input-bg: rgba(0, 0, 0, 0.2);
+  --overlay: rgba(15, 23, 42, 0.7);
+  --divider: rgba(255, 255, 255, 0.05);
+  --shadow-card: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+
+  /* Geometry */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-xl: 20px;
-
   --sidebar-width: 280px;
   --header-height: 64px;
 
-  --shadow-card: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-
+  color-scheme: dark;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Light theme — activated by <html data-theme="light"> */
+[data-theme='light'] {
+  --bg: #EEF2F7;
+  --bg-gradient-from: #c7d2fe;
+  --card-bg: rgba(255, 255, 255, 0.85);
+  --text: #0F172A;
+  --text-muted: #64748B;
+  --border: rgba(15, 23, 42, 0.12);
+  --surface-1: rgba(15, 23, 42, 0.05);
+  --surface-2: rgba(15, 23, 42, 0.04);
+  --surface-hover: rgba(15, 23, 42, 0.08);
+  --surface-row: rgba(15, 23, 42, 0.04);
+  --input-bg: rgba(15, 23, 42, 0.05);
+  --overlay: rgba(15, 23, 42, 0.5);
+  --divider: rgba(15, 23, 42, 0.08);
+  --shadow-card: 0 8px 32px 0 rgba(15, 23, 42, 0.12);
+  color-scheme: light;
 }
 
 /* ---------- Global reset ---------- */
@@ -38,7 +68,7 @@ html {
 }
 
 body {
-  background: radial-gradient(circle at top right, #1e1b4b, #0B0E14 40%);
+  background: radial-gradient(circle at top right, var(--bg-gradient-from), var(--bg) 40%);
   background-attachment: fixed;
   color: var(--text);
   min-height: 100vh;
@@ -199,7 +229,7 @@ button {
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
@@ -222,6 +252,27 @@ button {
   gap: 8px;
 }
 
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.theme-toggle:hover {
+  background: var(--surface-hover);
+}
+
 .status-row {
   display: flex;
   justify-content: space-between;
@@ -234,7 +285,7 @@ button {
 }
 
 .status-row strong {
-  color: white;
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -345,13 +396,13 @@ button {
 }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--surface-1);
   color: var(--text);
   border: 1px solid var(--border);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--surface-hover);
 }
 
 .btn-sm {
@@ -433,8 +484,8 @@ button {
 
 /* Profile card action buttons (OPEN / START / ENGAGE / LOGIN / AVATAR / FAVORITES) */
 .btn-card {
-  background: rgba(255, 255, 255, 0.05);
-  color: white;
+  background: var(--surface-1);
+  color: var(--text);
   border: 1px solid var(--border);
 }
 
@@ -495,11 +546,11 @@ button {
 
 /* ---------- Inputs ---------- */
 .input {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 12px 16px;
-  color: white;
+  color: var(--text);
   font-size: 0.9rem;
   transition: border-color 0.2s;
 }
@@ -550,7 +601,7 @@ button {
   cursor: pointer;
   padding: 10px;
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface-2);
   border: 1px solid var(--border);
   user-select: none;
 }
@@ -693,7 +744,7 @@ button {
 }
 
 .empty-state-icon {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface-2);
   width: 64px;
   height: 64px;
   border-radius: 50%;
@@ -704,7 +755,7 @@ button {
 }
 
 .empty-state-title {
-  color: white;
+  color: var(--text);
   margin-bottom: 8px;
 }
 
@@ -712,7 +763,7 @@ button {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.7);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -915,7 +966,7 @@ button {
   align-items: center;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--surface-row);
   font-size: 0.85rem;
 }
 
@@ -929,7 +980,7 @@ button {
 
 .divider {
   height: 1px;
-  background: var(--border);
+  background: var(--divider);
   border: none;
   margin: 12px 0;
 }

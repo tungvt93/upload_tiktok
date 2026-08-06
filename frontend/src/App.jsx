@@ -1,5 +1,6 @@
 import React from 'react';
 import useProfiles from './hooks/useProfiles';
+import useTheme from './hooks/useTheme';
 import Sidebar from './components/Sidebar';
 import Toast from './components/Toast';
 import ProfilesView from './components/ProfilesView';
@@ -12,6 +13,7 @@ import FolderSelectOverlay from './components/FolderSelectOverlay';
 // the useProfiles hook; this component only composes presentational views.
 const App = () => {
   const ui = useProfiles();
+  const { theme, toggleTheme } = useTheme();
   const { activeTab, message } = ui;
 
   return (
@@ -22,6 +24,8 @@ const App = () => {
           onTabChange={ui.setActiveTab}
           profilesCount={ui.profiles.length}
           maxConcurrency={ui.config.maxConcurrency}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
 
         <main className="content-area">

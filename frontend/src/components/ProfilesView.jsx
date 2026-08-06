@@ -242,7 +242,7 @@ const ProfilesView = ({
                 checked={limitUploads}
                 onChange={(e) => setLimitUploads(e.target.checked)}
               />
-              <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'white' }}>Bật</span>
+              <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text)' }}>Bật</span>
             </label>
           </label>
           {limitUploads && (
@@ -352,7 +352,7 @@ const ProfilesView = ({
 
       {profiles.length > 0 && filteredProfiles.length === 0 && (
         <div className="empty-state empty-state--compact">
-          <p style={{ color: 'white', marginBottom: '8px', fontWeight: '600' }}>No profiles match this filter</p>
+          <p style={{ color: 'var(--text)', marginBottom: '8px', fontWeight: '600' }}>No profiles match this filter</p>
           <p style={{ fontSize: '0.9rem' }}>Change the group filter above to see profiles.</p>
         </div>
       )}

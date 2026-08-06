@@ -272,7 +272,7 @@ const EditProfileModal = ({
                 <div style={{
                   padding: '10px',
                   borderRadius: '12px',
-                  background: 'rgba(255, 255, 255, 0.03)',
+                  background: 'var(--surface-2)',
                   border: '1px solid var(--border)'
                 }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
@@ -290,7 +290,7 @@ const EditProfileModal = ({
                 </div>
 
                 {profile.auto_increment_schedule === 1 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingLeft: '28px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid var(--divider)', paddingLeft: '28px' }}>
                     <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)' }}>Khoảng cách:</span>
                     {[5, 10, 15, 20].map((mins) => (
                       <label key={mins} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>

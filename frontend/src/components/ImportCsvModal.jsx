@@ -51,7 +51,7 @@ const ImportCsvModal = ({
             <div style={{
               padding: '20px',
               borderRadius: '14px',
-              background: 'rgba(255,255,255,0.03)',
+              background: 'var(--surface-2)',
               border: '2px dashed var(--border)',
               textAlign: 'center'
             }}>

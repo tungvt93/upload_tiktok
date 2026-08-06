@@ -53,7 +53,7 @@ const GroupsView = ({
         }}
       >
         <Users size={40} style={{ margin: '0 auto 16px', opacity: 0.35 }} />
-        <p style={{ color: 'white', fontWeight: '600', marginBottom: '8px' }}>Chưa có nhóm</p>
+        <p style={{ color: 'var(--text)', fontWeight: '600', marginBottom: '8px' }}>Chưa có nhóm</p>
         <p style={{ fontSize: '0.9rem' }}>Nhập tên và bấm Create để thêm nhóm đầu tiên.</p>
       </div>
     ) : (
