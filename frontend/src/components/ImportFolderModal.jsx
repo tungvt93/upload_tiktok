@@ -18,30 +18,20 @@ const ImportFolderModal = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15, 23, 42, 0.7)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: '24px'
-        }}
+        className="modal-backdrop"
         onClick={() => closeImportFolderModal()}
       >
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 12, scale: 0.98 }}
-          className="glass"
-          style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+          className="glass modal-card modal-card--md"
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div className="modal-header">
             <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Import Export Folder</h3>
-              <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+              <h3 className="modal-title">Import Export Folder</h3>
+              <p className="modal-subtitle">
                 Import danh sách tài khoản kèm cookie từ thư mục export
               </p>
             </div>
@@ -49,20 +39,14 @@ const ImportFolderModal = ({
               type="button"
               onClick={() => closeImportFolderModal()}
               disabled={isImporting}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: isImporting ? 'not-allowed' : 'pointer',
-                opacity: isImporting ? 0.45 : 1
-              }}
+              className="modal-close"
               aria-label="Close import folder modal"
             >
               <X size={18} />
             </button>
           </div>
 
-          <div style={{ display: 'grid', gap: '16px' }}>
+          <div className="modal-body">
             <div style={{ display: 'grid', gap: '8px' }}>
               <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                 Đường dẫn thư mục tuyệt đối trên server:
@@ -73,16 +57,7 @@ const ImportFolderModal = ({
                 value={importFolderPath}
                 onChange={(e) => setImportFolderPath(e.target.value)}
                 disabled={isImporting}
-                style={{
-                  padding: '12px',
-                  borderRadius: '10px',
-                  background: 'rgba(0,0,0,0.3)',
-                  color: 'white',
-                  border: '1px solid var(--border)',
-                  fontSize: '0.85rem',
-                  width: '100%',
-                  boxSizing: 'border-box'
-                }}
+                className="input"
               />
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
                 * Thư mục này phải chứa file <code>config.json</code> và thư mục con <code>cookies/</code> chứa các file <code>.json</code> cookie.<br/>
@@ -132,7 +107,7 @@ const ImportFolderModal = ({
               </motion.div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+            <div className="modal-footer">
               <button type="button" className="btn btn-secondary" onClick={() => closeImportFolderModal()} disabled={isImporting}>
                 Đóng
               </button>
@@ -140,7 +115,6 @@ const ImportFolderModal = ({
                 className="btn btn-primary"
                 onClick={handleImportFolder}
                 disabled={isImporting || !importFolderPath.trim()}
-                style={{ gap: '8px' }}
               >
                 {isImporting ? (
                   <>

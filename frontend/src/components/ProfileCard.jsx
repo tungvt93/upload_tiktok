@@ -38,8 +38,7 @@ const ProfileCard = React.forwardRef(({
     initial={{ opacity: 0, scale: 0.95 }}
     animate={{ opacity: 1, scale: 1 }}
     exit={{ opacity: 0, scale: 0.95 }}
-    className="glass card"
-    style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+    className="glass card profile-card"
   >
     <ProfileCardHeader
       profile={profile}

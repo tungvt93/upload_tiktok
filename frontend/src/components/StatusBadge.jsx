@@ -8,7 +8,7 @@ const StatusBadge = ({ status, withDot = true, showLabel = true, uppercase = tru
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-      {withDot && <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: color }} />}
+      {withDot && <div className="status-dot" style={{ width: '8px', height: '8px', marginLeft: 0, backgroundColor: color }} />}
       {showLabel && (
         <span
           style={{

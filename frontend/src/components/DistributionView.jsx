@@ -52,15 +52,14 @@ const DistributionView = ({
 
   return (
     <section>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+      <div className="page-header">
         <div>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '4px' }}>Phân Phối Video</h2>
-          <p style={{ color: 'var(--text-muted)' }}>Chọn profile và phân phối video vào các folder upload</p>
+          <h2 className="page-title">Phân Phối Video</h2>
+          <p className="page-subtitle">Chọn profile và phân phối video vào các folder upload</p>
         </div>
         <button
           className="btn btn-primary"
           onClick={() => setShowAddDistProfileModal(true)}
-          style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
         >
           <Plus size={18} /> Thêm Profile
         </button>
@@ -70,13 +69,12 @@ const DistributionView = ({
       <div style={{ marginBottom: '24px' }}>
         {distributionProfiles.length === 0 ? (
           <div className="glass" style={{ padding: '48px 24px', borderRadius: '20px', textAlign: 'center' }}>
-            <Share2 size={40} color="var(--text-muted)" style={{ marginBottom: '16px', opacity: 0.5 }} />
+            <Share2 size={40} color="var(--text-muted)" style={{ margin: '0 auto 16px', opacity: 0.5 }} />
             <h3 style={{ fontWeight: '600', marginBottom: '8px', color: 'var(--text-muted)' }}>Chưa có profile nào được chọn</h3>
             <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>Thêm profile để bắt đầu phân phối video</p>
             <button
               className="btn btn-primary"
               onClick={() => setShowAddDistProfileModal(true)}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
             >
               <Plus size={18} /> Thêm Profile
             </button>
@@ -90,8 +88,7 @@ const DistributionView = ({
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="glass card"
-                style={{ overflow: 'hidden' }}
+                className="glass card profile-card"
               >
                 <div style={{ padding: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
@@ -103,8 +100,7 @@ const DistributionView = ({
                     </div>
                     <button
                       onClick={() => handleRemoveDistProfile(dp.profile_id)}
-                      className="btn btn-secondary"
-                      style={{ padding: '6px 10px', minWidth: 'unset' }}
+                      className="btn btn-secondary btn-sm"
                       title="Xoá khỏi danh sách"
                     >
                       <Trash2 size={16} />
@@ -129,18 +125,9 @@ const DistributionView = ({
       {distributionProfiles.length > 0 && (
         <div style={{ marginTop: '24px' }}>
           <button
-            className="btn btn-primary"
+            className="btn btn-primary btn-block"
             onClick={openDistributeModal}
             disabled={isDistributing}
-            style={{
-              width: '100%',
-              padding: '14px 20px',
-              fontSize: '1.05rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px'
-            }}
           >
             <Share2 size={20} /> Phân Phối Video
           </button>

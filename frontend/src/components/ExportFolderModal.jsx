@@ -19,30 +19,20 @@ const ExportFolderModal = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15, 23, 42, 0.7)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: '24px'
-        }}
+        className="modal-backdrop"
         onClick={() => closeExportFolderModal()}
       >
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 12, scale: 0.98 }}
-          className="glass"
-          style={{ width: '100%', maxWidth: '540px', padding: '24px', borderRadius: '20px' }}
+          className="glass modal-card modal-card--lg"
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div className="modal-header">
             <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Export Folder (Cookie Login)</h3>
-              <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+              <h3 className="modal-title">Export Folder (Cookie Login)</h3>
+              <p className="modal-subtitle">
                 Xuất {selectedCount} profile đã chọn thành thư mục chuẩn format TikTok_Export
               </p>
             </div>
@@ -50,20 +40,14 @@ const ExportFolderModal = ({
               type="button"
               onClick={() => closeExportFolderModal()}
               disabled={isExporting}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: isExporting ? 'not-allowed' : 'pointer',
-                opacity: isExporting ? 0.45 : 1
-              }}
+              className="modal-close"
               aria-label="Close export folder modal"
             >
               <X size={18} />
             </button>
           </div>
 
-          <div style={{ display: 'grid', gap: '16px' }}>
+          <div className="modal-body">
             <div style={{ display: 'grid', gap: '8px' }}>
               <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                 Đường dẫn thư mục xuất tuyệt đối (Tùy chọn, để trống sẽ tự tạo thư mục mới):
@@ -74,16 +58,7 @@ const ExportFolderModal = ({
                 value={exportFolderPath}
                 onChange={(e) => setExportFolderPath(e.target.value)}
                 disabled={isExporting}
-                style={{
-                  padding: '12px',
-                  borderRadius: '10px',
-                  background: 'rgba(0,0,0,0.3)',
-                  color: 'white',
-                  border: '1px solid var(--border)',
-                  fontSize: '0.85rem',
-                  width: '100%',
-                  boxSizing: 'border-box'
-                }}
+                className="input"
               />
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
                 * Kết quả xuất bao gồm file <code>config.json</code>, <code>archive.json</code> và thư mục <code>cookies/</code> chứa cookie JSON từng tài khoản.<br/>
@@ -95,13 +70,8 @@ const ExportFolderModal = ({
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
-                style={{
-                  padding: '16px',
-                  borderRadius: '12px',
-                  background: 'rgba(34, 197, 94, 0.08)',
-                  border: '1px solid rgba(34, 197, 94, 0.25)',
-                  fontSize: '0.85rem'
-                }}
+                className="result-panel result-panel--success"
+                style={{ fontSize: '0.85rem' }}
               >
                 <div style={{ fontWeight: '700', color: '#4ADE80', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <CheckCircle2 size={16} />
@@ -122,7 +92,7 @@ const ExportFolderModal = ({
               </motion.div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+            <div className="modal-footer">
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -136,20 +106,15 @@ const ExportFolderModal = ({
                 className="btn btn-primary"
                 onClick={() => handleExportFolder(false)}
                 disabled={isExporting || selectedCount === 0}
-                style={{ gap: '8px' }}
               >
                 <FolderArchive size={16} />
                 {isExporting ? 'Đang export...' : 'Xuất ra Thư mục'}
               </button>
               <button
                 type="button"
-                className="btn btn-primary"
+                className="btn btn-primary btn-blue-gradient"
                 onClick={() => handleExportFolder(true)}
                 disabled={isExporting || selectedCount === 0}
-                style={{
-                  gap: '8px',
-                  background: 'linear-gradient(135deg, #3B82F6 0%, #2563EB 100%)'
-                }}
               >
                 <Download size={16} />
                 {isExporting ? 'Đang export...' : 'Xuất & Tải .ZIP'}

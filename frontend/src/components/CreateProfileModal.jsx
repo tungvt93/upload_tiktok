@@ -40,49 +40,33 @@ const CreateProfileModal = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(15, 23, 42, 0.7)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-            padding: '24px'
-          }}
+          className="modal-backdrop"
           onClick={() => closeCreateProfileModal()}
         >
           <motion.div
             initial={{ opacity: 0, y: 12, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
-            className="glass"
-            style={{ width: '100%', maxWidth: '460px', padding: '24px', borderRadius: '20px' }}
+            className="glass modal-card modal-card--sm"
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <div className="modal-header">
               <div>
-                <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Create Profile</h3>
-                <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Add a new TikTok profile and assign a group</p>
+                <h3 className="modal-title">Create Profile</h3>
+                <p className="modal-subtitle">Add a new TikTok profile and assign a group</p>
               </div>
               <button
                 type="button"
                 onClick={() => closeCreateProfileModal()}
                 disabled={busy}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  cursor: busy ? 'not-allowed' : 'pointer',
-                  opacity: busy ? 0.45 : 1
-                }}
+                className="modal-close"
                 aria-label="Close create profile modal"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div style={{ display: 'grid', gap: '16px' }}>
+            <div className="modal-body">
               <div className="input-group">
                 <label>Profile Name</label>
                 <input
@@ -138,7 +122,7 @@ const CreateProfileModal = ({
                     Browse
                   </button>
                 </div>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
+                <p className="input-hint">
                   Optional. Leave empty to use the global Video Source Folder.
                 </p>
               </div>
@@ -154,62 +138,52 @@ const CreateProfileModal = ({
                   disabled={busy}
                   rows={3}
                 />
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
+                <p className="input-hint">
                   Optional. List of managed channel IDs, comma-separated.
                 </p>
               </div>
 
-              <div className="input-group" style={{ marginBottom: '12px' }}>
-                <ToggleField
-                  checked={newProfileNeedsRender}
-                  onChange={setNewProfileNeedsRender}
-                  disabled={busy}
-                  label="Render video bypass"
-                  description="Mặc định bật. Tắt đi nếu muốn giữ nguyên video gốc."
-                />
-              </div>
+              <ToggleField
+                checked={newProfileNeedsRender}
+                onChange={setNewProfileNeedsRender}
+                disabled={busy}
+                label="Render video bypass"
+                description="Mặc định bật. Tắt đi nếu muốn giữ nguyên video gốc."
+              />
 
-              <div className="input-group" style={{ marginBottom: '12px' }}>
-                <ToggleField
-                  checked={newProfileRenderConcatVideo}
-                  onChange={setNewProfileRenderConcatVideo}
-                  disabled={busy}
-                  label="Render concat video"
-                  description="Nối video tải về với 1 video ngẫu nhiên trong thư mục concat_videos."
-                />
-              </div>
+              <ToggleField
+                checked={newProfileRenderConcatVideo}
+                onChange={setNewProfileRenderConcatVideo}
+                disabled={busy}
+                label="Render concat video"
+                description="Nối video tải về với 1 video ngẫu nhiên trong thư mục concat_videos."
+              />
 
-              <div className="input-group" style={{ marginBottom: '12px' }}>
-                <ToggleField
-                  checked={newProfileRemoveTitle}
-                  onChange={setNewProfileRemoveTitle}
-                  disabled={busy}
-                  label="Xóa tiêu đề khi upload"
-                  description="Mặc định bật. Tắt đi nếu muốn giữ lại tiêu đề gốc làm caption."
-                />
-              </div>
+              <ToggleField
+                checked={newProfileRemoveTitle}
+                onChange={setNewProfileRemoveTitle}
+                disabled={busy}
+                label="Xóa tiêu đề khi upload"
+                description="Mặc định bật. Tắt đi nếu muốn giữ lại tiêu đề gốc làm caption."
+              />
 
-              <div className="input-group" style={{ marginBottom: '12px' }}>
-                <ToggleField
-                  checked={newProfileRenderVideoLong}
-                  onChange={setNewProfileRenderVideoLong}
-                  disabled={busy}
-                  label="Render video dài (>3p cắt nhỏ, up tất cả ngay)"
-                  description="Mặc định tắt. Tự động cắt video dài thành nhiều phần, upload toàn bộ."
-                />
-              </div>
+              <ToggleField
+                checked={newProfileRenderVideoLong}
+                onChange={setNewProfileRenderVideoLong}
+                disabled={busy}
+                label="Render video dài (>3p cắt nhỏ, up tất cả ngay)"
+                description="Mặc định tắt. Tự động cắt video dài thành nhiều phần, upload toàn bộ."
+              />
 
-              <div className="input-group" style={{ marginBottom: '24px' }}>
-                <ToggleField
-                  checked={newProfileNeedContentCheck}
-                  onChange={setNewProfileNeedContentCheck}
-                  disabled={busy}
-                  label="Kiểm tra nội dung (Content Check)"
-                  description="Mặc định bật. Tắt đi nếu muốn bỏ qua Content Check Lite của TikTok khi upload."
-                />
-              </div>
+              <ToggleField
+                checked={newProfileNeedContentCheck}
+                onChange={setNewProfileNeedContentCheck}
+                disabled={busy}
+                label="Kiểm tra nội dung (Content Check)"
+                description="Mặc định bật. Tắt đi nếu muốn bỏ qua Content Check Lite của TikTok khi upload."
+              />
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+              <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => closeCreateProfileModal()} disabled={busy}>
                   Cancel
                 </button>

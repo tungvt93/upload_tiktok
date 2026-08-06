@@ -4,28 +4,29 @@ import { Video, AlertCircle, ShieldCheck } from 'lucide-react';
 // The "System Settings" tab: global video source folder + max concurrency.
 const SettingsView = ({ config, setConfig, updateConfig }) => (
   <section>
-    <div style={{ marginBottom: '32px' }}>
-      <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '4px' }}>System Configuration</h2>
-      <p style={{ color: 'var(--text-muted)' }}>Fine-tune your automation engine</p>
+    <div className="page-header">
+      <div>
+        <h2 className="page-title">System Configuration</h2>
+        <p className="page-subtitle">Fine-tune your automation engine</p>
+      </div>
     </div>
 
-    <div className="glass" style={{ padding: '32px', borderRadius: '24px', maxWidth: '600px' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div className="glass settings-card">
+      <div className="settings-stack">
         <div>
           <label style={{ display: 'block', marginBottom: '10px', fontSize: '0.95rem', fontWeight: '600' }}>
             Video Source Folder
           </label>
-          <div style={{ position: 'relative' }}>
-            <Video size={18} style={{ position: 'absolute', left: '14px', top: '14px', color: 'var(--text-muted)' }} />
+          <div className="input-with-icon">
+            <Video size={18} />
             <input
               className="input"
-              style={{ paddingLeft: '44px', width: '100%' }}
               value={config.videoFolder}
               onChange={(e) => setConfig({ ...config, videoFolder: e.target.value })}
               placeholder="/Users/path/to/videos"
             />
           </div>
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+          <p className="input-hint">
             Specify the absolute path where your .mp4 files are located.
           </p>
         </div>
@@ -47,14 +48,14 @@ const SettingsView = ({ config, setConfig, updateConfig }) => (
               {config.maxConcurrency}
             </div>
           </div>
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+          <p className="input-hint">
             Control how many browser instances run concurrently.
           </p>
         </div>
 
         <button
-          className="btn btn-primary"
-          style={{ width: '100%', marginTop: '12px', justifyContent: 'center' }}
+          className="btn btn-primary btn-block"
+          style={{ marginTop: '12px' }}
           onClick={updateConfig}
         >
           Save Changes
@@ -62,15 +63,15 @@ const SettingsView = ({ config, setConfig, updateConfig }) => (
       </div>
     </div>
 
-    <div style={{ marginTop: '32px', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '24px', maxWidth: '600px' }}>
-      <div className="glass" style={{ padding: '20px', borderRadius: '16px' }}>
+    <div className="info-grid" style={{ marginTop: '32px', maxWidth: '600px' }}>
+      <div className="glass tip-card">
         <AlertCircle size={20} color="var(--accent)" style={{ marginBottom: '12px' }} />
         <h4 style={{ fontSize: '0.9rem', marginBottom: '6px' }}>Quick Tip</h4>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
           Each profile uses a separate browser context. Make sure you have enough RAM for parallel runs.
         </p>
       </div>
-      <div className="glass" style={{ padding: '20px', borderRadius: '16px' }}>
+      <div className="glass tip-card">
         <ShieldCheck size={20} color="var(--success)" style={{ marginBottom: '12px' }} />
         <h4 style={{ fontSize: '0.9rem', marginBottom: '6px' }}>Database Secure</h4>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>

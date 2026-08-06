@@ -20,40 +20,25 @@ const AddDistProfileModal = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15, 23, 42, 0.7)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: '24px'
-        }}
+        className="modal-backdrop"
         onClick={onClose}
       >
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 12, scale: 0.98 }}
-          className="glass"
-          style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+          className="glass modal-card modal-card--md"
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div className="modal-header">
             <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Thêm Profile</h3>
-              <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Chọn profile để thêm vào danh sách phân phối</p>
+              <h3 className="modal-title">Thêm Profile</h3>
+              <p className="modal-subtitle">Chọn profile để thêm vào danh sách phân phối</p>
             </div>
             <button
               type="button"
               onClick={onClose}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: 'pointer'
-              }}
+              className="modal-close"
               aria-label="Close modal"
             >
               <X size={18} />
@@ -61,7 +46,7 @@ const AddDistProfileModal = ({
           </div>
 
           <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            <label className="field-label">
               Group
               <select
                 className="input"
@@ -109,7 +94,7 @@ const AddDistProfileModal = ({
                         return next;
                       });
                     }}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                    className="checkbox"
                   />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{p.name}</div>
@@ -122,7 +107,7 @@ const AddDistProfileModal = ({
             )}
           </div>
 
-          <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+          <div className="modal-footer">
             <button className="btn btn-secondary" onClick={onClose}>
               Huỷ
             </button>

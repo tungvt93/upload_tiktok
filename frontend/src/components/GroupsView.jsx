@@ -15,11 +15,13 @@ const GroupsView = ({
   deleteGroup
 }) => (
   <section>
-    <div style={{ marginBottom: '28px' }}>
-      <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '8px' }}>Groups</h2>
-      <p style={{ color: 'var(--text-muted)', maxWidth: '640px', lineHeight: 1.5 }}>
-        Tạo và đổi tên nhóm để gom profile. Gán profile vào nhóm từ tab Profiles; xóa nhóm chỉ khi không còn profile gán.
-      </p>
+    <div className="page-header">
+      <div>
+        <h2 className="page-title">Groups</h2>
+        <p className="page-subtitle" style={{ maxWidth: '640px', lineHeight: 1.5 }}>
+          Tạo và đổi tên nhóm để gom profile. Gán profile vào nhóm từ tab Profiles; xóa nhóm chỉ khi không còn profile gán.
+        </p>
+      </div>
     </div>
 
     <div className="glass" style={{ padding: '20px 24px', borderRadius: '20px', marginBottom: '28px' }}>
@@ -32,7 +34,7 @@ const GroupsView = ({
           style={{ flex: '1 1 220px', minWidth: '200px', padding: '10px 14px' }}
           onKeyDown={(e) => e.key === 'Enter' && addGroup()}
         />
-        <button type="button" className="btn btn-primary" onClick={addGroup} style={{ padding: '10px 20px', gap: '8px' }}>
+        <button type="button" className="btn btn-primary" onClick={addGroup}>
           <Plus size={18} />
           Create
         </button>
@@ -57,19 +59,7 @@ const GroupsView = ({
     ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {groups.map((g) => (
-          <div
-            key={g.id}
-            className="glass"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '14px',
-              flexWrap: 'wrap',
-              padding: '16px 20px',
-              borderRadius: '16px',
-              border: '1px solid var(--border)'
-            }}
-          >
+          <div key={g.id} className="glass group-row">
             {editingGroupId === g.id ? (
               <>
                 <input
@@ -85,16 +75,16 @@ const GroupsView = ({
                 />
                 <button
                   type="button"
+                  className="icon-btn icon-btn--success"
                   onClick={() => updateGroupName(g.id, editingGroupValue)}
-                  style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '4px' }}
                   aria-label="Save name"
                 >
                   <Check size={18} />
                 </button>
                 <button
                   type="button"
+                  className="icon-btn icon-btn--danger"
                   onClick={() => setEditingGroupId(null)}
-                  style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '4px' }}
                   aria-label="Cancel rename"
                 >
                   <X size={18} />
@@ -102,25 +92,25 @@ const GroupsView = ({
               </>
             ) : (
               <>
-                <span style={{ flex: '1 1 180px', fontWeight: '700', fontSize: '1rem' }}>{g.name}</span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                <span className="group-name">{g.name}</span>
+                <span className="group-count">
                   {g.profile_count ?? 0} profile{g.profile_count === 1 ? '' : 's'}
                 </span>
                 <button
                   type="button"
+                  className="icon-btn"
                   onClick={() => {
                     setEditingGroupId(g.id);
                     setEditingGroupValue(g.name);
                   }}
-                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '6px' }}
                   aria-label="Rename group"
                 >
                   <Edit3 size={18} />
                 </button>
                 <button
                   type="button"
+                  className="icon-btn icon-btn--danger"
                   onClick={() => deleteGroup(g.id)}
-                  style={{ background: 'none', border: 'none', color: 'rgba(239, 68, 68, 0.65)', cursor: 'pointer', padding: '6px' }}
                   aria-label="Delete group"
                 >
                   <Trash2 size={18} />

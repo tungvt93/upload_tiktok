@@ -15,8 +15,8 @@ const App = () => {
   const { activeTab, message } = ui;
 
   return (
-    <div className="container" style={{ padding: '40px 20px', maxWidth: '1400px', margin: '0 auto' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: '40px' }}>
+    <div className="app-container">
+      <div className="app-layout">
         <Sidebar
           activeTab={activeTab}
           onTabChange={ui.setActiveTab}
@@ -24,7 +24,7 @@ const App = () => {
           maxConcurrency={ui.config.maxConcurrency}
         />
 
-        <main>
+        <main className="content-area">
           <Toast message={message} />
 
           {activeTab === 'profiles' ? (

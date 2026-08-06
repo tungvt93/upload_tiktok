@@ -19,30 +19,20 @@ const ImportCsvModal = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15, 23, 42, 0.7)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: '24px'
-        }}
+        className="modal-backdrop"
         onClick={() => closeImportModal()}
       >
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 12, scale: 0.98 }}
-          className="glass"
-          style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+          className="glass modal-card modal-card--md"
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div className="modal-header">
             <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Import CSV Profiles</h3>
-              <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+              <h3 className="modal-title">Import CSV Profiles</h3>
+              <p className="modal-subtitle">
                 Tạo hàng loạt profile từ file CSV
               </p>
             </div>
@@ -50,20 +40,14 @@ const ImportCsvModal = ({
               type="button"
               onClick={() => closeImportModal()}
               disabled={isImporting}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: isImporting ? 'not-allowed' : 'pointer',
-                opacity: isImporting ? 0.45 : 1
-              }}
+              className="modal-close"
               aria-label="Close import modal"
             >
               <X size={18} />
             </button>
           </div>
 
-          <div style={{ display: 'grid', gap: '16px' }}>
+          <div className="modal-body">
             <div style={{
               padding: '20px',
               borderRadius: '14px',
@@ -71,7 +55,7 @@ const ImportCsvModal = ({
               border: '2px dashed var(--border)',
               textAlign: 'center'
             }}>
-              <Upload size={28} color="var(--text-muted)" style={{ marginBottom: '12px', opacity: 0.5 }} />
+              <Upload size={28} color="var(--text-muted)" style={{ margin: '0 auto 12px', opacity: 0.5 }} />
               <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
                 File CSV cần có các cột:
               </p>
@@ -83,16 +67,10 @@ const ImportCsvModal = ({
                 accept=".csv"
                 onChange={handleFileSelect}
                 disabled={isImporting}
+                className="input"
                 style={{
-                  display: 'block',
                   width: '100%',
-                  padding: '12px',
-                  borderRadius: '10px',
-                  background: 'rgba(0,0,0,0.3)',
-                  color: 'white',
-                  border: '1px solid var(--border)',
-                  cursor: isImporting ? 'not-allowed' : 'pointer',
-                  fontSize: '0.85rem'
+                  cursor: isImporting ? 'not-allowed' : 'pointer'
                 }}
               />
               {importFileName && (
@@ -144,7 +122,7 @@ const ImportCsvModal = ({
               </motion.div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+            <div className="modal-footer">
               <button type="button" className="btn btn-secondary" onClick={() => closeImportModal()} disabled={isImporting}>
                 Đóng
               </button>
@@ -152,7 +130,6 @@ const ImportCsvModal = ({
                 className="btn btn-primary"
                 onClick={handleImportCsv}
                 disabled={isImporting || !importCsvText.trim()}
-                style={{ gap: '8px' }}
               >
                 {isImporting ? (
                   <>

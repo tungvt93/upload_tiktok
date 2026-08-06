@@ -17,17 +17,7 @@ const ProfileCardHeader = ({
   setEditingValue,
   onEdit
 }) => (
-  <div
-    style={{
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      cursor: 'pointer',
-      padding: '4px',
-      borderRadius: '8px'
-    }}
-    onClick={() => onEdit(profile.id)}
-  >
+  <div className="card-header" onClick={() => onEdit(profile.id)}>
     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
       <label
         style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', flexShrink: 0 }}
@@ -37,22 +27,13 @@ const ProfileCardHeader = ({
           type="checkbox"
           checked={isSelected}
           onChange={() => onToggleSelected(profile.id)}
-          style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+          className="checkbox"
         />
       </label>
-      <div style={{
-        background: 'rgba(56, 189, 248, 0.1)',
-        width: '44px',
-        height: '44px',
-        borderRadius: '12px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0
-      }}>
+      <div className="card-avatar">
         <Globe size={24} color="var(--accent)" />
       </div>
-      <div style={{ minWidth: 0 }}>
+      <div className="card-identity">
         {editingId === profile.id ? (
           <div
             style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
@@ -71,44 +52,40 @@ const ProfileCardHeader = ({
             />
             <button
               onClick={() => onUpdateName(profile.id, editingValue)}
-              style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '4px' }}
+              className="btn-ghost"
+              style={{ color: 'var(--success)' }}
             >
               <Check size={16} />
             </button>
             <button
               onClick={() => setEditingId(null)}
-              style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '4px' }}
+              className="btn-ghost"
+              style={{ color: 'var(--error)' }}
             >
               <X size={16} />
             </button>
           </div>
         ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '160px' }}>
-              {profile.name}
-            </h3>
+          <div className="card-name-row">
+            <h3 className="card-name">{profile.name}</h3>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 setEditingId(profile.id);
                 setEditingValue(profile.name);
               }}
-              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.5, transition: 'opacity 0.2s' }}
+              className="btn-ghost"
+              style={{ opacity: 0.5, transition: 'opacity 0.2s' }}
+              title="Rename profile"
             >
               <Edit3 size={14} />
             </button>
           </div>
         )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+        <div className="card-meta">
           <Clock size={12} />
           {profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}
-          <div style={{
-            width: '6px',
-            height: '6px',
-            borderRadius: '50%',
-            backgroundColor: getStatusColor(profile.status),
-            marginLeft: '6px'
-          }} />
+          <div className="status-dot" style={{ backgroundColor: getStatusColor(profile.status) }} />
         </div>
       </div>
     </div>
@@ -119,7 +96,8 @@ const ProfileCardHeader = ({
           e.stopPropagation();
           onDelete(profile.id);
         }}
-        style={{ background: 'none', border: 'none', color: 'rgba(239, 68, 68, 0.4)', cursor: 'pointer', padding: '8px' }}
+        className="btn-ghost"
+        style={{ color: 'rgba(239, 68, 68, 0.4)', padding: '8px' }}
       >
         <Trash2 size={18} />
       </button>

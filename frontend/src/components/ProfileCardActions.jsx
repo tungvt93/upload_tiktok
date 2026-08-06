@@ -29,41 +29,19 @@ const ProfileCardActions = ({
   isAddingFavoriteMusic,
   musicSearchTerm
 }) => (
-  <div style={{
-    display: 'flex',
-    gap: '6px',
-    flexWrap: 'wrap',
-    padding: '8px 4px 4px',
-    justifyContent: 'flex-end'
-  }}>
+  <div className="card-actions">
     <button
-      className="btn"
+      className="btn btn-sm btn-card"
       onClick={() => onOpen(profile.id)}
-      style={{
-        background: 'rgba(255, 255, 255, 0.05)',
-        color: 'white',
-        border: '1px solid var(--border)',
-        padding: '6px 12px',
-        borderRadius: '8px',
-        gap: '6px'
-      }}
     >
       <ExternalLink size={14} />
       OPEN
     </button>
 
     <button
-      className="btn"
+      className={`btn btn-sm ${profile.status === 'uploading' ? 'btn-card--accent' : 'btn-card'}`}
       onClick={() => onStart(profile.id)}
       disabled={profile.status === 'uploading' || isEngaging}
-      style={{
-        background: profile.status === 'uploading' ? 'transparent' : 'rgba(255, 255, 255, 0.05)',
-        color: profile.status === 'uploading' ? 'var(--accent)' : 'white',
-        border: '1px solid var(--border)',
-        padding: '6px 12px',
-        borderRadius: '8px',
-        gap: '6px'
-      }}
     >
       {profile.status === 'uploading' ? (
         <RefreshCw size={14} className="animate-pulse" />
@@ -75,21 +53,10 @@ const ProfileCardActions = ({
 
     {/* Auto Engage Button */}
     <button
-      className="btn"
+      className={`btn btn-sm ${isEngaging ? 'btn-engage--active' : 'btn-engage'}`}
       onClick={() => (isEngaging ? onStopEngage(profile.id) : onEngage(profile.id))}
       disabled={profile.status === 'uploading'}
       title={isEngaging ? 'Dừng Auto Engage' : 'Bắt đầu xem & tương tác TikTok tự động'}
-      style={{
-        background: isEngaging ? 'rgba(239, 68, 68, 0.12)' : 'rgba(236, 72, 153, 0.08)',
-        color: isEngaging ? '#EF4444' : '#EC4899',
-        border: `1px solid ${isEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.25)'}`,
-        padding: '6px 12px',
-        borderRadius: '8px',
-        gap: '6px',
-        fontWeight: '700',
-        transition: 'all 0.2s',
-        cursor: profile.status === 'uploading' ? 'not-allowed' : 'pointer'
-      }}
     >
       {isEngaging ? (
         <>
@@ -106,21 +73,10 @@ const ProfileCardActions = ({
 
     {/* Login TikTok Button */}
     <button
-      className="btn"
+      className={`btn btn-sm ${isLoggingIn ? 'btn-login--active' : 'btn-login'}`}
       onClick={() => (isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id))}
       disabled={profile.status === 'uploading' || (!profile.cookies && !profile.email && !profile.pass)}
       title={(!profile.cookies && !profile.email && !profile.pass) ? 'Profile chưa có cookies hoặc email/password. Import CSV trước.' : (isLoggingIn ? 'Dừng Login' : 'Login TikTok')}
-      style={{
-        background: isLoggingIn ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.08)',
-        color: isLoggingIn ? '#EF4444' : '#10B981',
-        border: `1px solid ${isLoggingIn ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.25)'}`,
-        padding: '6px 12px',
-        borderRadius: '8px',
-        gap: '6px',
-        fontWeight: '700',
-        transition: 'all 0.2s',
-        cursor: (profile.status === 'uploading' || (!profile.cookies && !profile.email && !profile.pass)) ? 'not-allowed' : 'pointer'
-      }}
     >
       {isLoggingIn ? (
         <>
@@ -137,21 +93,10 @@ const ProfileCardActions = ({
 
     {/* Change Avatar Button */}
     <button
-      className="btn"
+      className={`btn btn-sm ${isChangingAvatar ? 'btn-avatar--active' : 'btn-avatar'}`}
       onClick={() => onChangeAvatar(profile.id)}
       disabled={profile.status === 'uploading' || !selectedAvatarPath || isChangingAvatar}
       title={!selectedAvatarPath ? 'Select an avatar image first' : (isChangingAvatar ? 'Avatar change in progress...' : 'Change TikTok avatar')}
-      style={{
-        background: isChangingAvatar ? 'rgba(59, 130, 246, 0.12)' : 'rgba(59, 130, 246, 0.08)',
-        color: isChangingAvatar ? '#3B82F6' : '#60A5FA',
-        border: '1px solid rgba(59,130,246,0.25)',
-        padding: '6px 12px',
-        borderRadius: '8px',
-        gap: '6px',
-        fontWeight: '700',
-        transition: 'all 0.2s',
-        cursor: (profile.status === 'uploading' || !selectedAvatarPath) ? 'not-allowed' : 'pointer'
-      }}
     >
       {isChangingAvatar ? (
         <RefreshCw size={14} className="animate-pulse" />
@@ -163,7 +108,7 @@ const ProfileCardActions = ({
 
     {/* Add Favorite Music Button */}
     <button
-      className="btn"
+      className={`btn btn-sm ${isAddingFavoriteMusic ? 'btn-music--active' : 'btn-music'}`}
       onClick={() => onAddFavoriteMusic(profile.id, musicSearchTerm || '')}
       disabled={
         profile.status === 'uploading' ||
@@ -178,19 +123,6 @@ const ProfileCardActions = ({
           ? 'Adding favorite music...'
           : 'Search and favorite a TikTok sound'
       }
-      style={{
-        background: isAddingFavoriteMusic ? 'rgba(168, 85, 247, 0.12)' : 'rgba(168, 85, 247, 0.08)',
-        color: isAddingFavoriteMusic ? '#A855F7' : '#C084FC',
-        border: '1px solid rgba(168,85,247,0.25)',
-        padding: '6px 12px',
-        borderRadius: '8px',
-        gap: '6px',
-        fontWeight: '700',
-        transition: 'all 0.2s',
-        cursor: (profile.status === 'uploading' || !musicSearchTerm || !musicSearchTerm.trim())
-          ? 'not-allowed'
-          : 'pointer'
-      }}
     >
       {isAddingFavoriteMusic ? (
         <RefreshCw size={14} className="animate-pulse" />

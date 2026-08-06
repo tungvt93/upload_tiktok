@@ -63,16 +63,7 @@ const EditProfileModal = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(15, 23, 42, 0.7)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-            padding: '24px'
-          }}
+          className="modal-backdrop"
           onClick={handleBackdropClick}
           onKeyDown={handleKeyDown}
         >
@@ -80,39 +71,19 @@ const EditProfileModal = ({
             initial={{ opacity: 0, y: 12, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
-            className="glass"
-            style={{
-              width: '100%',
-              maxWidth: '520px',
-              maxHeight: '85vh',
-              padding: '24px',
-              borderRadius: '20px',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
+            className="glass modal-card modal-card--md"
             onClick={handleCardClick}
           >
             {/* Header */}
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '20px',
-              flexShrink: 0
-            }}>
+            <div className="modal-header">
               <div>
-                <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Edit Profile</h3>
-                <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>{profile.name}</p>
+                <h3 className="modal-title">Edit Profile</h3>
+                <p className="modal-subtitle">{profile.name}</p>
               </div>
               <button
                 type="button"
                 onClick={onClose}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer'
-                }}
+                className="modal-close"
                 aria-label="Close edit profile modal"
               >
                 <X size={18} />
@@ -127,9 +98,9 @@ const EditProfileModal = ({
             }}>
               {/* Group */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <FolderOpen size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Group</span>
+                <div className="field-title">
+                  <FolderOpen size={14} />
+                  Group
                 </div>
                 <select
                   className="input"
@@ -149,9 +120,9 @@ const EditProfileModal = ({
 
               {/* Upload Folder */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <Video size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Upload Folder</span>
+                <div className="field-title">
+                  <Video size={14} />
+                  Upload Folder
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <input
@@ -173,9 +144,9 @@ const EditProfileModal = ({
 
               {/* Avatar Image */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <Image size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Avatar Image</span>
+                <div className="field-title">
+                  <Image size={14} />
+                  Avatar Image
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <input
@@ -197,9 +168,9 @@ const EditProfileModal = ({
 
               {/* Favorite Music */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <Search size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Favorite Music</span>
+                <div className="field-title">
+                  <Search size={14} />
+                  Favorite Music
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <input
@@ -214,9 +185,9 @@ const EditProfileModal = ({
 
               {/* Proxy Server */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <Link size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Proxy Server (Optional)</span>
+                <div className="field-title">
+                  <Link size={14} />
+                  Proxy Server (Optional)
                 </div>
                 <input
                   className="input"
@@ -229,9 +200,9 @@ const EditProfileModal = ({
 
               {/* Channel IDs */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <Users size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Channel IDs (comma separated)</span>
+                <div className="field-title">
+                  <Users size={14} />
+                  Channel IDs (comma separated)
                 </div>
                 <textarea
                   className="input"
@@ -245,24 +216,23 @@ const EditProfileModal = ({
 
               {/* Schedule Public Video */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label className="toggle-row">
                   <input
                     type="checkbox"
                     checked={profile.is_scheduled === 1}
                     onChange={(e) => onUpdateSchedule(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Schedule Public Video</span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Lên lịch công khai video</span>
+                  <div className="toggle-body">
+                    <span className="toggle-title">Schedule Public Video</span>
+                    <span className="toggle-desc">Lên lịch công khai video</span>
                   </div>
                 </label>
 
                 {profile.is_scheduled === 1 && (
                   <div style={{ marginTop: '12px', paddingLeft: '38px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                      <Clock size={14} color="var(--text-muted)" />
-                      <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Daily Times (HH:mm, HH:mm)</span>
+                    <div className="field-title">
+                      <Clock size={14} />
+                      Daily Times (HH:mm, HH:mm)
                     </div>
                     <input
                       className="input"
@@ -279,9 +249,9 @@ const EditProfileModal = ({
                     />
 
                     <div style={{ marginTop: '12px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                        <Video size={14} color="var(--text-muted)" />
-                        <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text-muted)' }}>Số lượng video mỗi lần</span>
+                      <div className="field-title">
+                        <Video size={14} />
+                        Số lượng video mỗi lần
                       </div>
                       <input
                         type="number"
@@ -299,7 +269,12 @@ const EditProfileModal = ({
 
               {/* Auto Increment Schedule */}
               <div style={{ marginBottom: '20px' }}>
-                <div style={{ padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <div style={{
+                  padding: '10px',
+                  borderRadius: '12px',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid var(--border)'
+                }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
                     <input
                       type="checkbox"
@@ -307,48 +282,47 @@ const EditProfileModal = ({
                       onChange={(e) => onUpdateAutoIncrementSchedule(profile.id, e.target.checked)}
                       style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                     />
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Lên lịch nối tiếp</span>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>V1: Public, V2: Mặc định, V3+: +{(profile.schedule_interval || 5)} phút</span>
+                    <div className="toggle-body">
+                      <span className="toggle-title">Lên lịch nối tiếp</span>
+                      <span className="toggle-desc">V1: Public, V2: Mặc định, V3+: +{(profile.schedule_interval || 5)} phút</span>
                     </div>
                   </label>
-
-                  {profile.auto_increment_schedule === 1 && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingLeft: '28px' }}>
-                      <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)' }}>Khoảng cách:</span>
-                      {[5, 10, 15, 20].map((mins) => (
-                        <label key={mins} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
-                          <input
-                            type="radio"
-                            name={`schedule_interval_${profile.id}`}
-                            value={mins}
-                            checked={(profile.schedule_interval || 5) === mins}
-                            onChange={() => onUpdateScheduleInterval && onUpdateScheduleInterval(profile.id, mins)}
-                            style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
-                          />
-                          {mins} phút
-                        </label>
-                      ))}
-                    </div>
-                  )}
                 </div>
+
+                {profile.auto_increment_schedule === 1 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingLeft: '28px' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)' }}>Khoảng cách:</span>
+                    {[5, 10, 15, 20].map((mins) => (
+                      <label key={mins} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                        <input
+                          type="radio"
+                          name={`schedule_interval_${profile.id}`}
+                          value={mins}
+                          checked={(profile.schedule_interval || 5) === mins}
+                          onChange={() => onUpdateScheduleInterval && onUpdateScheduleInterval(profile.id, mins)}
+                          style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                        />
+                        {mins} phút
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Render bypass */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label className="toggle-row">
                   <input
                     type="checkbox"
                     checked={profile.needs_render !== 0}
                     onChange={(e) => onUpdateNeedsRender(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
-                       <Zap size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                  <div className="toggle-body">
+                    <span className="toggle-title">
+                      <Zap size={14} color="var(--primary)" />
                       Render video bypass
                     </span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <span className="toggle-desc">
                       Bật: xử lý lách bản quyền qua render.py. Tắt: giữ nguyên video gốc.
                     </span>
                   </div>
@@ -357,19 +331,18 @@ const EditProfileModal = ({
 
               {/* Render concat video */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label className="toggle-row">
                   <input
                     type="checkbox"
                     checked={profile.render_concat_video !== 0 && profile.render_concat_video !== undefined}
                     onChange={(e) => onUpdateRenderConcatVideo(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
-                      <Link size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                  <div className="toggle-body">
+                    <span className="toggle-title">
+                      <Link size={14} color="var(--primary)" />
                       Render concat video
                     </span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <span className="toggle-desc">
                       Bật: nối video tải về với 1 video bất kỳ trong thư mục concat_videos.
                     </span>
                   </div>
@@ -378,19 +351,18 @@ const EditProfileModal = ({
 
               {/* Render video long */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label className="toggle-row">
                   <input
                     type="checkbox"
                     checked={profile.render_video_long !== 0}
                     onChange={(e) => onUpdateRenderVideoLong(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
-                      <Video size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
-                      Render video dài (&gt;3p cắt nhỏ, up tất cả ngay)
+                  <div className="toggle-body">
+                    <span className="toggle-title">
+                      <Video size={14} color="var(--primary)" />
+                      Render video dài {'>'}3p cắt nhỏ, up tất cả ngay)
                     </span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <span className="toggle-desc">
                       Bật: tự động cắt video dài thành nhiều phần, zoom 1.8x, làm nền mờ và upload liên tục toàn bộ.
                     </span>
                   </div>
@@ -399,19 +371,18 @@ const EditProfileModal = ({
 
               {/* Remove title */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label className="toggle-row">
                   <input
                     type="checkbox"
                     checked={profile.remove_title !== 0}
                     onChange={(e) => onUpdateRemoveTitle(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
-                      <Trash2 size={14} color="var(--error)" style={{ flexShrink: 0 }} />
+                  <div className="toggle-body">
+                    <span className="toggle-title">
+                      <Trash2 size={14} color="var(--error)" />
                       Xóa tiêu đề khi upload
                     </span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <span className="toggle-desc">
                       Bật: tự động xóa tiêu đề mặc định khi đăng. Tắt: giữ tiêu đề gốc.
                     </span>
                   </div>
@@ -420,19 +391,18 @@ const EditProfileModal = ({
 
               {/* Set music */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label className="toggle-row">
                   <input
                     type="checkbox"
                     checked={profile.set_music === 1}
                     onChange={(e) => onUpdateSetMusic(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
-                      <Music size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                  <div className="toggle-body">
+                    <span className="toggle-title">
+                      <Music size={14} color="var(--accent)" />
                       Set nhạc khi upload
                     </span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <span className="toggle-desc">
                       Bật: mở Edit video, chọn nhạc từ Favorites rồi Save.
                     </span>
                   </div>
@@ -441,19 +411,18 @@ const EditProfileModal = ({
 
               {/* Content Check */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label className="toggle-row">
                   <input
                     type="checkbox"
                     checked={profile.need_content_check !== 0}
                     onChange={(e) => onUpdateNeedContentCheck(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
-                      <ShieldCheck size={14} color="var(--success)" style={{ flexShrink: 0 }} />
+                  <div className="toggle-body">
+                    <span className="toggle-title">
+                      <ShieldCheck size={14} color="var(--success)" />
                       Kiểm tra nội dung (Content Check)
                     </span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <span className="toggle-desc">
                       Bật: tự động kiểm tra bản quyền / nội dung bằng Content Check Lite. Tắt: bỏ qua kiểm tra.
                     </span>
                   </div>

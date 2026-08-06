@@ -23,22 +23,15 @@ const Toast = ({ message }) => {
     <motion.div
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="glass"
+      className="glass toast"
       style={{
-        padding: '16px 24px',
-        borderRadius: '16px',
         background: p.bg,
         color: p.color,
-        border: `1px solid ${p.border}`,
-        marginBottom: '32px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        zIndex: 100
+        border: `1px solid ${p.border}`
       }}
     >
       <Icon size={20} />
-      <span style={{ fontWeight: '600' }}>{message.text}</span>
+      <strong>{message.text}</strong>
     </motion.div>
   );
 };

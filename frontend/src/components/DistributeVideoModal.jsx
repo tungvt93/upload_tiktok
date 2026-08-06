@@ -22,30 +22,20 @@ const DistributeVideoModal = ({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15, 23, 42, 0.7)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: '24px'
-        }}
+        className="modal-backdrop"
         onClick={onClose}
       >
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 12, scale: 0.98 }}
-          className="glass"
-          style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+          className="glass modal-card modal-card--md"
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div className="modal-header">
             <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Phân Phối Video</h3>
-              <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+              <h3 className="modal-title">Phân Phối Video</h3>
+              <p className="modal-subtitle">
                 {distributionProfiles.length} profile được chọn
               </p>
             </div>
@@ -53,13 +43,7 @@ const DistributeVideoModal = ({
               type="button"
               onClick={onClose}
               disabled={isDistributing}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: isDistributing ? 'not-allowed' : 'pointer',
-                opacity: isDistributing ? 0.45 : 1
-              }}
+              className="modal-close"
               aria-label="Close modal"
             >
               <X size={18} />
@@ -68,7 +52,7 @@ const DistributeVideoModal = ({
 
           {!distributeResult ? (
             <>
-              <div style={{ display: 'grid', gap: '16px', marginBottom: '20px' }}>
+              <div className="modal-body" style={{ marginBottom: '20px' }}>
                 <div className="input-group">
                   <label>Folder Nguồn</label>
                   <input
@@ -93,18 +77,12 @@ const DistributeVideoModal = ({
                   />
                 </div>
 
-                <div style={{
-                  padding: '12px 16px',
-                  borderRadius: '12px',
-                  background: 'rgba(99, 102, 241, 0.08)',
-                  fontSize: '0.9rem',
-                  color: 'var(--text-muted)'
-                }}>
+                <div className="dist-panel">
                   <strong>{distributionProfiles.length}</strong> profile × <strong>{videosPerProfile}</strong> video = <strong style={{ color: 'var(--accent)' }}>{distributionProfiles.length * videosPerProfile} video</strong> cần phân phối
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <div className="modal-footer">
                 <button
                   className="btn btn-secondary"
                   onClick={onClose}
@@ -116,7 +94,6 @@ const DistributeVideoModal = ({
                   className="btn btn-primary"
                   onClick={handleDistribute}
                   disabled={isDistributing || !sourceFolder.trim()}
-                  style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
                 >
                   {isDistributing ? (
                     <>
@@ -136,36 +113,21 @@ const DistributeVideoModal = ({
             <>
               {/* Result display */}
               {distributeResult.error ? (
-                <div style={{
-                  padding: '20px',
-                  borderRadius: '16px',
-                  background: 'rgba(239, 68, 68, 0.08)',
-                  marginBottom: '20px'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--error)', marginBottom: '8px' }}>
+                <div className="result-panel result-panel--error">
+                  <div className="result-panel-title" style={{ color: 'var(--error)' }}>
                     <AlertCircle size={20} />
-                    <span style={{ fontWeight: '600' }}>Lỗi</span>
+                    <span>Lỗi</span>
                   </div>
                   <p style={{ color: 'var(--text-muted)', margin: 0 }}>{distributeResult.error}</p>
                 </div>
               ) : (
-                <div style={{
-                  padding: '20px',
-                  borderRadius: '16px',
-                  background: distributeResult.missing > 0
-                    ? 'rgba(251, 191, 36, 0.08)'
-                    : 'rgba(34, 197, 94, 0.08)',
-                  marginBottom: '20px'
-                }}>
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    color: distributeResult.missing > 0 ? '#FBBF24' : 'var(--success)',
-                    marginBottom: '12px'
-                  }}>
+                <div className={`result-panel ${distributeResult.missing > 0 ? 'result-panel--warning' : 'result-panel--success'}`}>
+                  <div
+                    className="result-panel-title"
+                    style={{ color: distributeResult.missing > 0 ? '#FBBF24' : 'var(--success)' }}
+                  >
                     {distributeResult.missing > 0 ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
-                    <span style={{ fontWeight: '600' }}>
+                    <span>
                       {distributeResult.missing > 0
                         ? `Đã phân phối ${distributeResult.totalDistributed}/${distributeResult.totalExpected} video`
                         : `Đã phân phối thành công ${distributeResult.totalDistributed} video!`
@@ -180,15 +142,7 @@ const DistributeVideoModal = ({
                   {/* Per-profile breakdown */}
                   <div style={{ display: 'grid', gap: '6px' }}>
                     {distributeResult.profiles.map(p => (
-                      <div key={p.profileId} style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '8px 12px',
-                        borderRadius: '8px',
-                        background: 'rgba(255,255,255,0.04)',
-                        fontSize: '0.85rem'
-                      }}>
+                      <div key={p.profileId} className="summary-row">
                         <span style={{ fontWeight: '500' }}>{p.profileName}</span>
                         <span style={{ color: 'var(--text-muted)' }}>
                           {p.count} video → <span style={{ fontSize: '0.78rem', color: 'var(--accent)' }}>{p.folder}</span>
@@ -198,7 +152,7 @@ const DistributeVideoModal = ({
                   </div>
                 </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <div className="modal-footer">
                 <button
                   className="btn btn-primary"
                   onClick={() => {
