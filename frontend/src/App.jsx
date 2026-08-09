@@ -1,5 +1,6 @@
 import React from 'react';
 import useProfiles from './hooks/useProfiles';
+import useDouyin from './hooks/useDouyin';
 import useTheme from './hooks/useTheme';
 import Sidebar from './components/Sidebar';
 import Toast from './components/Toast';
@@ -7,12 +8,16 @@ import ProfilesView from './components/ProfilesView';
 import DistributionView from './components/DistributionView';
 import GroupsView from './components/GroupsView';
 import SettingsView from './components/SettingsView';
+import VideoDownloadsView from './components/VideoDownloadsView';
+import DownloadHistoryView from './components/DownloadHistoryView';
+import CreatorsView from './components/CreatorsView';
 import FolderSelectOverlay from './components/FolderSelectOverlay';
 
 // Top-level layout: sidebar + active tab view. All state & data logic lives in
 // the useProfiles hook; this component only composes presentational views.
 const App = () => {
   const ui = useProfiles();
+  const douyin = useDouyin();
   const { theme, toggleTheme } = useTheme();
   const { activeTab, message } = ui;
 
@@ -70,6 +75,12 @@ const App = () => {
               updateGroupName={ui.updateGroupName}
               deleteGroup={ui.deleteGroup}
             />
+          ) : activeTab === 'video-downloads' ? (
+            <VideoDownloadsView {...douyin} />
+          ) : activeTab === 'download-history' ? (
+            <DownloadHistoryView {...douyin} />
+          ) : activeTab === 'creators' ? (
+            <CreatorsView {...douyin} />
           ) : (
             <SettingsView
               config={ui.config}

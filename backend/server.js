@@ -25,6 +25,7 @@ import {
     assertGroupExists
 } from './group-store.js';
 import { createProfileRecord } from './profile-store.js';
+import { initDouyinFeature } from './douyin-integration.js';
 import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -129,6 +130,9 @@ try {
 }
 
 initGroupSchema(db);
+
+// ---- Douyin Downloader feature integration (mounts /api/douyin + scheduler) ----
+initDouyinFeature({ app, db });
 
 // Migration: Add group_id column to profiles if not exists
 try {

@@ -1,10 +1,13 @@
 import React from 'react';
-import { Zap, Layout, Users, Settings, Share2, ShieldCheck, Sun, Moon } from 'lucide-react';
+import { Zap, Layout, Users, Settings, Share2, ShieldCheck, Sun, Moon, Download, History, Rss } from 'lucide-react';
 
 const NAV_ITEMS = [
   { key: 'profiles', label: 'Profiles Management', icon: Layout },
   { key: 'groups', label: 'Groups', icon: Users },
   { key: 'distribution', label: 'Phân Phối Video', icon: Share2 },
+  { key: 'video-downloads', label: 'Video Downloads', icon: Download },
+  { key: 'download-history', label: 'Download History', icon: History },
+  { key: 'creators', label: 'Creator Monitoring', icon: Rss },
   { key: 'settings', label: 'System Settings', icon: Settings }
 ];
 
