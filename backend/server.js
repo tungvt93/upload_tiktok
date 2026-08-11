@@ -3963,6 +3963,7 @@ async function dismissOnboardingModals(page, log) {
 /**
  * Kiểm tra trang TikTok Studio Content để xem video đầu tiên có đang scheduled không.
  * Thử lại (retry) nhiều lần nếu trang load chậm, có lỗi network hoặc bị popup chắn.
+ * Nếu chưa upload video nào (hiển thị nút "Upload first video" / "Upload video" / empty state) thì vào thẳng màn upload.
  * Chỉ khi đã load và đọc thành công màn content mới trả về kết quả (Date hoặc null).
  * Nếu thử lại tối đa maxAttempts lần mà vẫn lỗi thì ném ra Error để dừng upload an toàn.
  */
@@ -3986,25 +3987,34 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
                 throw new Error('Redirected to login page while checking content list.');
             }
 
-            // Tìm video đầu tiên hoặc kiểm tra container danh sách video
+            // Selector tổng hợp cho cả danh sách video và trạng thái trống (Upload first video / No content)
+            const combinedSelector = [
+                '[data-tt="components_PublishStageLabel_FlexCenter"]',
+                'button:has-text("Upload first video")',
+                'button:has-text("Upload video")',
+                'a:has-text("Upload video")',
+                'a:has-text("Upload first video")',
+                'div:has-text("Upload video to get started")',
+                'div:has-text("Upload your first video")',
+                'div:has-text("No content")',
+                'div:has-text("No videos")',
+                'table',
+                '[class*="Table"]',
+                '[class*="content-list"]',
+                '[data-e2e="studio-content-list"]'
+            ].join(', ');
+
+            // Đợi 1 trong các phần tử xuất hiện (tối đa 15s)
+            await page.waitForSelector(combinedSelector, { timeout: 15000, state: 'attached' });
+
             const firstStatusLabel = page.locator('[data-tt="components_PublishStageLabel_FlexCenter"]').first();
-            const tableContainer = page.locator('table, [class*="Table"], [class*="content-list"], [data-e2e="studio-content-list"], div:has-text("No content"), div:has-text("No videos")').first();
+            const statusLabelCount = await firstStatusLabel.count().catch(() => 0);
 
-            // Đợi phần tử xuất hiện (tối đa 15s)
-            let statusLabelVisible = false;
-            try {
-                await firstStatusLabel.waitFor({ timeout: 15000, state: 'attached' });
-                statusLabelVisible = true;
-            } catch (waitErr) {
-                // Kiểm tra xem container có load được không nếu danh sách trống
-                const containerCount = await tableContainer.count().catch(() => 0);
-                if (containerCount === 0) {
-                    throw new Error('Content list elements failed to render within timeout.');
-                }
-            }
+            const uploadFirstVideoBtn = page.locator('button:has-text("Upload first video"), button:has-text("Upload video"), a:has-text("Upload video"), a:has-text("Upload first video"), div:has-text("Upload video to get started"), div:has-text("Upload your first video"), div:has-text("No content"), div:has-text("No videos")').first();
+            const isUploadFirstVisible = await uploadFirstVideoBtn.isVisible().catch(() => false);
 
-            if (!statusLabelVisible) {
-                log('[Content Check] Content list loaded, but no video status label found (empty list or no videos).');
+            if (isUploadFirstVisible || statusLabelCount === 0) {
+                log('[Content Check] No uploaded videos found ("Upload first video" / empty state detected). Entering upload flow immediately.');
                 return null;
             }
 
@@ -5148,13 +5158,14 @@ app.get('/api/distribution/profiles', (req, res) => {
                 dp.id,
                 dp.profile_id,
                 p.name AS profile_name,
+                p.group_id,
                 g.name AS group_name,
                 p.video_folder,
                 dp.created_at
             FROM distribution_profiles dp
             JOIN profiles p ON p.id = dp.profile_id
             LEFT JOIN groups g ON g.id = p.group_id
-            ORDER BY dp.created_at ASC
+            ORDER BY p.created_at DESC
         `).all();
         res.json(profiles);
     } catch (err) {
@@ -5235,7 +5246,7 @@ app.post('/api/distribution/distribute', (req, res) => {
                 p.video_folder
             FROM distribution_profiles dp
             JOIN profiles p ON p.id = dp.profile_id
-            ORDER BY dp.created_at ASC
+            ORDER BY p.created_at DESC
         `).all();
 
         if (distProfiles.length === 0) {

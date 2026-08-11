@@ -421,6 +421,7 @@ const App = () => {
   const [showAddDistProfileModal, setShowAddDistProfileModal] = useState(false);
   const [showDistributeModal, setShowDistributeModal] = useState(false);
   const [distGroupFilter, setDistGroupFilter] = useState('all');
+  const [distMainGroupFilter, setDistMainGroupFilter] = useState('all');
   const [selectedProfileIds, setSelectedProfileIds] = useState(new Set());
   const [sourceFolder, setSourceFolder] = useState('');
   const [videosPerProfile, setVideosPerProfile] = useState(1);
@@ -1413,7 +1414,13 @@ const App = () => {
   };
 
   const handleAddDistProfiles = async () => {
-    const ids = [...selectedProfileIds];
+    // Sort selected profile IDs according to main profiles list order
+    const profileOrderMap = new Map(profiles.map((p, index) => [p.id, index]));
+    const ids = [...selectedProfileIds].sort((a, b) => {
+      const orderA = profileOrderMap.has(a) ? profileOrderMap.get(a) : 999999;
+      const orderB = profileOrderMap.has(b) ? profileOrderMap.get(b) : 999999;
+      return orderA - orderB;
+    });
     if (ids.length === 0) return;
 
     let added = 0;
@@ -1488,12 +1495,56 @@ const App = () => {
   }, [profiles, distributionProfiles]);
 
   const filteredDistAvailable = useMemo(() => {
-    if (distGroupFilter === 'all') return availableForDist;
+    let list = availableForDist;
     if (distGroupFilter === 'ungrouped') {
-      return availableForDist.filter(p => !p.group_id);
+      list = availableForDist.filter(p => !p.group_id);
+    } else if (distGroupFilter !== 'all') {
+      list = availableForDist.filter(p => p.group_id === distGroupFilter);
     }
-    return availableForDist.filter(p => p.group_id === distGroupFilter);
-  }, [availableForDist, distGroupFilter]);
+    const profileOrderMap = new Map(profiles.map((p, index) => [p.id, index]));
+    return [...list].sort((a, b) => {
+      const orderA = profileOrderMap.has(a.id) ? profileOrderMap.get(a.id) : 999999;
+      const orderB = profileOrderMap.has(b.id) ? profileOrderMap.get(b.id) : 999999;
+      return orderA - orderB;
+    });
+  }, [availableForDist, distGroupFilter, profiles]);
+
+  const allDistFilteredSelected =
+    filteredDistAvailable.length > 0 &&
+    filteredDistAvailable.every(p => selectedProfileIds.has(p.id));
+
+  const toggleSelectAllDistFiltered = () => {
+    setSelectedProfileIds(prev => {
+      const next = new Set(prev);
+      if (allDistFilteredSelected) {
+        filteredDistAvailable.forEach(p => next.delete(p.id));
+      } else {
+        filteredDistAvailable.forEach(p => next.add(p.id));
+      }
+      return next;
+    });
+  };
+
+  const filteredDistributionProfiles = useMemo(() => {
+    let list = distributionProfiles;
+    if (distMainGroupFilter === 'ungrouped') {
+      list = distributionProfiles.filter(dp => {
+        const prof = profiles.find(p => p.id === dp.profile_id);
+        return !dp.group_id && (!prof || !prof.group_id);
+      });
+    } else if (distMainGroupFilter !== 'all') {
+      list = distributionProfiles.filter(dp => {
+        const prof = profiles.find(p => p.id === dp.profile_id);
+        return dp.group_id === distMainGroupFilter || (prof && prof.group_id === distMainGroupFilter);
+      });
+    }
+    const profileOrderMap = new Map(profiles.map((p, index) => [p.id, index]));
+    return [...list].sort((a, b) => {
+      const orderA = profileOrderMap.has(a.profile_id) ? profileOrderMap.get(a.profile_id) : 999999;
+      const orderB = profileOrderMap.has(b.profile_id) ? profileOrderMap.get(b.profile_id) : 999999;
+      return orderA - orderB;
+    });
+  }, [distributionProfiles, distMainGroupFilter, profiles]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -2692,18 +2743,35 @@ const App = () => {
             </section>
           ) : activeTab === 'distribution' ? (
             <section>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '16px' }}>
                 <div>
                   <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '4px' }}>Phân Phối Video</h2>
                   <p style={{ color: 'var(--text-muted)' }}>Chọn profile và phân phối video vào các folder upload</p>
                 </div>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => setShowAddDistProfileModal(true)}
-                  style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-                >
-                  <Plus size={18} /> Thêm Profile
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                    Group
+                    <select
+                      className="input"
+                      style={{ padding: '8px 12px', minWidth: '160px' }}
+                      value={distMainGroupFilter}
+                      onChange={(e) => setDistMainGroupFilter(e.target.value)}
+                    >
+                      <option value="all">Tất cả</option>
+                      <option value="ungrouped">Ungrouped</option>
+                      {groups.map((g) => (
+                        <option key={g.id} value={g.id}>{g.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setShowAddDistProfileModal(true)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                  >
+                    <Plus size={18} /> Thêm Profile
+                  </button>
+                </div>
               </div>
 
               {/* Distribution profile cards */}
@@ -2721,9 +2789,13 @@ const App = () => {
                       <Plus size={18} /> Thêm Profile
                     </button>
                   </div>
+                ) : filteredDistributionProfiles.length === 0 ? (
+                  <div className="glass" style={{ padding: '32px 24px', borderRadius: '20px', textAlign: 'center' }}>
+                    <p style={{ color: 'var(--text-muted)' }}>Không có profile nào trong group này</p>
+                  </div>
                 ) : (
                   <div className="profile-grid">
-                    {distributionProfiles.map(dp => (
+                    {filteredDistributionProfiles.map(dp => (
                       <motion.div
                         key={dp.profile_id}
                         layout
@@ -3045,7 +3117,7 @@ const App = () => {
                 </button>
               </div>
 
-              <div style={{ marginBottom: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                   Group
                   <select
@@ -3061,6 +3133,17 @@ const App = () => {
                     ))}
                   </select>
                 </label>
+                {filteredDistAvailable.length > 0 && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={allDistFilteredSelected}
+                      onChange={toggleSelectAllDistFiltered}
+                      style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                    />
+                    Chọn tất cả ({filteredDistAvailable.length})
+                  </label>
+                )}
               </div>
 
               <div style={{ maxHeight: '360px', overflowY: 'auto', marginBottom: '20px' }}>

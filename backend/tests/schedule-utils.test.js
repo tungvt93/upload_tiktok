@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     computeNextScheduledTime,
+    computeAutoIncrementTime,
     inferScheduleFieldKind,
     formatScheduleValue,
     sortScheduleInputs
@@ -20,7 +21,7 @@ test('computeNextScheduledTime starts at +20 minutes and rounds up to 5-minute m
     assert.equal(scheduled.toISOString(), '2026-04-12T09:40:00.000Z');
 });
 
-test('computeNextScheduledTime increments from previous scheduled slot by 5 minutes', () => {
+test('computeNextScheduledTime increments from previous scheduled slot by 10 minutes', () => {
     const previous = new Date('2026-04-12T09:40:00.000Z');
 
     const scheduled = computeNextScheduledTime({
@@ -29,7 +30,31 @@ test('computeNextScheduledTime increments from previous scheduled slot by 5 minu
         now: new Date('2026-04-12T09:18:25.755Z')
     });
 
+    assert.equal(scheduled.toISOString(), '2026-04-12T09:50:00.000Z');
+});
+
+test('computeAutoIncrementTime increments from previous scheduled slot by 5 minutes', () => {
+    const previous = new Date('2026-04-12T09:40:00.000Z');
+
+    const scheduled = computeAutoIncrementTime({
+        lastScheduledTime: previous,
+        intervalMinutes: 5,
+        now: new Date('2026-04-12T09:18:25.755Z')
+    });
+
     assert.equal(scheduled.toISOString(), '2026-04-12T09:45:00.000Z');
+});
+
+test('computeAutoIncrementTime increments from previous scheduled slot by 10 minutes when selected', () => {
+    const previous = new Date('2026-04-12T09:40:00.000Z');
+
+    const scheduled = computeAutoIncrementTime({
+        lastScheduledTime: previous,
+        intervalMinutes: 10,
+        now: new Date('2026-04-12T09:18:25.755Z')
+    });
+
+    assert.equal(scheduled.toISOString(), '2026-04-12T09:50:00.000Z');
 });
 
 test('inferScheduleFieldKind detects date and time from input hints', () => {
