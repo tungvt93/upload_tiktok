@@ -5,12 +5,12 @@ import {
   RefreshCw,
   Layout,
   StopCircle,
-  Heart,
   Upload,
   FolderOpen,
   Download,
   Trash2,
-  LogIn
+  LogIn,
+  BarChart2,
 } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import ProfileCard from './ProfileCard';
@@ -39,6 +39,7 @@ const ProfilesView = ({
   startBulkEngage,
   stopBulkEngage,
   startBulkLogin,
+  openStatsModal,
   clearTrash,
   clearDebugFiles,
   deleteSelectedProfiles,
@@ -140,9 +141,6 @@ const ProfilesView = ({
   handleSelectAvatar,
   handleUpdateMusicSearchTerm
 }) => {
-  // Bulk engage button: all selected are engaging → Stop, otherwise Start.
-  const selectedEngaging = [...selectedForRun].filter((id) => engagingProfiles.has(id));
-  const allSelectedEngaging = selectedForRun.size > 0 && selectedEngaging.length === selectedForRun.size;
   const hasSelection = selectedForRun.size > 0;
 
   return (
@@ -291,17 +289,15 @@ const ProfilesView = ({
             Login đã chọn
           </button>
 
-          {/* Bulk Engage button */}
+          {/* Stats button */}
           <button
-            className={`btn ${allSelectedEngaging ? 'btn-pink-danger' : 'btn-pink'}`}
-            onClick={() => (allSelectedEngaging ? stopBulkEngage() : startBulkEngage())}
+            className="btn btn-primary"
+            onClick={openStatsModal}
             disabled={!hasSelection}
-            title={hasSelection ? (allSelectedEngaging ? 'Dừng Engage tất cả đã chọn' : 'Bật Auto Engage cho tất cả đã chọn') : 'Tick checkbox trên từng profile cần Engage'}
+            title={hasSelection ? 'Thống kê video cho các profile đã chọn' : 'Tick checkbox trên từng profile cần thống kê'}
           >
-            {allSelectedEngaging
-              ? <><StopCircle size={18} className="animate-pulse" /> Stop Engage</>
-              : <><Heart size={18} /> Engage đã chọn</>
-            }
+            <BarChart2 size={18} />
+            Thống kê
           </button>
         </div>
       </div>

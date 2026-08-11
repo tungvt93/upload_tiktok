@@ -52,6 +52,8 @@ const useProfiles = () => {
   const [exportFolderPath, setExportFolderPath] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [exportResults, setExportResults] = useState(null);
+  const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
+  const [statsProfileIds,  setStatsProfileIds]  = useState([]);
   const [editingProfileId, setEditingProfileId] = useState(null);
 
   // Distribution feature state
@@ -645,6 +647,18 @@ const useProfiles = () => {
     }
     await Promise.all(engagingSelected.map(id => stopEngage(id)));
   };
+
+  const openStatsModal = () => {
+    if (selectedForRun.size === 0) {
+      setMessage({ type: 'error', text: 'Chọn ít nhất một profile để thống kê.' });
+      setTimeout(() => setMessage(null), 3000);
+      return;
+    }
+    setStatsProfileIds([...selectedForRun]);
+    setIsStatsModalOpen(true);
+  };
+
+  const closeStatsModal = () => setIsStatsModalOpen(false);
 
   const updateProfileFolder = async (id, folder) => {
     try {
@@ -1247,6 +1261,10 @@ const useProfiles = () => {
     clearDebugFiles,
     startBulkEngage,
     stopBulkEngage,
+    isStatsModalOpen,
+    statsProfileIds,
+    openStatsModal,
+    closeStatsModal,
     updateProfileFolder,
     updateProfileProxy,
     updateProfileChannelIds,

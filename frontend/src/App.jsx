@@ -8,6 +8,7 @@ import DistributionView from './components/DistributionView';
 import GroupsView from './components/GroupsView';
 import SettingsView from './components/SettingsView';
 import FolderSelectOverlay from './components/FolderSelectOverlay';
+import StatsModal from './components/StatsModal';
 
 // Top-level layout: sidebar + active tab view. All state & data logic lives in
 // the useProfiles hook; this component only composes presentational views.
@@ -82,6 +83,11 @@ const App = () => {
 
       {/* Folder Selection Loading Overlay */}
       <FolderSelectOverlay visible={ui.isSelectingFolder} />
+      <StatsModal
+        isOpen={ui.isStatsModalOpen}
+        profileIds={ui.statsProfileIds}
+        onClose={ui.closeStatsModal}
+      />
     </div>
   );
 };
