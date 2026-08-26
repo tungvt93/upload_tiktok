@@ -1,14 +1,13 @@
-import React from 'react';
+import DistributionView from './components/DistributionView';
+import FolderSelectOverlay from './components/FolderSelectOverlay';
+import GroupsView from './components/GroupsView';
+import ProfilesView from './components/ProfilesView';
+import SettingsView from './components/SettingsView';
+import Sidebar from './components/Sidebar';
+import StatsModal from './components/StatsModal';
+import Toast from './components/Toast';
 import useProfiles from './hooks/useProfiles';
 import useTheme from './hooks/useTheme';
-import Sidebar from './components/Sidebar';
-import Toast from './components/Toast';
-import ProfilesView from './components/ProfilesView';
-import DistributionView from './components/DistributionView';
-import GroupsView from './components/GroupsView';
-import SettingsView from './components/SettingsView';
-import FolderSelectOverlay from './components/FolderSelectOverlay';
-import StatsModal from './components/StatsModal';
 
 // Top-level layout: sidebar + active tab view. All state & data logic lives in
 // the useProfiles hook; this component only composes presentational views.

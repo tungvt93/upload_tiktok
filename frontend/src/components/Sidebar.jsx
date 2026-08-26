@@ -1,5 +1,4 @@
-import React from 'react';
-import { Zap, Layout, Users, Settings, Share2, ShieldCheck, Sun, Moon } from 'lucide-react';
+import { Layout, Moon, Settings, Share2, ShieldCheck, Sun, Users, Zap } from 'lucide-react';
 
 const NAV_ITEMS = [
   { key: 'profiles', label: 'Profiles Management', icon: Layout },
@@ -36,10 +35,12 @@ const Sidebar = ({ activeTab, onTabChange, profilesCount, maxConcurrency, theme,
           return (
             <button
               key={item.key}
+              type="button"
               onClick={() => onTabChange(item.key)}
               className={`nav-item${active ? ' active' : ''}`}
+              aria-current={active ? 'page' : undefined}
             >
-              <Icon size={20} /> {item.label}
+              <Icon size={20} aria-hidden="true" /> {item.label}
             </button>
           );
         })}
@@ -63,6 +64,7 @@ const Sidebar = ({ activeTab, onTabChange, profilesCount, maxConcurrency, theme,
         type="button"
         className="theme-toggle"
         onClick={onToggleTheme}
+        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
       >
         {isDark ? <Sun size={16} /> : <Moon size={16} />}

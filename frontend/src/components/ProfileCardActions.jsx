@@ -9,9 +9,9 @@ import {
   Camera,
   Music
 } from 'lucide-react';
+import IconActionButton from './IconActionButton';
 
-// Action buttons row of a profile card:
-// OPEN / START / ENGAGE / LOGIN / AVATAR / FAVORITES.
+// Icon-only actions for a profile row. Hover uses the instant data-tooltip toast.
 const ProfileCardActions = ({
   profile,
   onOpen,
@@ -28,110 +28,80 @@ const ProfileCardActions = ({
   onAddFavoriteMusic,
   isAddingFavoriteMusic,
   musicSearchTerm
-}) => (
-  <div className="card-actions">
-    <button
-      className="btn btn-sm btn-card"
-      onClick={() => onOpen(profile.id)}
-    >
-      <ExternalLink size={14} />
-      OPEN
-    </button>
+}) => {
+  const canLogin = profile.cookies || profile.email || profile.pass;
+  const uploading = profile.status === 'uploading';
+  const hasMusic = Boolean(musicSearchTerm && musicSearchTerm.trim());
 
-    <button
-      className={`btn btn-sm ${profile.status === 'uploading' ? 'btn-card--accent' : 'btn-card'}`}
-      onClick={() => onStart(profile.id)}
-      disabled={profile.status === 'uploading' || isEngaging}
-    >
-      {profile.status === 'uploading' ? (
-        <RefreshCw size={14} className="animate-pulse" />
-      ) : (
-        <Play size={14} fill="white" />
-      )}
-      {profile.status === 'uploading' ? 'ACTIVE' : 'START'}
-    </button>
-
-    {/* Auto Engage Button */}
-    <button
-      className={`btn btn-sm ${isEngaging ? 'btn-engage--active' : 'btn-engage'}`}
-      onClick={() => (isEngaging ? onStopEngage(profile.id) : onEngage(profile.id))}
-      disabled={profile.status === 'uploading'}
-      title={isEngaging ? 'Dừng Auto Engage' : 'Bắt đầu xem & tương tác TikTok tự động'}
-    >
-      {isEngaging ? (
-        <>
-          <StopCircle size={14} className="animate-pulse" />
-          STOP
-        </>
-      ) : (
-        <>
-          <Heart size={14} />
-          ENGAGE
-        </>
-      )}
-    </button>
-
-    {/* Login TikTok Button */}
-    <button
-      className={`btn btn-sm ${isLoggingIn ? 'btn-login--active' : 'btn-login'}`}
-      onClick={() => (isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id))}
-      disabled={profile.status === 'uploading' || (!profile.cookies && !profile.email && !profile.pass)}
-      title={(!profile.cookies && !profile.email && !profile.pass) ? 'Profile chưa có cookies hoặc email/password. Import CSV trước.' : (isLoggingIn ? 'Dừng Login' : 'Login TikTok')}
-    >
-      {isLoggingIn ? (
-        <>
-          <StopCircle size={14} className="animate-pulse" />
-          STOP
-        </>
-      ) : (
-        <>
-          <LogIn size={14} />
-          LOGIN
-        </>
-      )}
-    </button>
-
-    {/* Change Avatar Button */}
-    <button
-      className={`btn btn-sm ${isChangingAvatar ? 'btn-avatar--active' : 'btn-avatar'}`}
-      onClick={() => onChangeAvatar(profile.id)}
-      disabled={profile.status === 'uploading' || !selectedAvatarPath || isChangingAvatar}
-      title={!selectedAvatarPath ? 'Select an avatar image first' : (isChangingAvatar ? 'Avatar change in progress...' : 'Change TikTok avatar')}
-    >
-      {isChangingAvatar ? (
-        <RefreshCw size={14} className="animate-pulse" />
-      ) : (
-        <Camera size={14} />
-      )}
-      AVATAR
-    </button>
-
-    {/* Add Favorite Music Button */}
-    <button
-      className={`btn btn-sm ${isAddingFavoriteMusic ? 'btn-music--active' : 'btn-music'}`}
-      onClick={() => onAddFavoriteMusic(profile.id, musicSearchTerm || '')}
-      disabled={
-        profile.status === 'uploading' ||
-        !musicSearchTerm ||
-        !musicSearchTerm.trim() ||
-        isAddingFavoriteMusic
-      }
-      title={
-        !musicSearchTerm || !musicSearchTerm.trim()
-          ? 'Enter a search term first'
-          : isAddingFavoriteMusic
-          ? 'Adding favorite music...'
-          : 'Search and favorite a TikTok sound'
-      }
-    >
-      {isAddingFavoriteMusic ? (
-        <RefreshCw size={14} className="animate-pulse" />
-      ) : (
-        <Music size={14} />
-      )}
-      FAVORITES
-    </button>
-  </div>
-);
+  return (
+    <div className="table-actions">
+      <IconActionButton
+        icon={<ExternalLink size={15} />}
+        onClick={() => onOpen(profile.id)}
+        title="Mở profile"
+        color="var(--text)"
+        bg="rgba(255, 255, 255, 0.05)"
+        border="var(--border)"
+        size="30px"
+      />
+      <IconActionButton
+        icon={uploading ? <RefreshCw size={15} className="animate-pulse" /> : <Play size={15} fill="currentColor" />}
+        onClick={() => onStart(profile.id)}
+        disabled={uploading || isEngaging}
+        title={uploading ? 'Đang upload' : 'Bắt đầu upload'}
+        color={uploading ? 'var(--accent)' : 'var(--text)'}
+        bg={uploading ? 'transparent' : 'rgba(255, 255, 255, 0.05)'}
+        border="var(--border)"
+        size="30px"
+      />
+      <IconActionButton
+        icon={isEngaging ? <StopCircle size={15} className="animate-pulse" /> : <Heart size={15} />}
+        onClick={() => (isEngaging ? onStopEngage(profile.id) : onEngage(profile.id))}
+        disabled={uploading}
+        title={isEngaging ? 'Dừng Auto Engage' : 'Bắt đầu xem & tương tác TikTok tự động'}
+        color={isEngaging ? 'var(--error)' : 'var(--status-engage)'}
+        bg={isEngaging ? 'rgba(239, 68, 68, 0.12)' : 'rgba(236, 72, 153, 0.08)'}
+        border={isEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.25)'}
+        size="30px"
+      />
+      <IconActionButton
+        icon={isLoggingIn ? <StopCircle size={15} className="animate-pulse" /> : <LogIn size={15} />}
+        onClick={() => (isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id))}
+        disabled={uploading || !canLogin}
+        title={!canLogin ? 'Profile chưa có cookies hoặc email/password. Import CSV trước.' : (isLoggingIn ? 'Dừng Login' : 'Login TikTok')}
+        color={isLoggingIn ? 'var(--error)' : 'var(--success)'}
+        bg={isLoggingIn ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.08)'}
+        border={isLoggingIn ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.25)'}
+        size="30px"
+      />
+      <IconActionButton
+        icon={isChangingAvatar ? <RefreshCw size={15} className="animate-pulse" /> : <Camera size={15} />}
+        onClick={() => onChangeAvatar(profile.id)}
+        disabled={uploading || !selectedAvatarPath || isChangingAvatar}
+        title={!selectedAvatarPath ? 'Select an avatar image first' : (isChangingAvatar ? 'Avatar change in progress...' : 'Change TikTok avatar')}
+        color={isChangingAvatar ? 'var(--status-avatar-active)' : 'var(--status-avatar)'}
+        bg={isChangingAvatar ? 'rgba(59, 130, 246, 0.12)' : 'rgba(59, 130, 246, 0.08)'}
+        border="rgba(59,130,246,0.25)"
+        size="30px"
+      />
+      <IconActionButton
+        icon={isAddingFavoriteMusic ? <RefreshCw size={15} className="animate-pulse" /> : <Music size={15} />}
+        onClick={() => onAddFavoriteMusic(profile.id, musicSearchTerm || '')}
+        disabled={uploading || !hasMusic || isAddingFavoriteMusic}
+        title={
+          !hasMusic
+            ? 'Enter a search term first'
+            : isAddingFavoriteMusic
+              ? 'Adding favorite music...'
+              : 'Search and favorite a TikTok sound'
+        }
+        color={isAddingFavoriteMusic ? 'var(--status-music-active)' : 'var(--status-music)'}
+        bg={isAddingFavoriteMusic ? 'rgba(168, 85, 247, 0.12)' : 'rgba(168, 85, 247, 0.08)'}
+        border="rgba(168,85,247,0.25)"
+        size="30px"
+      />
+    </div>
+  );
+};
 
 export default ProfileCardActions;

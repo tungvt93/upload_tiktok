@@ -9,8 +9,11 @@ import {
   FolderOpen,
   Download,
   Trash2,
+  Bug,
   LogIn,
   BarChart2,
+  Heart,
+  Zap,
 } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import ProfileCard from './ProfileCard';
@@ -19,6 +22,7 @@ import ImportCsvModal from './ImportCsvModal';
 import ImportFolderModal from './ImportFolderModal';
 import ExportFolderModal from './ExportFolderModal';
 import EditProfileModal from './EditProfileModal';
+import IconActionButton from './IconActionButton';
 
 // The "Profiles Dashboard" tab: filters, bulk actions, profile card grid,
 // empty states and all profile-related modals (create, import, export, edit).
@@ -145,196 +149,236 @@ const ProfilesView = ({
 
   return (
     <section>
-      <div className="page-header">
-        <div>
-          <h2 className="page-title">Profiles Dashboard</h2>
-          <p className="page-subtitle">Manage and automate your TikTok accounts</p>
-          <div className="toolbar" style={{ marginTop: '16px' }}>
-            <label className="field-label">
-              Group
-              <select
-                className="input"
-                style={{ padding: '8px 12px', minWidth: '180px' }}
-                value={groupFilter}
-                onChange={(e) => setGroupFilter(e.target.value)}
-              >
-                <option value="all">All Groups</option>
-                <option value="ungrouped">Ungrouped</option>
-                {groups.map((g) => (
-                  <option key={g.id} value={g.id}>{g.name}</option>
-                ))}
-              </select>
-            </label>
-            {filteredProfiles.length > 0 && (
-              <label className="field-label" style={{ cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={allFilteredSelected}
-                  onChange={toggleSelectAllFiltered}
-                  className="checkbox"
-                />
-                Chọn tất cả (danh sách đang hiển thị)
-              </label>
-            )}
-            {hasSelection && (
-              <span className="selection-count">
-                Đã chọn {selectedForRun.size} profile
-                {bulkRunMode === 'sequential' ? ' (chạy tuần tự)' : ' (chạy cùng lúc)'}
-              </span>
-            )}
+      <div className="page-header page-header--dash">
+        <div className="dash-top">
+          <div>
+            <h2 className="page-title">Profiles Dashboard</h2>
+            <p className="page-subtitle">Manage and automate your TikTok accounts</p>
+          </div>
+          <div className="dash-tools">
+            <button type="button" className="btn-add" onClick={() => setIsCreateProfileModalOpen(true)}>
+              <Plus size={16} aria-hidden="true" />
+              Thêm mới
+            </button>
+            <span className="toolbar-divider" aria-hidden="true" />
+            <IconActionButton
+              icon={<Upload size={16} />}
+              onClick={() => setIsImportModalOpen(true)}
+              title="Import CSV"
+              color="var(--text)"
+              bg="rgba(255, 255, 255, 0.05)"
+              border="var(--border)"
+            />
+            <IconActionButton
+              icon={<FolderOpen size={16} />}
+              onClick={() => setIsImportFolderModalOpen(true)}
+              title="Import Folder"
+              color="var(--text)"
+              bg="rgba(255, 255, 255, 0.05)"
+              border="var(--border)"
+            />
+            <span className="toolbar-divider" aria-hidden="true" />
+            <IconActionButton
+              icon={<Download size={16} />}
+              onClick={() => setIsExportFolderModalOpen(true)}
+              disabled={!hasSelection}
+              title={hasSelection ? 'Export danh sách profile đã chọn thành thư mục/ZIP theo format TikTok_Export' : 'Tick checkbox trên các profile cần export'}
+              color="#3B82F6"
+              bg="rgba(59, 130, 246, 0.1)"
+              border="rgba(59, 130, 246, 0.3)"
+            />
+            <IconActionButton
+              icon={<Trash2 size={16} />}
+              onClick={clearTrash}
+              disabled={!hasSelection}
+              title={hasSelection ? 'Clear Trash - dọn cache/rác của profile đã chọn' : 'Tick checkbox trên từng profile cần dọn rác'}
+              color="var(--status-warn)"
+              bg="rgba(245, 158, 11, 0.08)"
+              border="rgba(245, 158, 11, 0.25)"
+            />
+            <IconActionButton
+              icon={<Bug size={16} />}
+              onClick={clearDebugFiles}
+              title="Clear Debug - xóa file debug PNG và log (~300-600MB)"
+              color="var(--status-violet)"
+              bg="rgba(139, 92, 246, 0.08)"
+              border="rgba(139, 92, 246, 0.25)"
+            />
           </div>
         </div>
-        <div className="toolbar-actions">
-          <button className="btn btn-secondary" onClick={() => setIsCreateProfileModalOpen(true)}>
-            <Plus size={18} />
-            Thêm mới
-          </button>
-          <button className="btn btn-secondary" onClick={() => setIsImportModalOpen(true)}>
-            <Upload size={18} />
-            Import CSV
-          </button>
-          <button className="btn btn-secondary" onClick={() => setIsImportFolderModalOpen(true)}>
-            <FolderOpen size={18} />
-            Import Folder
-          </button>
-          <button
-            className="btn btn-export"
-            onClick={() => setIsExportFolderModalOpen(true)}
-            disabled={!hasSelection}
-            title={hasSelection ? 'Export danh sách profile đã chọn thành thư mục/ZIP theo format TikTok_Export' : 'Tick checkbox trên các profile cần export'}
-          >
-            <Download size={18} />
-            Export Folder ({selectedForRun.size})
-          </button>
-          <button
-            className="btn btn-trash"
-            onClick={clearTrash}
-            disabled={!hasSelection}
-            title={hasSelection ? 'Xoá cache/thùng rác của các profile đã chọn để tiết kiệm dung lượng' : 'Tick checkbox trên từng profile cần dọn rác'}
-          >
-            <Trash2 size={18} />
-            Clear Trash
-          </button>
-          <button
-            className="btn btn-purple"
-            onClick={clearDebugFiles}
-            title="Xóa file debug PNG và dọn automation.log để giải phóng dung lượng (~300-600MB)"
-          >
-            <Trash2 size={18} />
-            Clear Debug
-          </button>
-          <button
-            className="btn btn-danger"
-            onClick={deleteSelectedProfiles}
-            disabled={!hasSelection}
-            title={hasSelection ? 'Xoá các profile đã chọn và folder của chúng' : 'Tick checkbox trên từng profile cần xóa'}
-          >
-            <Trash2 size={18} />
-            Xóa Profile
-          </button>
-          <label className="field-label--column">
-            Giới hạn upload
-            <label className="toggle-row" style={{ height: '40px', padding: '0 12px' }}>
-              <input
-                type="checkbox"
-                checked={limitUploads}
-                onChange={(e) => setLimitUploads(e.target.checked)}
-              />
-              <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'var(--text)' }}>Bật</span>
-            </label>
-          </label>
-          {limitUploads && (
-            <label className="field-label--column" style={{ minWidth: '80px' }}>
-              Số video
-              <input
-                type="number"
-                className="input"
-                style={{ padding: '10px 12px', height: '40px' }}
-                min="1"
-                value={uploadLimitCount}
-                onChange={(e) => setUploadLimitCount(parseInt(e.target.value) || 1)}
-              />
-            </label>
-          )}
-          <label className="field-label--column" style={{ minWidth: '140px' }}>
-            Kiểu chạy
+
+        <div className="dash-filter">
+          <label className="field-label">
+            Group
             <select
-              className="input"
-              value={bulkRunMode}
-              onChange={(e) => setBulkRunMode(e.target.value === 'sequential' ? 'sequential' : 'parallel')}
-              style={{ padding: '10px 12px', cursor: 'pointer' }}
+              className="input input-compact"
+              style={{ minWidth: '180px' }}
+              value={groupFilter}
+              onChange={(e) => setGroupFilter(e.target.value)}
             >
-              <option value="parallel">Chạy cùng lúc</option>
-              <option value="sequential">Chạy tuần tự</option>
+              <option value="all">All Groups</option>
+              <option value="ungrouped">Ungrouped</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
             </select>
           </label>
+          {filteredProfiles.length > 0 && (
+            <label className="field-label" style={{ cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={allFilteredSelected}
+                onChange={toggleSelectAllFiltered}
+                className="checkbox"
+              />
+              Chọn tất cả
+            </label>
+          )}
+        </div>
+
+        <div className={`glass bulk-bar${hasSelection ? ' is-active' : ''}`}>
+          <div className={`selection-count${hasSelection ? ' is-active' : ''}`}>
+            {hasSelection ? `${selectedForRun.size} đã chọn` : 'Chưa chọn profile'}
+          </div>
+
+          <span className="toolbar-divider" aria-hidden="true" />
+
           <button
-            className="btn btn-primary"
+            type="button"
+            className={`bulk-chip${limitUploads ? ' is-on' : ''}`}
+            onClick={() => setLimitUploads(!limitUploads)}
+            data-tooltip="Giới hạn số video upload mỗi lần chạy"
+          >
+            <Zap size={13} aria-hidden="true" />
+            Giới hạn
+          </button>
+          {limitUploads && (
+            <input
+              type="number"
+              className="input input-compact input-compact--num"
+              min="1"
+              value={uploadLimitCount}
+              onChange={(e) => setUploadLimitCount(parseInt(e.target.value) || 1)}
+              aria-label="Số video tối đa mỗi lần upload"
+              data-tooltip="Số video mỗi lần chạy"
+            />
+          )}
+
+          <select
+            className="input input-compact"
+            value={bulkRunMode}
+            onChange={(e) => setBulkRunMode(e.target.value === 'sequential' ? 'sequential' : 'parallel')}
+            data-tooltip="Kiểu chạy hàng loạt"
+            aria-label="Kiểu chạy hàng loạt"
+          >
+            <option value="parallel">Cùng lúc</option>
+            <option value="sequential">Tuần tự</option>
+          </select>
+
+          <span className="toolbar-divider" aria-hidden="true" />
+
+          <IconActionButton
+            icon={<Trash2 size={15} />}
+            onClick={deleteSelectedProfiles}
+            disabled={!hasSelection}
+            title={hasSelection ? 'Xóa các profile đã chọn' : 'Tick checkbox trên từng profile cần xóa'}
+            color="var(--error)"
+            bg="rgba(239, 68, 68, 0.08)"
+            border="rgba(239, 68, 68, 0.25)"
+            size="32px"
+          />
+          <IconActionButton
+            icon={<LogIn size={15} />}
+            onClick={startBulkLogin}
+            disabled={!hasSelection || isLoading}
+            title={hasSelection ? 'Login TikTok cho tất cả đã chọn' : 'Tick checkbox trên từng profile cần Login'}
+            color="var(--success)"
+            bg="rgba(16, 185, 129, 0.08)"
+            border="rgba(16, 185, 129, 0.25)"
+            size="32px"
+          />
+          {(() => {
+            const selectedEngaging = [...selectedForRun].filter((id) => engagingProfiles.has(id));
+            const allSelectedEngaging = hasSelection && selectedEngaging.length === selectedForRun.size;
+            return (
+              <IconActionButton
+                icon={allSelectedEngaging ? <StopCircle size={15} className="animate-pulse" /> : <Heart size={15} />}
+                onClick={() => (allSelectedEngaging ? stopBulkEngage() : startBulkEngage())}
+                disabled={!hasSelection}
+                title={!hasSelection ? 'Tick checkbox trên từng profile cần Engage' : (allSelectedEngaging ? 'Dừng Engage tất cả đã chọn' : 'Bật Auto Engage cho tất cả đã chọn')}
+                color={allSelectedEngaging ? 'var(--error)' : 'var(--status-engage)'}
+                bg={allSelectedEngaging ? 'rgba(239,68,68,0.1)' : 'rgba(236,72,153,0.1)'}
+                border={allSelectedEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.3)'}
+                size="32px"
+              />
+            );
+          })()}
+          <IconActionButton
+            icon={<BarChart2 size={15} />}
+            onClick={openStatsModal}
+            disabled={!hasSelection}
+            title={hasSelection ? 'Thống kê video cho các profile đã chọn' : 'Tick checkbox trên từng profile cần thống kê'}
+            color="var(--accent)"
+            bg="rgba(34, 211, 238, 0.1)"
+            border="rgba(34, 211, 238, 0.3)"
+            size="32px"
+          />
+
+          <button
+            type="button"
+            className="btn-run"
             onClick={() => startAutomation()}
             disabled={isLoading || !hasSelection}
             title={hasSelection ? undefined : 'Tick checkbox trên từng profile cần upload'}
           >
-            {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
+            {isLoading ? <RefreshCw className="animate-pulse" size={15} aria-hidden="true" /> : <Play fill="white" size={14} aria-hidden="true" />}
             Chạy đã chọn
-          </button>
-
-          {/* Bulk Login button */}
-          <button
-            className="btn btn-green"
-            onClick={startBulkLogin}
-            disabled={!hasSelection || isLoading}
-            title={hasSelection ? 'Login TikTok cho tất cả đã chọn' : 'Tick checkbox trên từng profile cần Login'}
-          >
-            <LogIn size={18} />
-            Login đã chọn
-          </button>
-
-          {/* Stats button */}
-          <button
-            className="btn btn-primary"
-            onClick={openStatsModal}
-            disabled={!hasSelection}
-            title={hasSelection ? 'Thống kê video cho các profile đã chọn' : 'Tick checkbox trên từng profile cần thống kê'}
-          >
-            <BarChart2 size={18} />
-            Thống kê
           </button>
         </div>
       </div>
 
-      <div className="profile-grid">
-        <AnimatePresence mode="popLayout">
-          {filteredProfiles.map((profile) => (
-            <ProfileCard
-              key={profile.id}
-              profile={profile}
-              isSelected={selectedForRun.has(profile.id)}
-              onToggleSelected={toggleProfileSelectedForRun}
-              onDelete={deleteProfile}
-              onOpen={openProfile}
-              onStart={startAutomation}
-              onEngage={startEngage}
-              onStopEngage={stopEngage}
-              isEngaging={engagingProfiles.has(profile.id)}
-              onLoginTikTok={startLoginTikTok}
-              onStopLoginTikTok={stopLoginTikTok}
-              isLoggingIn={loggingInProfiles.has(profile.id)}
-              onUpdateName={updateProfileName}
-              onChangeAvatar={handleChangeAvatar}
-              isChangingAvatar={changingAvatarProfiles.has(profile.id)}
-              selectedAvatarPath={avatarSelections[profile.id] || ''}
-              onAddFavoriteMusic={handleAddFavoriteMusic}
-              isAddingFavoriteMusic={addingFavoriteMusicProfiles.has(profile.id)}
-              musicSearchTerm={musicSearchTerms[profile.id] || ''}
-              editingId={editingId}
-              setEditingId={setEditingId}
-              editingValue={editingValue}
-              setEditingValue={setEditingValue}
-              onEdit={handleEditProfile}
-            />
-          ))}
-        </AnimatePresence>
-      </div>
+      {filteredProfiles.length > 0 && (
+        <div className="glass profile-table">
+          <div className="profile-table-head">
+            <div />
+            <span>Profile</span>
+            <span>Status</span>
+            <span>Actions</span>
+            <div />
+          </div>
+          <AnimatePresence mode="popLayout">
+            {filteredProfiles.map((profile) => (
+              <ProfileCard
+                key={profile.id}
+                profile={profile}
+                isSelected={selectedForRun.has(profile.id)}
+                onToggleSelected={toggleProfileSelectedForRun}
+                onDelete={deleteProfile}
+                onOpen={openProfile}
+                onStart={startAutomation}
+                onEngage={startEngage}
+                onStopEngage={stopEngage}
+                isEngaging={engagingProfiles.has(profile.id)}
+                onLoginTikTok={startLoginTikTok}
+                onStopLoginTikTok={stopLoginTikTok}
+                isLoggingIn={loggingInProfiles.has(profile.id)}
+                onUpdateName={updateProfileName}
+                onChangeAvatar={handleChangeAvatar}
+                isChangingAvatar={changingAvatarProfiles.has(profile.id)}
+                selectedAvatarPath={avatarSelections[profile.id] || ''}
+                onAddFavoriteMusic={handleAddFavoriteMusic}
+                isAddingFavoriteMusic={addingFavoriteMusicProfiles.has(profile.id)}
+                musicSearchTerm={musicSearchTerms[profile.id] || ''}
+                editingId={editingId}
+                setEditingId={setEditingId}
+                editingValue={editingValue}
+                setEditingValue={setEditingValue}
+                onEdit={handleEditProfile}
+              />
+            ))}
+          </AnimatePresence>
+        </div>
+      )}
 
       {profiles.length === 0 && (
         <div className="empty-state">

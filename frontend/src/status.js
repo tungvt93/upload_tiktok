@@ -17,13 +17,13 @@ export const STATUS_LABELS = {
 export const getStatusColor = (status = 'idle') => {
   switch (status) {
     case 'uploading': return 'var(--accent)';
-    case 'logging_in': return '#10B981';
-    case 'engaging': return '#EC4899';
-    case 'changing_avatar': return '#3B82F6';
-    case 'adding_favorite_music': return '#A855F7';
+    case 'logging_in': return 'var(--success)';
+    case 'engaging': return 'var(--status-engage)';
+    case 'changing_avatar': return 'var(--status-avatar)';
+    case 'adding_favorite_music': return 'var(--status-music-active)';
     case 'success': return 'var(--success)';
     case 'error': return 'var(--error)';
-    case 'no_videos': return '#EAB308';
+    case 'no_videos': return 'var(--status-skip)';
     default: return 'var(--text-muted)';
   }
 };
