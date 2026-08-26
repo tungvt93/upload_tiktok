@@ -85,7 +85,7 @@ const ProfileCardHeader = ({
         <div className="card-meta">
           <Clock size={12} />
           {profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}
-          <div className="status-dot" style={{ backgroundColor: getStatusColor(profile.status) }} />
+          <div className="status-dot status-dot-glow" style={{ backgroundColor: getStatusColor(profile.status), color: getStatusColor(profile.status) }} />
         </div>
       </div>
     </div>
