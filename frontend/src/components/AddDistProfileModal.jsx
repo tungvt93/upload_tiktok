@@ -72,16 +72,7 @@ const AddDistProfileModal = ({
               filteredDistAvailable.map(p => (
                 <label
                   key={p.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px',
-                    padding: '12px 16px',
-                    borderRadius: '12px',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s',
-                    background: selectedProfileIds.has(p.id) ? 'rgba(255, 63, 182, 0.08)' : 'transparent'
-                  }}
+                  className={`pick-row${selectedProfileIds.has(p.id) ? ' is-selected' : ''}`}
                 >
                   <input
                     type="checkbox"

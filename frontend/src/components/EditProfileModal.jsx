@@ -1,21 +1,20 @@
-import React from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
-  X,
-  FolderOpen,
-  Video,
-  Image,
-  Search,
-  Link,
-  Users,
   Clock,
-  Music,
-  Zap,
-  Trash2,
-  ShieldCheck,
   Fingerprint,
-  RefreshCw
+  FolderOpen,
+  Image,
+  Link,
+  Music,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Users,
+  Video,
+  X,
+  Zap
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { getStatusColor } from '../status';
 
 const EditProfileModal = ({
