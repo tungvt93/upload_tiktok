@@ -35,26 +35,18 @@ const App = () => {
             <ProfilesView {...ui} />
           ) : activeTab === 'distribution' ? (
             <DistributionView
-              distributionProfiles={ui.distributionProfiles}
-              handleRemoveDistProfile={ui.handleRemoveDistProfile}
-              showAddDistProfileModal={ui.showAddDistProfileModal}
-              setShowAddDistProfileModal={ui.setShowAddDistProfileModal}
               groups={ui.groups}
-              distGroupFilter={ui.distGroupFilter}
-              setDistGroupFilter={ui.setDistGroupFilter}
-              filteredDistAvailable={ui.filteredDistAvailable}
-              selectedProfileIds={ui.selectedProfileIds}
-              setSelectedProfileIds={ui.setSelectedProfileIds}
-              handleAddDistProfiles={ui.handleAddDistProfiles}
-              showDistributeModal={ui.showDistributeModal}
-              setShowDistributeModal={ui.setShowDistributeModal}
-              setSourceFolder={ui.setSourceFolder}
-              setVideosPerProfile={ui.setVideosPerProfile}
-              setDistributeResult={ui.setDistributeResult}
+              distGroupId={ui.distGroupId}
+              setDistGroupId={ui.setDistGroupId}
+              distGroupProfiles={ui.distGroupProfiles}
               sourceFolder={ui.sourceFolder}
+              setSourceFolder={ui.setSourceFolder}
               videosPerProfile={ui.videosPerProfile}
+              setVideosPerProfile={ui.setVideosPerProfile}
               isDistributing={ui.isDistributing}
               distributeResult={ui.distributeResult}
+              setDistributeResult={ui.setDistributeResult}
+              handleSelectDistSourceFolder={ui.handleSelectDistSourceFolder}
               handleDistribute={ui.handleDistribute}
             />
           ) : activeTab === 'groups' ? (

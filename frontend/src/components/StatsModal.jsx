@@ -62,12 +62,23 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
       if (ev.type === 'progress') {
         setProgress(prev => ({
           ...prev,
-          [ev.profileId]: { done: ev.done, total: ev.total, name: ev.profileName },
+          [ev.profileId]: { ...(prev[ev.profileId] || {}), done: ev.done, total: ev.total, name: ev.profileName, isDone: false },
+        }));
+      } else if (ev.type === 'followers') {
+        setProgress(prev => ({
+          ...prev,
+          [ev.profileId]: { ...(prev[ev.profileId] || {}), name: ev.profileName, followers: ev.followers },
+        }));
+        setLogs(prev => [...prev, { isFollowers: true, profileId: ev.profileId, profileName: ev.profileName, followers: ev.followers }]);
+      } else if (ev.type === 'done') {
+        setProgress(prev => ({
+          ...prev,
+          [ev.profileId]: { ...(prev[ev.profileId] || {}), done: ev.totalVideos || prev[ev.profileId]?.done || 0, isDone: true },
         }));
       } else if (ev.type === 'video') {
         setLogs(prev => [...prev, { ...ev, isError: false }]);
       } else if (ev.type === 'error') {
-        setLogs(prev => [...prev, { isError: true, message: ev.message, profileId: ev.profileId }]);
+        setLogs(prev => [...prev, { isError: true, message: ev.message, profileId: ev.profileId, profileName: ev.profileName }]);
       } else if (ev.type === 'all_done') {
         setIsDone(true);
         es.close();
@@ -170,15 +181,19 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
           {profileList.map(([pid, p]) => (
             <div key={pid} style={{ marginBottom: '10px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: '3px' }}>
-                <span style={{ fontWeight: 600 }}>{p.name}</span>
-                <span style={{ color: 'var(--text-muted)' }}>{p.done} / {p.total} video</span>
+                <span style={{ fontWeight: 600 }}>
+                  {p.name} {p.followers !== undefined && <span style={{ color: 'var(--primary, #6366f1)', fontWeight: 400 }}>({p.followers} followers)</span>}
+                </span>
+                <span style={{ color: p.isDone ? 'var(--success, #22c55e)' : 'var(--text-muted)', fontWeight: p.isDone ? 600 : 400 }}>
+                  {p.isDone ? `✅ Đã quét xong: ${p.done} video` : `⏳ Đang quét: ${p.done} video`}
+                </span>
               </div>
               <div style={{ background: 'var(--surface-1)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
                 <div style={{
-                  background: 'var(--primary, #6366f1)',
+                  background: p.isDone ? 'var(--success, #22c55e)' : 'var(--primary, #6366f1)',
                   height: '100%',
-                  width: p.total > 0 ? `${Math.round((p.done / p.total) * 100)}%` : '0%',
-                  transition: 'width 0.3s ease',
+                  width: '100%',
+                  transition: 'background 0.3s ease',
                 }} />
               </div>
             </div>
@@ -206,19 +221,36 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
               <div
                 key={i}
                 style={{
-                  padding: '2px 0',
+                  padding: '3px 0',
                   borderBottom: '1px solid var(--border, #ddd)',
                   color: log.isError
                     ? 'var(--danger, #ef4444)'
                     : log.restricted
                       ? '#ef4444'
-                      : 'var(--text)',
+                      : log.isFollowers
+                        ? 'var(--primary, #6366f1)'
+                        : 'var(--text)',
                 }}
               >
-                {log.isError
-                  ? `[ERROR] ${log.message}`
-                  : `${log.date} | ${log.views} views${log.restricted ? ' | 🚫 RESTRICTED' : ''}`
-                }
+                {log.isError ? (
+                  `[ERROR] ${log.profileName ? `[${log.profileName}] ` : ''}${log.message}`
+                ) : log.isFollowers ? (
+                  <>
+                    <span style={{ color: 'var(--primary, #6366f1)', fontWeight: 600, marginRight: '6px' }}>
+                      [{log.profileName || 'Profile'}]
+                    </span>
+                    <span>👥 Lượt follow: <strong>{log.followers}</strong></span>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ color: 'var(--primary, #6366f1)', fontWeight: 600, marginRight: '6px' }}>
+                      [{log.profileName || 'Profile'}]
+                    </span>
+                    <span>
+                      {log.date} | {log.views?.toLocaleString?.() ?? log.views} views{log.restricted ? ' | 🚫 RESTRICTED' : ''}
+                    </span>
+                  </>
+                )}
               </div>
             ))}
             <div ref={logsEnd} />
@@ -232,7 +264,7 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
               textAlign: 'center',
               fontSize: '0.9rem',
             }}>
-              Hoàn thành! {logCount} video đã thống kê.
+              Hoàn thành! Tổng cộng {logCount} video trên {profileList.length} profile đã quét xong.
             </p>
           )}
         </div>

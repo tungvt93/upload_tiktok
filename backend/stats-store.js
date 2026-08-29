@@ -47,6 +47,13 @@ export function appendResult(jobId, profileId, video) {
   job.results.get(profileId).push(video);
 }
 
+export function setProfileFollowers(jobId, profileId, followers) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  if (!job.followers) job.followers = new Map();
+  job.followers.set(profileId, followers);
+}
+
 export function markProfileDone(jobId, profileId) {
   pushEvent(jobId, { type: 'done', profileId });
 }
@@ -89,6 +96,7 @@ export async function getExcelBuffer(jobId, profileNames) {
   summarySheet.columns = [
     { header: 'STT', key: 'stt', width: 6 },
     { header: 'Tên Profile', key: 'name', width: 30 },
+    { header: 'Lượt Follow', key: 'followers', width: 16 },
     { header: 'Tổng Video', key: 'totalVideos', width: 14 },
     { header: 'Tổng Views', key: 'totalViews', width: 14 },
     { header: 'Video Bị Restricted', key: 'restrictedCount', width: 22 },
@@ -105,6 +113,7 @@ export async function getExcelBuffer(jobId, profileNames) {
   for (const profileId of job.profileIds) {
     const rawName = (profileNames?.get(profileId) || profileId || `Profile_${profileIndex}`).toString().trim();
     const videos = job.results.get(profileId) || [];
+    const followers = job.followers?.get(profileId) || '0';
 
     // Sanitize sheet name: Excel allows max 31 chars and prohibits: \ / ? * [ ] :
     let safeName = rawName.replace(/[:\\/?*\[\]]/g, '_').substring(0, 25) || `Profile_${profileIndex}`;
@@ -158,6 +167,7 @@ export async function getExcelBuffer(jobId, profileNames) {
     const summaryRow = summarySheet.addRow({
       stt: profileIndex++,
       name: rawName,
+      followers: followers,
       totalVideos: videos.length,
       totalViews: profileTotalViews,
       restrictedCount: profileRestrictedCount,

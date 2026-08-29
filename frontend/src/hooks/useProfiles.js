@@ -57,11 +57,7 @@ const useProfiles = () => {
   const [editingProfileId, setEditingProfileId] = useState(null);
 
   // Distribution feature state
-  const [distributionProfiles, setDistributionProfiles] = useState([]);
-  const [showAddDistProfileModal, setShowAddDistProfileModal] = useState(false);
-  const [showDistributeModal, setShowDistributeModal] = useState(false);
-  const [distGroupFilter, setDistGroupFilter] = useState('all');
-  const [selectedProfileIds, setSelectedProfileIds] = useState(new Set());
+  const [distGroupId, setDistGroupId] = useState('all');
   const [sourceFolder, setSourceFolder] = useState('');
   const [videosPerProfile, setVideosPerProfile] = useState(1);
   const [isDistributing, setIsDistributing] = useState(false);
@@ -95,11 +91,10 @@ const useProfiles = () => {
 
   const fetchData = async () => {
     try {
-      const [pRes, cRes, gRes, dpRes] = await Promise.all([
+      const [pRes, cRes, gRes] = await Promise.all([
         axios.get('/api/profiles'),
         axios.get('/api/config'),
-        axios.get('/api/groups'),
-        axios.get('/api/distribution/profiles')
+        axios.get('/api/groups')
       ]);
 
       const newProfiles = pRes.data || [];
@@ -116,7 +111,6 @@ const useProfiles = () => {
 
       setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
       setGroups(gRes.data || []);
-      setDistributionProfiles(dpRes.data || []);
 
       // Sync engaging status from profile status field
       setEngagingProfiles(prev => {
@@ -1020,53 +1014,25 @@ const useProfiles = () => {
     setEditingProfileId(null);
   };
 
-  const handleRemoveDistProfile = async (profileId) => {
+  const handleSelectDistSourceFolder = async () => {
+    setIsSelectingFolder(true);
     try {
-      await axios.delete(`/api/distribution/profiles/${profileId}`);
-      setDistributionProfiles(prev => prev.filter(p => p.profile_id !== profileId));
-      setMessage({ type: 'success', text: 'Đã xoá profile khỏi danh sách phân phối' });
-    } catch (err) {
-      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi xoá profile' });
-    }
-  };
-
-  const handleAddDistProfiles = async () => {
-    const ids = [...selectedProfileIds];
-    if (ids.length === 0) return;
-
-    let added = 0;
-    let errors = 0;
-    let lastError = '';
-    for (const profileId of ids) {
-      try {
-        await axios.post('/api/distribution/profiles', { profile_id: profileId });
-        added++;
-      } catch (err) {
-        if (err.response?.status === 409) {
-          // Already in list, skip
-        } else {
-          errors++;
-          lastError = err.response?.data?.error || err.message;
-        }
+      const selectedPath = await selectFolderPath();
+      if (selectedPath) {
+        setSourceFolder(selectedPath);
       }
-    }
-
-    setSelectedProfileIds(new Set());
-    setShowAddDistProfileModal(false);
-
-    // Refresh distribution list
-    try {
-      const dpRes = await axios.get('/api/distribution/profiles');
-      setDistributionProfiles(dpRes.data || []);
-    } catch (e) { /* ignore */ }
-
-    if (added > 0) {
-      setMessage({ type: 'success', text: `Đã thêm ${added} profile vào danh sách phân phối` });
-    }
-    if (errors > 0) {
-      setMessage({ type: 'error', text: `Có ${errors} lỗi khi thêm profile${lastError ? ': ' + lastError : ''}` });
+    } finally {
+      setIsSelectingFolder(false);
     }
   };
+
+  const distGroupProfiles = useMemo(() => {
+    if (distGroupId === 'all') return profiles;
+    if (distGroupId === 'ungrouped') {
+      return profiles.filter(p => !p.group_id);
+    }
+    return profiles.filter(p => p.group_id === distGroupId);
+  }, [profiles, distGroupId]);
 
   const handleDistribute = async () => {
     if (!sourceFolder.trim()) {
@@ -1077,11 +1043,16 @@ const useProfiles = () => {
       setMessage({ type: 'error', text: 'Số lượng video mỗi profile phải >= 1' });
       return;
     }
+    if (distGroupProfiles.length === 0) {
+      setMessage({ type: 'error', text: 'Nhóm đã chọn không có profile nào' });
+      return;
+    }
 
     setIsDistributing(true);
     setDistributeResult(null);
     try {
       const res = await axios.post('/api/distribution/distribute', {
+        groupId: distGroupId,
         sourceFolder: sourceFolder.trim(),
         videosPerProfile
       });
@@ -1098,20 +1069,6 @@ const useProfiles = () => {
       setIsDistributing(false);
     }
   };
-
-  // Compute profiles NOT already in distribution (for the modal)
-  const availableForDist = useMemo(() => {
-    const distIds = new Set(distributionProfiles.map(p => p.profile_id));
-    return profiles.filter(p => !distIds.has(p.id));
-  }, [profiles, distributionProfiles]);
-
-  const filteredDistAvailable = useMemo(() => {
-    if (distGroupFilter === 'all') return availableForDist;
-    if (distGroupFilter === 'ungrouped') {
-      return availableForDist.filter(p => !p.group_id);
-    }
-    return availableForDist.filter(p => p.group_id === distGroupFilter);
-  }, [availableForDist, distGroupFilter]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -1184,17 +1141,12 @@ const useProfiles = () => {
     editingId,
     editingValue,
     // distribution
-    distributionProfiles,
-    showAddDistProfileModal,
-    showDistributeModal,
-    distGroupFilter,
-    selectedProfileIds,
+    distGroupId,
+    distGroupProfiles,
     sourceFolder,
     videosPerProfile,
     isDistributing,
     distributeResult,
-    availableForDist,
-    filteredDistAvailable,
     // setters
     setActiveTab,
     setMessage,
@@ -1223,13 +1175,11 @@ const useProfiles = () => {
     setIsExportFolderModalOpen,
     setImportFolderPath,
     setExportFolderPath,
-    setShowAddDistProfileModal,
-    setShowDistributeModal,
-    setDistGroupFilter,
-    setSelectedProfileIds,
+    setDistGroupId,
     setSourceFolder,
     setVideosPerProfile,
     setDistributeResult,
+    handleSelectDistSourceFolder,
     // actions
     fetchData,
     addGroup,
@@ -1288,8 +1238,6 @@ const useProfiles = () => {
     handleUpdateMusicSearchTerm,
     handleEditProfile,
     handleCloseEditProfile,
-    handleRemoveDistProfile,
-    handleAddDistProfiles,
     handleDistribute,
     getStatusColor
   };
