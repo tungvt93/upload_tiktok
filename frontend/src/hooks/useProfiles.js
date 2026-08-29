@@ -54,6 +54,7 @@ const useProfiles = () => {
   const [exportResults, setExportResults] = useState(null);
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
   const [statsProfileIds,  setStatsProfileIds]  = useState([]);
+  const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [editingProfileId, setEditingProfileId] = useState(null);
 
   // Distribution feature state
@@ -654,6 +655,33 @@ const useProfiles = () => {
 
   const closeStatsModal = () => setIsStatsModalOpen(false);
 
+  const openBulkEditModal = () => {
+    if (selectedForRun.size === 0) {
+      setMessage({ type: 'error', text: 'Vui lòng chọn ít nhất một profile để cập nhật đồng loạt.' });
+      setTimeout(() => setMessage(null), 3000);
+      return;
+    }
+    setIsBulkEditModalOpen(true);
+  };
+
+  const closeBulkEditModal = () => setIsBulkEditModalOpen(false);
+
+  const updateProfilesBulk = async (updates) => {
+    const profileIds = Array.from(selectedForRun);
+    if (profileIds.length === 0) return;
+    try {
+      await axios.post('/api/profiles/bulk-update', { profileIds, updates });
+      setMessage({ type: 'success', text: `Đã cập nhật đồng loạt cho ${profileIds.length} profile.` });
+      setTimeout(() => setMessage(null), 3000);
+      fetchData();
+      closeBulkEditModal();
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi cập nhật đồng loạt.' });
+      setTimeout(() => setMessage(null), 3000);
+    }
+  };
+
   const updateProfileFolder = async (id, folder) => {
     try {
       await axios.patch(`/api/profiles/${id}`, { video_folder: folder });
@@ -669,6 +697,24 @@ const useProfiles = () => {
       fetchData();
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const updateProfileUseProxy = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, use_proxy: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { use_proxy: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
     }
   };
 
@@ -1215,8 +1261,13 @@ const useProfiles = () => {
     statsProfileIds,
     openStatsModal,
     closeStatsModal,
+    isBulkEditModalOpen,
+    openBulkEditModal,
+    closeBulkEditModal,
+    updateProfilesBulk,
     updateProfileFolder,
     updateProfileProxy,
+    updateProfileUseProxy,
     updateProfileChannelIds,
     updateProfileName,
     updateProfileSchedule,

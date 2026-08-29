@@ -14,6 +14,7 @@ import {
   BarChart2,
   Heart,
   Zap,
+  Sliders,
 } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import ProfileCard from './ProfileCard';
@@ -22,24 +23,25 @@ import ImportCsvModal from './ImportCsvModal';
 import ImportFolderModal from './ImportFolderModal';
 import ExportFolderModal from './ExportFolderModal';
 import EditProfileModal from './EditProfileModal';
+import BulkEditModal from './BulkEditModal';
 import IconActionButton from './IconActionButton';
 
 // The "Profiles Dashboard" tab: filters, bulk actions, profile card grid,
 // empty states and all profile-related modals (create, import, export, edit).
 const ProfilesView = ({
-  profiles,
-  filteredProfiles,
-  groups,
-  groupFilter,
+  profiles = [],
+  filteredProfiles = [],
+  groups = [],
+  groupFilter = 'all',
   setGroupFilter,
-  allFilteredSelected,
+  allFilteredSelected = false,
   toggleSelectAllFiltered,
-  selectedForRun,
-  bulkRunMode,
+  selectedForRun = new Set(),
+  bulkRunMode = 'parallel',
   setBulkRunMode,
-  isLoading,
+  isLoading = false,
   startAutomation,
-  engagingProfiles,
+  engagingProfiles = new Set(),
   startBulkEngage,
   stopBulkEngage,
   startBulkLogin,
@@ -47,9 +49,9 @@ const ProfilesView = ({
   clearTrash,
   clearDebugFiles,
   deleteSelectedProfiles,
-  limitUploads,
+  limitUploads = false,
   setLimitUploads,
-  uploadLimitCount,
+  uploadLimitCount = 1,
   setUploadLimitCount,
   setIsCreateProfileModalOpen,
   setIsImportModalOpen,
@@ -63,14 +65,14 @@ const ProfilesView = ({
   stopEngage,
   startLoginTikTok,
   stopLoginTikTok,
-  loggingInProfiles,
+  loggingInProfiles = new Set(),
   updateProfileName,
   handleChangeAvatar,
-  changingAvatarProfiles,
-  avatarSelections,
+  changingAvatarProfiles = new Set(),
+  avatarSelections = {},
   handleAddFavoriteMusic,
-  addingFavoriteMusicProfiles,
-  musicSearchTerms,
+  addingFavoriteMusicProfiles = new Set(),
+  musicSearchTerms = {},
   editingId,
   setEditingId,
   editingValue,
@@ -122,6 +124,10 @@ const ProfilesView = ({
   exportResults,
   closeExportFolderModal,
   handleExportFolder,
+  isBulkEditModalOpen,
+  openBulkEditModal,
+  closeBulkEditModal,
+  updateProfilesBulk,
   // edit modal
   editingProfileId,
   editingProfile,
@@ -130,6 +136,7 @@ const ProfilesView = ({
   updateProfileFolder,
   handleSelectFolder,
   updateProfileProxy,
+  updateProfileUseProxy,
   updateProfileChannelIds,
   updateProfileSchedule,
   updateProfileSchedules,
@@ -145,7 +152,7 @@ const ProfilesView = ({
   handleSelectAvatar,
   handleUpdateMusicSearchTerm
 }) => {
-  const hasSelection = selectedForRun.size > 0;
+  const hasSelection = (selectedForRun?.size || 0) > 0;
 
   return (
     <section>
@@ -298,8 +305,8 @@ const ProfilesView = ({
             size="32px"
           />
           {(() => {
-            const selectedEngaging = [...selectedForRun].filter((id) => engagingProfiles.has(id));
-            const allSelectedEngaging = hasSelection && selectedEngaging.length === selectedForRun.size;
+            const selectedEngaging = [...(selectedForRun || [])].filter((id) => engagingProfiles?.has?.(id));
+            const allSelectedEngaging = hasSelection && selectedEngaging.length === (selectedForRun?.size || 0);
             return (
               <IconActionButton
                 icon={allSelectedEngaging ? <StopCircle size={15} className="animate-pulse" /> : <Heart size={15} />}
@@ -321,6 +328,16 @@ const ProfilesView = ({
             color="var(--accent)"
             bg="rgba(34, 211, 238, 0.1)"
             border="rgba(34, 211, 238, 0.3)"
+            size="32px"
+          />
+          <IconActionButton
+            icon={<Sliders size={15} />}
+            onClick={openBulkEditModal}
+            disabled={!hasSelection}
+            title={hasSelection ? 'Cập nhật đồng loạt các profile đã chọn' : 'Tick checkbox trên từng profile cần cập nhật'}
+            color="var(--primary)"
+            bg="rgba(59, 130, 246, 0.1)"
+            border="rgba(59, 130, 246, 0.3)"
             size="32px"
           />
 
@@ -466,6 +483,7 @@ const ProfilesView = ({
         onUpdateFolder={updateProfileFolder}
         onSelectFolder={handleSelectFolder}
         onUpdateProxy={updateProfileProxy}
+        onUpdateUseProxy={updateProfileUseProxy}
         onUpdateChannelIds={updateProfileChannelIds}
         onUpdateSchedule={updateProfileSchedule}
         onUpdateSchedules={updateProfileSchedules}
@@ -482,6 +500,14 @@ const ProfilesView = ({
         selectedAvatarPath={editingProfileId ? (avatarSelections[editingProfileId] || '') : ''}
         musicSearchTerm={editingProfileId ? (musicSearchTerms[editingProfileId] || '') : ''}
         onUpdateMusicSearchTerm={handleUpdateMusicSearchTerm}
+      />
+
+      <BulkEditModal
+        isOpen={isBulkEditModalOpen}
+        onClose={closeBulkEditModal}
+        selectedCount={selectedForRun.size}
+        groups={groups}
+        onSave={updateProfilesBulk}
       />
     </section>
   );

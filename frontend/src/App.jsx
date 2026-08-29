@@ -22,8 +22,8 @@ const App = () => {
         <Sidebar
           activeTab={activeTab}
           onTabChange={ui.setActiveTab}
-          profilesCount={ui.profiles.length}
-          maxConcurrency={ui.config.maxConcurrency}
+          profilesCount={ui.profiles?.length || 0}
+          maxConcurrency={ui.config?.maxConcurrency || 2}
           theme={theme}
           onToggleTheme={toggleTheme}
         />

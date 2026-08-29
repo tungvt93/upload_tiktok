@@ -96,6 +96,7 @@ db.exec(`
         status TEXT DEFAULT 'idle',
         video_folder TEXT,
         proxy TEXT,
+        use_proxy INTEGER DEFAULT 1,
         is_scheduled INTEGER DEFAULT 0,
         last_run TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -122,6 +123,19 @@ try {
     }
 } catch (err) {
     console.error('Migration error (proxy column):', err);
+}
+
+// Migration: Add use_proxy column if not exists
+try {
+    const tableInfo = db.prepare("PRAGMA table_info(profiles)").all();
+    const hasUseProxy = tableInfo.some(col => col.name === 'use_proxy');
+    if (!hasUseProxy) {
+        db.exec("ALTER TABLE profiles ADD COLUMN use_proxy INTEGER DEFAULT 1;");
+        db.prepare("UPDATE profiles SET use_proxy = 1 WHERE use_proxy IS NULL").run();
+        console.log('Added use_proxy column to profiles table with default 1');
+    }
+} catch (err) {
+    console.error('Migration error (use_proxy column):', err);
 }
 
 // Migration: Add is_scheduled column if not exists
@@ -670,10 +684,10 @@ app.post('/api/profiles/import-csv', (req, res) => {
         const results = { imported: 0, skipped: 0, errors: [] };
 
         const insertProfile = db.prepare(`
-            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule, schedule_interval,
                 group_id, video_folder, set_music, upload_count, needs_render, remove_title,
-                need_content_check, account_id, pass, email, pass_email, cookies, music_search)
-            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?, ?, ?)
+                need_content_check, use_proxy, account_id, pass, email, pass_email, cookies, music_search, proxy)
+            VALUES (?, ?, 'idle', 0, 1, 10, ?, ?, 1, 1, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const existingNames = new Set(
@@ -706,6 +720,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
             let passEmail = (row.pass_email || row.pass_email_password || '').trim() || null;
             let cookies = (row.cookies || '').trim() || null;
             let musicSearch = (row.music_search || row.favorite_music || row.music || '').trim() || null;
+            let proxy = (row.proxy || row.proxy_server || '').trim() || null;
 
             if (accountId && accountId.includes('|') && !pass && !email && !passEmail) {
                 const parts = accountId.split('|');
@@ -725,7 +740,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
                 if (videoFolder) {
                     fs.mkdirSync(videoFolder, { recursive: true });
                 }
-                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail, cookies, musicSearch);
+                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail, cookies, musicSearch, proxy);
                 existingNames.add(profileName.toLowerCase());
                 results.imported++;
             } catch (e) {
@@ -1430,7 +1445,7 @@ app.post('/api/system/clear-debug', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
+    const { name, video_folder, proxy, use_proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -1483,6 +1498,11 @@ app.patch('/api/profiles/:id', (req, res) => {
     }
     if (proxy !== undefined) {
         db.prepare('UPDATE profiles SET proxy = ? WHERE id = ?').run(proxy, profileId);
+    }
+    if (use_proxy !== undefined || req.body.use_proxy !== undefined) {
+        const targetVal = use_proxy !== undefined ? use_proxy : req.body.use_proxy;
+        const val = targetVal ? 1 : 0;
+        db.prepare('UPDATE profiles SET use_proxy = ? WHERE id = ?').run(val, profileId);
     }
     if (is_scheduled !== undefined) {
         const val = is_scheduled ? 1 : 0;
@@ -1539,6 +1559,65 @@ app.patch('/api/profiles/:id', (req, res) => {
     }
 
     res.json({ success: true });
+});
+
+// POST /api/profiles/bulk-update — Update multiple profiles simultaneously
+app.post('/api/profiles/bulk-update', (req, res) => {
+    const { profileIds, updates } = req.body;
+    if (!Array.isArray(profileIds) || profileIds.length === 0 || !updates || typeof updates !== 'object') {
+        return res.status(400).json({ error: 'profileIds array and updates object required' });
+    }
+
+    const allowedFields = [
+        'group_id', 'proxy', 'use_proxy', 'is_scheduled', 'auto_increment_schedule',
+        'schedule_interval', 'set_music', 'upload_count', 'channel_ids', 'needs_render',
+        'remove_title', 'need_content_check', 'render_video_long', 'render_concat_video',
+        'cookies', 'music_search', 'use_fingerprint'
+    ];
+
+    const booleanFields = [
+        'use_proxy', 'is_scheduled', 'set_music', 'auto_increment_schedule',
+        'needs_render', 'remove_title', 'need_content_check', 'render_video_long',
+        'render_concat_video', 'use_fingerprint'
+    ];
+
+    const fieldsToUpdate = [];
+    const values = [];
+
+    for (const field of allowedFields) {
+        if (field in updates && updates[field] !== undefined) {
+            let val = updates[field];
+            if (booleanFields.includes(field)) {
+                val = val ? 1 : 0;
+            }
+            fieldsToUpdate.push(`${field} = ?`);
+            values.push(val);
+        }
+    }
+
+    if (fieldsToUpdate.length === 0) {
+        return res.status(400).json({ error: 'No valid update fields provided' });
+    }
+
+    const setClause = fieldsToUpdate.join(', ');
+    const stmt = db.prepare(`UPDATE profiles SET ${setClause} WHERE id = ?`);
+
+    const updateMany = db.transaction((ids) => {
+        let count = 0;
+        for (const id of ids) {
+            const result = stmt.run(...values, id);
+            count += result.changes;
+        }
+        return count;
+    });
+
+    try {
+        const totalUpdated = updateMany(profileIds);
+        res.json({ success: true, count: totalUpdated });
+    } catch (err) {
+        console.error('Bulk update error:', err);
+        res.status(500).json({ error: `Bulk update failed: ${err.message}` });
+    }
 });
 
 // Fingerprint management endpoints
@@ -2929,7 +3008,7 @@ app.post('/api/open-profile', async (req, res) => {
             ]
         };
 
-        if (profile.proxy) {
+        if (profile.proxy && profile.use_proxy !== 0) {
             const proxyConfig = parseProxy(profile.proxy);
             if (proxyConfig) {
                 browserOptions.proxy = proxyConfig;
@@ -2973,7 +3052,7 @@ async function changeAvatar(profile, avatarImage) {
         headless: false,
         args: ['--disable-blink-features=AutomationControlled']
     };
-    if (profile.proxy) {
+    if (profile.proxy && profile.use_proxy !== 0) {
         const proxyConfig = parseProxy(profile.proxy);
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
@@ -3177,7 +3256,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         headless: false,
         args: ['--disable-blink-features=AutomationControlled']
     };
-    if (profile.proxy) {
+    if (profile.proxy && profile.use_proxy !== 0) {
         const proxyConfig = parseProxy(profile.proxy);
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
@@ -4072,7 +4151,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         ]
     };
 
-    if (profile.proxy) {
+    if (profile.proxy && profile.use_proxy !== 0) {
         const proxyConfig = parseProxy(profile.proxy);
         if (proxyConfig) {
             browserOptions.proxy = proxyConfig;
@@ -5289,7 +5368,7 @@ async function runEngageSession(profile) {
         args: ['--disable-blink-features=AutomationControlled']
     };
 
-    if (profile.proxy) {
+    if (profile.proxy && profile.use_proxy !== 0) {
         const proxyConfig = parseProxy(profile.proxy);
         if (proxyConfig) {
             browserOptions.proxy = proxyConfig;
@@ -6058,7 +6137,7 @@ async function runTikTokLogin(profile) {
         headless: false,
         args: ['--disable-blink-features=AutomationControlled']
     };
-    if (profile.proxy) {
+    if (profile.proxy && profile.use_proxy !== 0) {
         const proxyConfig = parseProxy(profile.proxy);
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }

@@ -26,6 +26,7 @@ const EditProfileModal = ({
   onUpdateFolder,
   onSelectFolder,
   onUpdateProxy,
+  onUpdateUseProxy,
   onUpdateChannelIds,
   onUpdateSchedule,
   onUpdateSchedules,
@@ -186,19 +187,36 @@ const EditProfileModal = ({
                 </div>
               </div>
 
-              {/* Proxy Server */}
+              {/* Proxy Server & Toggle */}
               <div style={{ marginBottom: '20px' }}>
-                <div className="field-title">
-                  <Link size={14} />
-                  Proxy Server (Optional)
+                <label className="toggle-row" style={{ marginBottom: '10px' }}>
+                  <input
+                    type="checkbox"
+                    checked={profile.use_proxy !== 0}
+                    onChange={(e) => onUpdateUseProxy && onUpdateUseProxy(profile.id, e.target.checked)}
+                  />
+                  <div className="toggle-body">
+                    <span className="toggle-title">
+                      <Link size={14} color="var(--primary)" />
+                      Sử dụng Proxy
+                    </span>
+                    <span className="toggle-desc">
+                      Bật: kết nối qua Proxy khi chạy profile. Tắt: chạy trực tiếp không qua proxy.
+                    </span>
+                  </div>
+                </label>
+                <div style={{ opacity: profile.use_proxy === 0 ? 0.6 : 1, transition: 'opacity 0.2s' }}>
+                  <div className="field-title" style={{ fontSize: '0.75rem', marginBottom: '4px' }}>
+                    Proxy Server (Optional) {profile.use_proxy === 0 && <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}>(Đang tắt proxy)</span>}
+                  </div>
+                  <input
+                    className="input"
+                    style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
+                    placeholder="http://user:pass@host:port"
+                    value={profile.proxy || ''}
+                    onChange={(e) => onUpdateProxy(profile.id, e.target.value)}
+                  />
                 </div>
-                <input
-                  className="input"
-                  style={{ fontSize: '0.75rem', padding: '8px 12px', width: '100%' }}
-                  placeholder="http://user:pass@host:port"
-                  value={profile.proxy || ''}
-                  onChange={(e) => onUpdateProxy(profile.id, e.target.value)}
-                />
               </div>
 
               {/* Channel IDs */}
