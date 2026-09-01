@@ -56,6 +56,7 @@ const useProfiles = () => {
   const [statsProfileIds,  setStatsProfileIds]  = useState([]);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [editingProfileId, setEditingProfileId] = useState(null);
+  const [batchStatus, setBatchStatus] = useState(null);
 
   // Distribution feature state
   const [distGroupId, setDistGroupId] = useState('all');
@@ -92,10 +93,11 @@ const useProfiles = () => {
 
   const fetchData = async () => {
     try {
-      const [pRes, cRes, gRes] = await Promise.all([
+      const [pRes, cRes, gRes, bRes] = await Promise.all([
         axios.get('/api/profiles'),
         axios.get('/api/config'),
-        axios.get('/api/groups')
+        axios.get('/api/groups'),
+        axios.get('/api/batch-status').catch(() => ({ data: null }))
       ]);
 
       const newProfiles = pRes.data || [];
@@ -112,6 +114,9 @@ const useProfiles = () => {
 
       setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
       setGroups(gRes.data || []);
+      if (bRes && bRes.data) {
+        setBatchStatus(bRes.data.status !== 'idle' ? bRes.data : null);
+      }
 
       // Sync engaging status from profile status field
       setEngagingProfiles(prev => {

@@ -25,6 +25,7 @@ import ExportFolderModal from './ExportFolderModal';
 import EditProfileModal from './EditProfileModal';
 import BulkEditModal from './BulkEditModal';
 import IconActionButton from './IconActionButton';
+import BatchStatusBanner from './BatchStatusBanner';
 
 // The "Profiles Dashboard" tab: filters, bulk actions, profile card grid,
 // empty states and all profile-related modals (create, import, export, edit).
@@ -41,6 +42,8 @@ const ProfilesView = ({
   setBulkRunMode,
   isLoading = false,
   startAutomation,
+  batchStatus = null,
+  dismissBatchStatus,
   engagingProfiles = new Set(),
   startBulkEngage,
   stopBulkEngage,
@@ -156,6 +159,7 @@ const ProfilesView = ({
 
   return (
     <section>
+      <BatchStatusBanner batchStatus={batchStatus} onDismiss={dismissBatchStatus} />
       <div className="page-header page-header--dash">
         <div className="dash-top">
           <div>
