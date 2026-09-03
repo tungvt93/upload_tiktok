@@ -1,3 +1,4 @@
+import ClipboardQueueView from './components/ClipboardQueueView';
 import DistributionView from './components/DistributionView';
 import FolderSelectOverlay from './components/FolderSelectOverlay';
 import GroupsView from './components/GroupsView';
@@ -48,6 +49,15 @@ const App = () => {
               setDistributeResult={ui.setDistributeResult}
               handleSelectDistSourceFolder={ui.handleSelectDistSourceFolder}
               handleDistribute={ui.handleDistribute}
+            />
+          ) : activeTab === 'clipboard' ? (
+            <ClipboardQueueView
+              config={ui.config}
+              clipboardQueue={ui.clipboardQueue}
+              retryClipboardJob={ui.retryClipboardJob}
+              deleteClipboardJob={ui.deleteClipboardJob}
+              clearClipboardQueue={ui.clearClipboardQueue}
+              regenerateClipboardApiKey={ui.regenerateClipboardApiKey}
             />
           ) : activeTab === 'groups' ? (
             <GroupsView

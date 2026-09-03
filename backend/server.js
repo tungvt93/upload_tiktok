@@ -82,6 +82,7 @@ const EXTENSIONS_DIR = APP_DATA_DIR
     ? path.join(__dirname, '..', 'extensions')   // extensions shipped with app
     : path.join(__dirname, '..', 'extensions');
 const DUMMY_VIDEOS_DIR = path.join(BASE_DIR, 'dummy_videos');
+const CLIPBOARD_INBOX_DIR = path.join(UPLOADS_DIR, '_inbox');
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
@@ -89,7 +90,7 @@ if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR, { recursive: true }
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, '..', 'extensions'))) fs.mkdirSync(path.join(__dirname, '..', 'extensions'), { recursive: true });
 if (!fs.existsSync(DUMMY_VIDEOS_DIR)) fs.mkdirSync(DUMMY_VIDEOS_DIR, { recursive: true });
-
+if (!fs.existsSync(CLIPBOARD_INBOX_DIR)) fs.mkdirSync(CLIPBOARD_INBOX_DIR, { recursive: true });
 
 // Init SQLite DB
 const db = new Database(DB_PATH);
@@ -118,6 +119,16 @@ db.exec(`
         profile_id TEXT,
         time TEXT,
         FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS video_queue (
+        id TEXT PRIMARY KEY,
+        source_url TEXT NOT NULL,
+        device_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        file_path TEXT,
+        error TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 `);
 
@@ -475,6 +486,11 @@ const setConfig = (key, value) => {
 
 if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
 if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
+
+// Clipboard queue: API key required for mobile app to call POST /api/clipboard/enqueue
+if (!getConfig('clipboardApiKey', null)) setConfig('clipboardApiKey', randomUUID());
+if (!getConfig('clipboardQueueConcurrency', null)) setConfig('clipboardQueueConcurrency', '2');
+console.log(`[Clipboard Queue] x-api-key for mobile app: ${getConfig('clipboardApiKey')}`);
 
 // Cleanup: Reset any stuck profiles to "idle" on startup
 db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in', 'changing_avatar', 'adding_favorite_music')").run();
@@ -1791,6 +1807,250 @@ function sanitizeToAscii(str) {
     sanitized = sanitized.trim().replace(/\s+/g, ' ');
     return sanitized;
 }
+
+// ============================================================================
+// Clipboard Video Queue — mobile app copies a link, POSTs it here, backend
+// queues it in SQLite and downloads it in the background (yt-dlp / direct HTTP).
+// Downloaded files land in CLIPBOARD_INBOX_DIR untouched — no render/upload.
+// ============================================================================
+function requireClipboardApiKey(req, res, next) {
+    const key = req.get('x-api-key');
+    if (!key || key !== getConfig('clipboardApiKey', null)) {
+        // Always 200: a non-2xx response makes iOS Shortcuts treat the automation run as
+        // failed, which after repeated failures gets the automation silently disabled.
+        // success:false + message is how callers detect the real outcome instead.
+        return res.status(200).json({ success: false, error: 'Invalid or missing x-api-key' });
+    }
+    next();
+}
+
+let clipboardActiveDownloads = 0;
+
+const KUAISHOU_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+
+function isDirectVideoUrl(url) {
+    return /\.(mp4|mov|webm|mkv)(\?.*)?$/i.test(url);
+}
+
+function isKuaishouUrl(url) {
+    try {
+        return /(^|\.)kuaishou\.com$|(^|\.)chenzhongtech\.com$/.test(new URL(url).hostname);
+    } catch (e) {
+        return false;
+    }
+}
+
+// yt-dlp has no Kuaishou extractor (upstream tracking issue: yt-dlp/yt-dlp#14010).
+// Kuaishou's mobile SSR page embeds the direct CDN mp4 URL(s) as plain JSON
+// ("mainMvUrls") inside the page HTML, so we resolve it ourselves: follow the
+// share-link redirect with a mobile UA, then regex the JSON out of the markup.
+async function resolveKuaishouVideoUrl(shareUrl) {
+    const res = await axios.get(shareUrl, {
+        headers: { 'User-Agent': KUAISHOU_MOBILE_UA },
+        maxRedirects: 5,
+        timeout: 20000,
+        responseType: 'text'
+    });
+    const match = String(res.data).match(/"mainMvUrls"\s*:\s*(\[\{.*?\}\])/);
+    if (!match) throw new Error('Kuaishou: video URL not found in page (removed/private, or page layout changed)');
+    let urls;
+    try {
+        urls = JSON.parse(match[1]);
+    } catch (e) {
+        throw new Error('Kuaishou: failed to parse video URL data');
+    }
+    if (!Array.isArray(urls) || urls.length === 0 || !urls[0].url) throw new Error('Kuaishou: no video URL found');
+    return urls[0].url;
+}
+
+async function downloadClipboardVideo(url) {
+    const safeSpawn = (cmd, args, timeoutMs = 300000) => {
+        const child = spawn(cmd, args);
+        let timeout = null;
+        if (timeoutMs > 0) {
+            timeout = setTimeout(() => { try { child.kill('SIGKILL'); } catch (e) {} }, timeoutMs);
+        }
+        const cleanup = () => { clearTimeout(timeout); };
+        child.on('close', cleanup);
+        child.on('error', cleanup);
+        return child;
+    };
+
+    const safeFileName = `clipboard_${Date.now()}_${randomUUID().slice(0, 8)}.mp4`;
+    const destPath = path.join(CLIPBOARD_INBOX_DIR, safeFileName);
+
+    if (isKuaishouUrl(url)) {
+        const directUrl = await resolveKuaishouVideoUrl(url);
+        const httpResponse = await axios({ method: 'GET', url: directUrl, responseType: 'stream', timeout: 60000, headers: { 'User-Agent': KUAISHOU_MOBILE_UA } });
+        const writer = fs.createWriteStream(destPath);
+        httpResponse.data.pipe(writer);
+        await new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+        });
+    } else if (isDirectVideoUrl(url)) {
+        const httpResponse = await axios({ method: 'GET', url, responseType: 'stream', timeout: 60000 });
+        const writer = fs.createWriteStream(destPath);
+        httpResponse.data.pipe(writer);
+        await new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+        });
+    } else {
+        await new Promise((resolve, reject) => {
+            const child = safeSpawn('yt-dlp', [
+                '--js-runtimes', `node:${process.execPath}`,
+                url,
+                '-o', destPath,
+                '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
+                '--merge-output-format', 'mp4',
+                '--no-playlist',
+            ]);
+            let stderrData = '';
+            child.stdout.on('data', () => {});
+            child.stderr.on('data', (data) => { stderrData += data.toString(); });
+            child.on('close', (code) => {
+                if (code === 0) resolve();
+                else reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
+            });
+            child.on('error', (err) => { try { child.kill(); } catch (e) {} reject(err); });
+        });
+    }
+
+    if (!fs.existsSync(destPath)) throw new Error('Download finished but output file is missing');
+    return destPath;
+}
+
+function processClipboardQueue() {
+    const concurrency = Number(getConfig('clipboardQueueConcurrency', 2));
+    while (clipboardActiveDownloads < concurrency) {
+        const job = db.prepare("SELECT * FROM video_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1").get();
+        if (!job) break;
+        db.prepare("UPDATE video_queue SET status = 'downloading', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(job.id);
+        clipboardActiveDownloads++;
+        downloadClipboardVideo(job.source_url)
+            .then((filePath) => {
+                db.prepare("UPDATE video_queue SET status = 'done', file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(filePath, job.id);
+                console.log(`[ClipboardQueue] Job ${job.id} done -> ${filePath}`);
+            })
+            .catch((err) => {
+                db.prepare("UPDATE video_queue SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(String(err.message || err), job.id);
+                console.error(`[ClipboardQueue] Job ${job.id} failed:`, err.message || err);
+            })
+            .finally(() => {
+                clipboardActiveDownloads--;
+                processClipboardQueue();
+            });
+    }
+}
+
+// Recover jobs stuck mid-download from a previous crash/restart, then start draining the queue
+db.prepare("UPDATE video_queue SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE status = 'downloading'").run();
+processClipboardQueue();
+
+// POST /api/clipboard/enqueue — mobile app calls this right after clipboard copy detected
+app.post('/api/clipboard/enqueue', requireClipboardApiKey, (req, res) => {
+    const { url, device_id } = req.body || {};
+    if (!url || typeof url !== 'string') {
+        return res.status(200).json({ success: false, error: 'url is required' });
+    }
+
+    // Share/clipboard text from apps like Kuaishou/TikTok often glues a caption onto the
+    // link ("<caption> https://..." or the reverse), and some Shortcuts automations
+    // percent-encode the whole blob before sending it. Decode first so any hidden
+    // whitespace/punctuation resurfaces, then pull out just the http(s) link.
+    let decoded = url.trim();
+    try { decoded = decodeURIComponent(decoded); } catch (e) { /* not (fully) percent-encoded, use as-is */ }
+    const linkMatch = decoded.match(/https?:\/\/[^\s"'<>]+/);
+    const candidate = linkMatch ? linkMatch[0] : url.trim();
+
+    let parsed;
+    try {
+        parsed = new URL(candidate);
+        if (!/^https?:$/.test(parsed.protocol)) throw new Error('not http(s)');
+    } catch (e) {
+        return res.status(200).json({ success: false, error: 'url must be a valid http(s) URL' });
+    }
+
+    const dup = db.prepare("SELECT id, status FROM video_queue WHERE source_url = ? AND status IN ('pending','downloading')").get(parsed.href);
+    if (dup) {
+        return res.status(200).json({ success: true, id: dup.id, status: dup.status, message: 'Already queued' });
+    }
+
+    const id = randomUUID();
+    db.prepare('INSERT INTO video_queue (id, source_url, device_id, status) VALUES (?, ?, ?, ?)')
+        .run(id, parsed.href, device_id || null, 'pending');
+
+    res.status(200).json({ success: true, id, status: 'pending' });
+    processClipboardQueue();
+});
+
+// GET /api/clipboard/queue — list queued/downloading/done/failed jobs (dashboard use, no api key needed like other local dashboard routes)
+app.get('/api/clipboard/queue', (req, res) => {
+    const { status, limit } = req.query;
+    let sql = 'SELECT * FROM video_queue';
+    const params = [];
+    if (status) {
+        sql += ' WHERE status = ?';
+        params.push(status);
+    }
+    sql += ' ORDER BY created_at DESC LIMIT ?';
+    params.push(Number(limit) || 50);
+    res.json(db.prepare(sql).all(...params));
+});
+
+// GET /api/clipboard/queue/:id — single job status (mobile app can poll this)
+app.get('/api/clipboard/queue/:id', (req, res) => {
+    const job = db.prepare('SELECT * FROM video_queue WHERE id = ?').get(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    res.json(job);
+});
+
+// POST /api/clipboard/queue/:id/retry — re-queue a failed job
+app.post('/api/clipboard/queue/:id/retry', (req, res) => {
+    const job = db.prepare('SELECT * FROM video_queue WHERE id = ?').get(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (job.status !== 'failed') return res.status(400).json({ error: `Only failed jobs can be retried (current status: ${job.status})` });
+    db.prepare("UPDATE video_queue SET status = 'pending', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(job.id);
+    res.json({ id: job.id, status: 'pending' });
+    processClipboardQueue();
+});
+
+// DELETE /api/clipboard/queue/:id — remove a job (and its downloaded file, if any)
+app.delete('/api/clipboard/queue/:id', (req, res) => {
+    const job = db.prepare('SELECT * FROM video_queue WHERE id = ?').get(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (job.status === 'downloading') return res.status(400).json({ error: 'Cannot delete a job that is currently downloading' });
+    if (job.file_path && fs.existsSync(job.file_path)) {
+        try { fs.unlinkSync(job.file_path); } catch (e) { console.error('[ClipboardQueue] Failed to delete file:', e.message); }
+    }
+    db.prepare('DELETE FROM video_queue WHERE id = ?').run(job.id);
+    res.json({ success: true });
+});
+
+// DELETE /api/clipboard/queue — bulk clear finished jobs (default: done + failed; never touches pending/downloading)
+app.delete('/api/clipboard/queue', (req, res) => {
+    const { status } = req.query;
+    const statuses = status ? [status] : ['done', 'failed'];
+    if (statuses.some(s => s === 'pending' || s === 'downloading')) {
+        return res.status(400).json({ error: 'Cannot bulk-clear pending or downloading jobs' });
+    }
+    const rows = db.prepare(`SELECT * FROM video_queue WHERE status IN (${statuses.map(() => '?').join(',')})`).all(...statuses);
+    for (const job of rows) {
+        if (job.file_path && fs.existsSync(job.file_path)) {
+            try { fs.unlinkSync(job.file_path); } catch (e) { console.error('[ClipboardQueue] Failed to delete file:', e.message); }
+        }
+    }
+    db.prepare(`DELETE FROM video_queue WHERE status IN (${statuses.map(() => '?').join(',')})`).run(...statuses);
+    res.json({ success: true, cleared: rows.length });
+});
+
+// POST /api/clipboard/regenerate-key — rotate the x-api-key mobile apps must send
+app.post('/api/clipboard/regenerate-key', (req, res) => {
+    const newKey = randomUUID();
+    setConfig('clipboardApiKey', newKey);
+    res.json({ clipboardApiKey: newKey });
+});
 
 // Automation state - must be declared before any endpoint that uses them
 const runningProfiles = new Set();
