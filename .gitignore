@@ -3,6 +3,7 @@ profiles/
 data/*.db-shm
 data/*.db-wal
 data/
+data/tiktok.db
 backend/debug_*
 .DS_Store
 dist/

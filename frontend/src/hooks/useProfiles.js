@@ -65,6 +65,9 @@ const useProfiles = () => {
   const [isDistributing, setIsDistributing] = useState(false);
   const [distributeResult, setDistributeResult] = useState(null);
 
+  // Clipboard-to-queue feature state
+  const [clipboardQueue, setClipboardQueue] = useState([]);
+
   const editingProfile = editingProfileId
     ? profiles.find(p => p.id === editingProfileId)
     : null;
@@ -93,11 +96,12 @@ const useProfiles = () => {
 
   const fetchData = async () => {
     try {
-      const [pRes, cRes, gRes, bRes] = await Promise.all([
+      const [pRes, cRes, gRes, bRes, cqRes] = await Promise.all([
         axios.get('/api/profiles'),
         axios.get('/api/config'),
         axios.get('/api/groups'),
-        axios.get('/api/batch-status').catch(() => ({ data: null }))
+        axios.get('/api/batch-status').catch(() => ({ data: null })),
+        axios.get('/api/clipboard/queue?limit=100')
       ]);
 
       const newProfiles = pRes.data || [];
@@ -117,6 +121,7 @@ const useProfiles = () => {
       if (bRes && bRes.data) {
         setBatchStatus(bRes.data.status !== 'idle' ? bRes.data : null);
       }
+      setClipboardQueue(cqRes.data || []);
 
       // Sync engaging status from profile status field
       setEngagingProfiles(prev => {
@@ -1121,6 +1126,46 @@ const useProfiles = () => {
     }
   };
 
+  // Clipboard-to-queue: retry a failed download, delete a job, bulk-clear finished
+  // jobs, and rotate the mobile app's x-api-key.
+  const retryClipboardJob = async (id) => {
+    try {
+      await axios.post(`/api/clipboard/queue/${id}/retry`);
+      await fetchData();
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi thử lại video' });
+    }
+  };
+
+  const deleteClipboardJob = async (id) => {
+    try {
+      await axios.delete(`/api/clipboard/queue/${id}`);
+      await fetchData();
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi xóa video' });
+    }
+  };
+
+  const clearClipboardQueue = async (status) => {
+    try {
+      await axios.delete('/api/clipboard/queue', { params: status ? { status } : {} });
+      await fetchData();
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi dọn hàng chờ' });
+    }
+  };
+
+  const regenerateClipboardApiKey = async () => {
+    try {
+      const res = await axios.post('/api/clipboard/regenerate-key');
+      setConfig(prev => ({ ...prev, clipboardApiKey: res.data.clipboardApiKey }));
+      setMessage({ type: 'success', text: 'Đã tạo API key mới. Cập nhật lại app mobile.' });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi tạo API key mới' });
+    }
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'uploading': return 'var(--accent)';
@@ -1295,7 +1340,12 @@ const useProfiles = () => {
     handleEditProfile,
     handleCloseEditProfile,
     handleDistribute,
-    getStatusColor
+    getStatusColor,
+    clipboardQueue,
+    retryClipboardJob,
+    deleteClipboardJob,
+    clearClipboardQueue,
+    regenerateClipboardApiKey
   };
 };
 

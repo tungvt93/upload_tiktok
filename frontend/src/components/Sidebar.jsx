@@ -1,9 +1,10 @@
-import { Layout, Moon, Settings, Share2, ShieldCheck, Sun, Users, Zap } from 'lucide-react';
+import { Clipboard, Layout, Moon, Settings, Share2, ShieldCheck, Sun, Users, Zap } from 'lucide-react';
 
 const NAV_ITEMS = [
   { key: 'profiles', label: 'Profiles Management', icon: Layout },
   { key: 'groups', label: 'Groups', icon: Users },
   { key: 'distribution', label: 'Phân Phối Video', icon: Share2 },
+  { key: 'clipboard', label: 'Clipboard Queue', icon: Clipboard },
   { key: 'settings', label: 'System Settings', icon: Settings }
 ];
 
