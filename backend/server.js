@@ -1897,24 +1897,49 @@ async function downloadClipboardVideo(url) {
             writer.on('error', reject);
         });
     } else {
-        await new Promise((resolve, reject) => {
-            const child = safeSpawn('yt-dlp', [
-                '--js-runtimes', `node:${process.execPath}`,
-                url,
-                '-o', destPath,
-                '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
-                '--merge-output-format', 'mp4',
-                '--no-playlist',
-            ]);
-            let stderrData = '';
-            child.stdout.on('data', () => {});
-            child.stderr.on('data', (data) => { stderrData += data.toString(); });
-            child.on('close', (code) => {
-                if (code === 0) resolve();
-                else reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
-            });
-            child.on('error', (err) => { try { child.kill(); } catch (e) {} reject(err); });
-        });
+        // Douyin (and some other sites) reject requests without a "fresh" cookie jar
+        // (an anti-bot fingerprint cookie set by visiting the site in a real browser),
+        // even for public videos. Reuse the same cookies.txt as the YouTube branches —
+        // yt-dlp only sends cookies matching each request's domain, so this is safe.
+        const cookiesPath = path.join(__dirname, 'cookies.txt');
+        const cookieArgs = fs.existsSync(cookiesPath) ? ['--cookies', cookiesPath] : [];
+        // Douyin's anti-bot randomly 403s / returns an empty body even with valid cookies
+        // and impersonation (~50% of requests, confirmed empirically) — retry a few times
+        // before giving up, since a retry almost always gets through.
+        let lastErr;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                await new Promise((resolve, reject) => {
+                    const child = safeSpawn('yt-dlp', [
+                        '--js-runtimes', `node:${process.execPath}`,
+                        '--impersonate', 'chrome',
+                        ...cookieArgs,
+                        url,
+                        '-o', destPath,
+                        '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
+                        '--merge-output-format', 'mp4',
+                        '--no-playlist',
+                    ]);
+                    let stderrData = '';
+                    child.stdout.on('data', () => {});
+                    child.stderr.on('data', (data) => { stderrData += data.toString(); });
+                    child.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
+                    });
+                    child.on('error', (err) => { try { child.kill(); } catch (e) {} reject(err); });
+                });
+                lastErr = null;
+                break;
+            } catch (err) {
+                lastErr = err;
+                if (attempt < 3) {
+                    console.log(`[ClipboardQueue] yt-dlp attempt ${attempt} failed, retrying: ${err.message}`);
+                    await new Promise((r) => setTimeout(r, 2000));
+                }
+            }
+        }
+        if (lastErr) throw lastErr;
     }
 
     if (!fs.existsSync(destPath)) throw new Error('Download finished but output file is missing');
