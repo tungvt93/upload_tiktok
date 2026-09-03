@@ -8,7 +8,7 @@
 .douyin.com	TRUE	/	FALSE	1793639689	bd_ticket_guard_client_web_domain	2
 .douyin.com	TRUE	/	FALSE	1793627989	bd_ticket_guard_regenerate_keys_time	2026-09-03/20:59:48
 .douyin.com	TRUE	/	FALSE	0	biz_trace_id	096b257c
-.douyin.com	TRUE	/	TRUE	1823016180	enter_pc_once	1
+.douyin.com	TRUE	/	TRUE	1823016420	enter_pc_once	1
 .douyin.com	TRUE	/	FALSE	1823015684	hevc_supported	true
 .douyin.com	TRUE	/	FALSE	1789060484	home_can_add_dy_2_desktop	%220%22
 .douyin.com	TRUE	/	FALSE	0	is_support_rtm_web_ts	1
@@ -17,11 +17,11 @@
 .douyin.com	TRUE	/	FALSE	1793627987	passport_csrf_token_default	943f2bf61807edda7c427c911941f5fe
 .douyin.com	TRUE	/	FALSE	1789060484	strategyABtestKey	%221788455684.06%22
 .douyin.com	TRUE	/	FALSE	1789060484	stream_recommend_feed_params	%22%7B%5C%22cookie_enabled%5C%22%3Atrue%2C%5C%22screen_width%5C%22%3A1512%2C%5C%22screen_height%5C%22%3A982%2C%5C%22browser_online%5C%22%3Atrue%2C%5C%22cpu_core_num%5C%22%3A11%2C%5C%22device_memory%5C%22%3A16%2C%5C%22downlink%5C%22%3A10%2C%5C%22effective_type%5C%22%3A%5C%224g%5C%22%2C%5C%22round_trip_time%5C%22%3A150%7D%22
-.douyin.com	TRUE	/	TRUE	1819560169	ttwid	1%7CI0cr18KguYiOyJMJtwzRyG1wzeT59kfDletV4Zx32R4%7C1788455686%7C0fa5e13ba54824189ca186787c99b6293af4be97717ba111d8893516864392e1
+.douyin.com	TRUE	/	TRUE	1819560393	ttwid	1%7CI0cr18KguYiOyJMJtwzRyG1wzeT59kfDletV4Zx32R4%7C1788455686%7C0fa5e13ba54824189ca186787c99b6293af4be97717ba111d8893516864392e1
 .douyin.com	TRUE	/	FALSE	1817343720	volume_info	%7B%22isUserMute%22%3Afalse%2C%22isMute%22%3Afalse%2C%22volume%22%3A0.177%7D
 .github.com	TRUE	/	TRUE	1819991899	_octo	GH1.1.1171944978.1788455899
 .github.com	TRUE	/	TRUE	1819991899	logged_in	no
-.iesdouyin.com	TRUE	/	FALSE	1819560169	ttwid	1%7Cbjl6Ov6R53-u_naV9Fkj-yORojlGvt9B6G04GptDD_A%7C1788455805%7Cec4323e4cc0980ce1bcae5256444cc281074e1e5baf54d0d12f5f890410594b3
+.iesdouyin.com	TRUE	/	FALSE	1819560393	ttwid	1%7Cbjl6Ov6R53-u_naV9Fkj-yORojlGvt9B6G04GptDD_A%7C1788455805%7Cec4323e4cc0980ce1bcae5256444cc281074e1e5baf54d0d12f5f890410594b3
 .youtube.com	TRUE	/	TRUE	1815238118	LOGIN_INFO	AFmmF2swRgIhAJaNrQDiMnTTdKw6l_raw86iOdOnsXtoA3Pxv0n95sWFAiEAwsyEFUGDAGhmleL8-v1xS0hC5sp7CvoCuc4RZOCUufU:QUQ3MjNmemd0c0VKWWVHNnNDVFlCalMyZVYzS0Y5MmxTUlVwVkxWOFBRU25JQVVTU1BBdHlrWjBMTVh0c0tQbUxpaDJXMGh3VzJVOTZPQmdadWxQTTBFQ0Jod1F4bmFsMWxHeVJNNVl6eVpZNVdUSVl3UkpjM0FDM1BRWmtMVGxJUUEzNEE1amdGMUdqWkp4ZW9sY3lxblpucHplYTN3N2ln
 .youtube.com	TRUE	/	FALSE	0	PREF	tz=UTC&hl=en
 .youtube.com	TRUE	/	TRUE	1815238117	SAPISID	6JDUZR5UE7njMflc/AUA1Crfbo2yU7bKW5
