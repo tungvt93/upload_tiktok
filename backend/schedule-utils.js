@@ -14,13 +14,20 @@ export function computeNextScheduledTime({ index, lastScheduledTime, intervalMin
 }
 
 export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 5, now = new Date() }) {
-    const stepMin = Number(intervalMinutes) === 10 ? 10 : 5;
+    const stepMin = Number(intervalMinutes) === 10 ? 10 : (Number(intervalMinutes) || 5);
     const stepMs = stepMin * 60 * 1000;
     const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 
-    const baseTime = lastScheduledTime 
-        ? new Date(lastScheduledTime.getTime() + stepMs)
-        : new Date(now.getTime() + TWENTY_MINUTES_IN_MS);
+    let baseTime;
+    if (lastScheduledTime && lastScheduledTime instanceof Date && !Number.isNaN(lastScheduledTime.getTime())) {
+        let validLastTime = new Date(lastScheduledTime.getTime());
+        if (validLastTime.getFullYear() < 2020) {
+            validLastTime.setFullYear(now.getFullYear());
+        }
+        baseTime = new Date(validLastTime.getTime() + stepMs);
+    } else {
+        baseTime = new Date(now.getTime() + TWENTY_MINUTES_IN_MS);
+    }
 
     return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
 }
@@ -101,25 +108,141 @@ export function sortScheduleInputs(inputs = []) {
 }
 
 /**
+ * Robustly parses time text extracted from TikTok Studio Content page (e.g. "Sep 6, 02:30", "06/09 02:30", "6 thg 9, 02:30").
+ * Always ensures the year is set to the current year (or future year) and not 2001.
+ */
+export function parseTikTokContentTimeText(timeText) {
+    if (!timeText) return null;
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+
+    // Standard JS Date parse check
+    let d = new Date(timeText);
+    if (!Number.isNaN(d.getTime())) {
+        if (d.getFullYear() < 2020) {
+            d.setFullYear(currentYear);
+        }
+        return d;
+    }
+
+    // Handle Vietnamese format "6 thg 9, 02:30" or "06 thg 09 02:30"
+    const vnMatch = timeText.match(/(\d{1,2})\s*thg\s*(\d{1,2})[\s,]+(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+    if (vnMatch) {
+        const day = parseInt(vnMatch[1], 10);
+        const month = parseInt(vnMatch[2], 10);
+        let hours = parseInt(vnMatch[3], 10);
+        const minutes = parseInt(vnMatch[4], 10);
+        const meridiem = vnMatch[5];
+        if (meridiem) {
+            if (meridiem.toUpperCase() === 'PM' && hours < 12) hours += 12;
+            if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
+        }
+        const res = new Date();
+        res.setFullYear(currentYear, month - 1, day);
+        res.setHours(hours, minutes, 0, 0);
+        return res;
+    }
+
+    // Handle Month name format "Sep 6, 02:30" or "Sep 6, 2:30 PM"
+    const monthsMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    const monthMatch = timeText.match(/([a-z]{3,9})\s+(\d{1,2})[\s,]+(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+    if (monthMatch) {
+        const mStr = monthMatch[1].toLowerCase().slice(0, 3);
+        if (monthsMap[mStr] !== undefined) {
+            const month = monthsMap[mStr];
+            const day = parseInt(monthMatch[2], 10);
+            let hours = parseInt(monthMatch[3], 10);
+            const minutes = parseInt(monthMatch[4], 10);
+            const meridiem = monthMatch[5];
+            if (meridiem) {
+                if (meridiem.toUpperCase() === 'PM' && hours < 12) hours += 12;
+                if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
+            }
+            const res = new Date();
+            res.setFullYear(currentYear, month, day);
+            res.setHours(hours, minutes, 0, 0);
+            return res;
+        }
+    }
+
+    // Handle numeric format "09/06 02:30" or "2026-09-06 02:30"
+    const numMatch = timeText.match(/(?:(\d{4})[-/.])?(\d{1,2})[-/.](\d{1,2})[\s,]+(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+    if (numMatch) {
+        const yr = numMatch[1] ? parseInt(numMatch[1], 10) : currentYear;
+        const partA = parseInt(numMatch[2], 10);
+        const partB = parseInt(numMatch[3], 10);
+        let hours = parseInt(numMatch[4], 10);
+        const minutes = parseInt(numMatch[5], 10);
+        const meridiem = numMatch[6];
+        if (meridiem) {
+            if (meridiem.toUpperCase() === 'PM' && hours < 12) hours += 12;
+            if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
+        }
+
+        let month = partA;
+        let day = partB;
+        if (partA > 12) {
+            day = partA;
+            month = partB;
+        }
+
+        const res = new Date();
+        res.setFullYear(yr < 2020 ? currentYear : yr, month - 1, day);
+        res.setHours(hours, minutes, 0, 0);
+        return res;
+    }
+
+    return null;
+}
+
+/**
  * Attempts to parse a date and time string from TikTok inputs back into a Date object.
  */
 export function parseScheduleValue(dateStr, timeStr) {
     if (!dateStr || !timeStr) return null;
 
     try {
-        // Try to parse date (expected YYYY-MM-DD or DD/MM/YYYY or MM/DD/YYYY)
-        let year, month, day;
+        const now = new Date();
+        let year = now.getFullYear();
+        let month, day;
+
         if (dateStr.includes('-')) {
-            [year, month, day] = dateStr.split('-').map(Number);
-        } else if (dateStr.includes('/')) {
-            const parts = dateStr.split('/').map(Number);
-            if (parts[0] > 12) { // Likely DD/MM/YYYY
-                [day, month, year] = parts;
-            } else { // Likely MM/DD/YYYY
+            const parts = dateStr.split('-').map(Number);
+            if (parts[0] > 1000) {
+                [year, month, day] = parts;
+            } else {
                 [month, day, year] = parts;
             }
+        } else if (dateStr.includes('/')) {
+            const parts = dateStr.split('/').map(Number);
+            if (parts[2] > 1000) {
+                year = parts[2];
+                if (parts[0] > 12) {
+                    day = parts[0];
+                    month = parts[1];
+                } else if (parts[1] > 12) {
+                    month = parts[0];
+                    day = parts[1];
+                } else {
+                    month = parts[0];
+                    day = parts[1];
+                }
+            } else {
+                month = parts[0];
+                day = parts[1];
+            }
         } else if (dateStr.includes('.')) {
-            [year, month, day] = dateStr.split('.').map(Number);
+            const parts = dateStr.split('.').map(Number);
+            if (parts[0] > 1000) {
+                [year, month, day] = parts;
+            } else {
+                [day, month, year] = parts;
+            }
+        }
+
+        if (!year || year < 2020) {
+            year = now.getFullYear();
         }
 
         // Try to parse time (expected HH:mm or HH:mm AM/PM)

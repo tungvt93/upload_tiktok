@@ -13,6 +13,7 @@ import {
     computeNextScheduledTime,
     computeAutoIncrementTime,
     parseScheduleValue,
+    parseTikTokContentTimeText,
     formatScheduleValue,
     getScheduleHintText,
     inferScheduleFieldKind,
@@ -4187,6 +4188,12 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
 
     await input.fill('');
     await input.type(value, { delay: 50 });
+    await input.evaluate((el, val) => {
+        el.value = val;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+    }, value).catch(() => null);
     await input.press('Enter').catch(() => null);
     await input.press('Tab').catch(() => null);
     await page.waitForTimeout(1000);
@@ -4540,9 +4547,9 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
                 throw new Error('Scheduled time text is empty.');
             }
 
-            // Parse "Jul 13, 3:30 PM" hoặc "Jul 13, 15:30" thành Date
-            const parsed = new Date(timeText);
-            if (Number.isNaN(parsed.getTime())) {
+            // Parse "Jul 13, 3:30 PM" hoặc "Jul 13, 15:30" hoặc "06/09 02:30" thành Date
+            const parsed = parseTikTokContentTimeText(timeText);
+            if (!parsed || Number.isNaN(parsed.getTime())) {
                 throw new Error(`Failed to parse scheduled time text: "${timeText}".`);
             }
 
@@ -5275,31 +5282,16 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         // 2. Resolve inputs
                         const scheduleInputs = await resolveScheduleInputs(page, log);
 
-                        if (i === 1) {
-                            // Video 2: Capture TikTok's default time
-                            const defaultDate = await page.locator('input.TUXTextInputCore-input:visible').nth(scheduleInputs.date.index).inputValue();
-                            const defaultTime = await page.locator('input.TUXTextInputCore-input:visible').nth(scheduleInputs.time.index).inputValue();
-                            log(`TikTok default schedule: ${defaultDate} ${defaultTime}`);
+                        // Video 2+: Increment by intervalMinutes (5 or 10 mins)
+                        const intervalMin = profile.schedule_interval || 5;
+                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin, now: new Date() });
+                        const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
+                        const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
-                            lastScheduledTime = parseScheduleValue(defaultDate, defaultTime);
-                            if (lastScheduledTime) {
-                                log(`Captured base time: ${lastScheduledTime.toISOString()}`);
-                            } else {
-                                log(`Warning: Failed to parse default time. Using fallback.`);
-                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, intervalMinutes: profile.schedule_interval || 5, now: new Date() });
-                            }
-                        } else {
-                            // Video 3+: Increment by intervalMinutes (5 or 10 mins)
-                            const intervalMin = profile.schedule_interval || 5;
-                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
-                            const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
-                            const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
-
-                            log(`Setting incremented schedule: ${dateValue} ${timeValue}`);
-                            await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
-                            await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
-                            await page.waitForTimeout(2000);
-                        }
+                        log(`Video ${i + 1}: Setting incremented schedule: ${dateValue} ${timeValue}`);
+                        await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
+                        await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
+                        await page.waitForTimeout(2000);
 
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
                     }
