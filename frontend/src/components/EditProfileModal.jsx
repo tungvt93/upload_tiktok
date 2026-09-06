@@ -174,17 +174,21 @@ const EditProfileModal = ({
               <div style={{ marginBottom: '20px' }}>
                 <div className="field-title">
                   <Search size={14} />
-                  Favorite Music
+                  Favorite Music (Nhập nhiều bài cách nhau bằng dấu phẩy ",")
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <input
+                  <textarea
                     className="input"
-                    style={{ fontSize: '0.75rem', padding: '8px 12px', flex: 1 }}
-                    placeholder="Search music to favorite..."
+                    rows={3}
+                    style={{ fontSize: '0.75rem', padding: '8px 12px', flex: 1, resize: 'vertical', minHeight: '64px' }}
+                    placeholder="Nhập danh sách bài hát cách nhau bởi dấu phẩy (VD: Bài 1, Bài 2, Bài 3)..."
                     value={musicSearchTerm || ''}
                     onChange={(e) => onUpdateMusicSearchTerm(profile.id, e.target.value)}
                   />
                 </div>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                  Mỗi video upload sẽ lần lượt chọn từng bài nhạc trong danh sách trên (xoay vòng: Video 1 -&gt; Bài 1, Video 2 -&gt; Bài 2,...).
+                </span>
               </div>
 
               {/* Proxy Server & Toggle */}

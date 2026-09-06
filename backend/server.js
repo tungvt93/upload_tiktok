@@ -3759,98 +3759,102 @@ async function addFavoriteMusic(profile, searchTerm) {
         log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
         await page.waitForTimeout(4000);
 
-        // Step 6: Type search term using keyboard.type() to mimic real user input
-        log(`Setting search term: "${searchTerm}"`);
-        await searchInput.focus();
-        await searchInput.click();
-        await page.keyboard.type(searchTerm, { delay: 30 });
-        log('Search term filled, waiting for suggestions...');
-        await page.waitForTimeout(2000);
-
-        await page.keyboard.press('Enter');
-        log('Enter pressed, waiting for new search results to load...');
-
-        // Wait a moment for TikTok to switch to loading state
-        await page.waitForTimeout(1000);
-
-        try {
-            await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
-            log('Search results refreshed.');
-        } catch (e) {
-            log('Wait for search results timed out or failed. Proceeding anyway...');
-        }
-        await page.waitForTimeout(2000); // Short stabilization wait after refresh
-
-        // Step 7: Click star/bookmark on first search result
-        // The star button is hidden until real mouse hover — use Playwright's native hover() (not JS dispatchEvent)
-        // which triggers React's synthetic event system properly
-        log('Looking for first search result...');
-        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
-
-        // Find first music listitem (has data-item-id and MusicPanelMusicItem__wrap)
-        const firstItem = await page.$('div[role="listitem"][data-item-id]');
-        if (!firstItem) {
-            log('WARNING: No search results found');
-            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
+        const musicTerms = (searchTerm || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (musicTerms.length === 0) {
+            log('WARNING: Search term is empty.');
             return;
         }
 
-        // Use Playwright's native hover to trigger React hover handlers
-        log('Hovering first result with Playwright native hover...');
-        await firstItem.hover();
-        await page.waitForTimeout(1500);
-
-        // After hover, look for the star/bookmark button that should now appear
-        // It lives inside MusicPanelMusicItem__operation next to the plus-bold button
-        const starClicked = await page.evaluate(() => {
-            // Find the first music listitem and look inside its operation div
-            const item = document.querySelector('div[role="listitem"][data-item-id]');
-            if (!item) return 'no_item';
-
-            const opDiv = item.querySelector('[class*="operation"]');
-            if (!opDiv) return 'no_operation';
-
-            // Get all buttons in the operation area
-            const buttons = opDiv.querySelectorAll('button');
-            for (const btn of buttons) {
-                // Skip the plus-bold button
-                if (btn.querySelector('[data-icon="plus-bold"]')) continue;
-                // This should be the star/bookmark button
-                btn.click();
-                return 'clicked';
-            }
-
-            // Fallback: look for any [data-icon] that's not plus-bold
-            const icons = opDiv.querySelectorAll('[data-icon]');
-            for (const icon of icons) {
-                const name = icon.getAttribute('data-icon') || '';
-                if (name && name !== 'plus-bold' && name !== 'Loading' && name !== 'center') {
-                    const btn = icon.closest('button');
-                    if (btn) { btn.click(); return 'clicked_icon_' + name; }
-                }
-            }
-
-            // Last resort: dump what buttons exist
-            const btnInfo = Array.from(buttons).map(b => ({
-                text: b.textContent?.trim() || '',
-                aria: b.getAttribute('aria-label') || '',
-                icons: Array.from(b.querySelectorAll('[data-icon]')).map(i => i.getAttribute('data-icon'))
-            }));
-            return 'no_star_btn_' + JSON.stringify(btnInfo);
-        });
-
-        log(`Star click result: ${starClicked}`);
-
-        if (starClicked.startsWith('clicked')) {
-            log('Clicked star/bookmark on first result — music favorited');
-        } else {
-            log(`WARNING: Could not click star — ${starClicked}`);
-            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_star.png`) }).catch(() => null);
-        }
-
+        log(`Favorite music flow starting for ${musicTerms.length} song(s)...`);
         await page.waitForTimeout(2000);
 
-        log('Favorite music flow completed');
+        for (let termIdx = 0; termIdx < musicTerms.length; termIdx++) {
+            const currentTerm = musicTerms[termIdx];
+            log(`[${termIdx + 1}/${musicTerms.length}] Processing favorite music for term: "${currentTerm}"`);
+
+            if (termIdx > 0) {
+                // Clear previous search term
+                const clearBtn = await page.$('[data-icon="x-circle-fill"], svg[data-icon="x-circle-fill"]');
+                if (clearBtn) {
+                    await clearBtn.click();
+                } else {
+                    await searchInput.focus();
+                    await searchInput.click({ clickCount: 3 });
+                    await page.keyboard.press('Control+A');
+                    await page.keyboard.press('Backspace');
+                }
+                await page.waitForTimeout(1000);
+            }
+
+            // Fill search term and trigger search
+            log(`Setting search term: "${currentTerm}"`);
+            await searchInput.focus();
+            await searchInput.click();
+            await page.keyboard.type(currentTerm, { delay: 30 });
+            await page.waitForTimeout(1500);
+
+            await page.keyboard.press('Enter');
+            log(`Enter pressed for "${currentTerm}", waiting for search results...`);
+            await page.waitForTimeout(1000);
+
+            try {
+                await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 20000 });
+                log(`Search results refreshed for "${currentTerm}".`);
+            } catch (e) {
+                log(`Wait for search results timed out for "${currentTerm}". Proceeding anyway...`);
+            }
+            await page.waitForTimeout(1500);
+
+            // Click star/bookmark on first search result
+            const firstItem = await page.$('div[role="listitem"][data-item-id]');
+            if (!firstItem) {
+                log(`WARNING: No search results found for "${currentTerm}"`);
+                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results_${termIdx}.png`) }).catch(() => null);
+                continue;
+            }
+
+            log(`Hovering first result for "${currentTerm}"...`);
+            await firstItem.hover();
+            await page.waitForTimeout(1200);
+
+            const starClicked = await page.evaluate(() => {
+                const item = document.querySelector('div[role="listitem"][data-item-id]');
+                if (!item) return 'no_item';
+
+                const opDiv = item.querySelector('[class*="operation"]');
+                if (!opDiv) return 'no_operation';
+
+                const buttons = opDiv.querySelectorAll('button');
+                for (const btn of buttons) {
+                    if (btn.querySelector('[data-icon="plus-bold"]')) continue;
+                    btn.click();
+                    return 'clicked';
+                }
+
+                const icons = opDiv.querySelectorAll('[data-icon]');
+                for (const icon of icons) {
+                    const name = icon.getAttribute('data-icon') || '';
+                    if (name && name !== 'plus-bold' && name !== 'Loading' && name !== 'center') {
+                        const btn = icon.closest('button');
+                        if (btn) { btn.click(); return 'clicked_icon_' + name; }
+                    }
+                }
+
+                return 'no_star_btn';
+            });
+
+            log(`Star click result for "${currentTerm}": ${starClicked}`);
+
+            if (starClicked.startsWith('clicked')) {
+                log(`Clicked star/bookmark on first result — music "${currentTerm}" favorited`);
+            } else {
+                log(`WARNING: Could not click star for "${currentTerm}" — ${starClicked}`);
+            }
+
+            await page.waitForTimeout(1500);
+        }
+
+        log('Favorite music flow completed for all terms');
     } catch (err) {
         log(`Favorite music error: ${err.message}`);
         throw err;
@@ -4865,11 +4869,14 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
 
                         // Search for music using profile.music_search instead of clicking Favorites tab
-                        const searchTerm = (profile.music_search || '').trim();
+                        const rawMusicSearch = (profile.music_search || '').trim();
+                        const musicList = rawMusicSearch ? rawMusicSearch.split(',').map(s => s.trim()).filter(Boolean) : [];
+                        const searchTerm = musicList.length > 0 ? musicList[i % musicList.length] : '';
                         if (!searchTerm) {
                             log('WARNING: profile.music_search is empty. Skipping sound edit.');
                         } else {
-                            log(`Searching for music: "${searchTerm}"`);
+                            const musicIndexInfo = musicList.length > 1 ? ` [Bài ${(i % musicList.length) + 1}/${musicList.length}]` : '';
+                            log(`Searching for music${musicIndexInfo}: "${searchTerm}"`);
 
                             // Wait for search input to appear in Sounds panel (no hardcoded wait)
                             const searchInputSelectors = [
