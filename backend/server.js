@@ -26,6 +26,7 @@ import {
 } from './group-store.js';
 import { createProfileRecord } from './profile-store.js';
 import { randomUUID } from 'node:crypto';
+import { exportAllProfiles } from '../export_profiles.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -434,6 +435,21 @@ async function injectProfileCookies(browser, profile) {
 }
 
 // API Routes
+app.get('/api/profiles/export-cookies-json', async (req, res) => {
+    try {
+        const exportList = await exportAllProfiles();
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const filename = `tiktok_profiles_export_${exportList.length}profiles_${dateStr}.json`;
+
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(JSON.stringify(exportList, null, 2));
+    } catch (err) {
+        console.error('Export profiles json error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/profiles', (req, res) => {
     const profiles = db
         .prepare(

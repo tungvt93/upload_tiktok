@@ -28,7 +28,8 @@ import {
   Upload,
   LogIn,
   Image,
-  Camera
+  Camera,
+  FileJson
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -378,6 +379,7 @@ const App = () => {
   const [isCreateProfileModalOpen, setIsCreateProfileModalOpen] = useState(false);
   const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isExportingJson, setIsExportingJson] = useState(false);
   const [message, setMessage] = useState(null);
   const [activeTab, setActiveTab] = useState('profiles');
   const processingRef = useRef(new Set());
@@ -673,6 +675,31 @@ const App = () => {
     setIsImportFolderModalOpen(false);
     setImportFolderPath('');
     setImportResults(null);
+  };
+
+  const handleExportProfilesJson = async () => {
+    try {
+      setIsExportingJson(true);
+      setMessage({ type: 'info', text: 'Đang trích xuất profiles & cookies, vui lòng đợi giây lát...' });
+      const res = await axios.get('/api/profiles/export-cookies-json');
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      a.download = `tiktok_profiles_export_${res.data?.length || 0}profiles_${dateStr}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setMessage({ type: 'success', text: `Xuất thành công ${res.data?.length || 0} profiles sang file JSON!` });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || err.message || 'Lỗi khi xuất profiles' });
+      setTimeout(() => setMessage(null), 5000);
+    } finally {
+      setIsExportingJson(false);
+    }
   };
 
   const deleteProfile = async (id) => {
@@ -1488,6 +1515,16 @@ const App = () => {
                   >
                     <FolderOpen size={18} />
                     Import Folder
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={handleExportProfilesJson}
+                    disabled={isExportingJson}
+                    style={{ gap: '10px', borderColor: 'var(--primary)', color: 'var(--primary)' }}
+                    title="Xuất toàn bộ Profile và Cookies sang file JSON để chuyển sang tool mới tiktok-at"
+                  >
+                    <FileJson size={18} />
+                    {isExportingJson ? 'Đang xuất JSON...' : 'Xuất Profiles (JSON)'}
                   </button>
                   <button
                     className="btn"

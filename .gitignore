@@ -10,3 +10,4 @@ build/
 .env
 *.log
 docs
+xuat_*.json
