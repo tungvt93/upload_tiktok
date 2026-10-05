@@ -678,10 +678,16 @@ const App = () => {
   };
 
   const handleExportProfilesJson = async () => {
+    if (selectedForRun.size === 0) {
+      setMessage({ type: 'error', text: 'Vui lòng tick chọn ít nhất 1 profile để xuất file JSON!' });
+      setTimeout(() => setMessage(null), 4000);
+      return;
+    }
+
     try {
       setIsExportingJson(true);
-      setMessage({ type: 'info', text: 'Đang trích xuất profiles & cookies, vui lòng đợi giây lát...' });
-      const res = await axios.get('/api/profiles/export-cookies-json');
+      setMessage({ type: 'info', text: `Đang trích xuất profiles & cookies cho ${selectedForRun.size} profile đã chọn, vui lòng đợi giây lát...` });
+      const res = await axios.post('/api/profiles/export-cookies-json', { ids: Array.from(selectedForRun) });
       const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1519,12 +1525,26 @@ const App = () => {
                   <button
                     className="btn btn-secondary"
                     onClick={handleExportProfilesJson}
-                    disabled={isExportingJson}
-                    style={{ gap: '10px', borderColor: 'var(--primary)', color: 'var(--primary)' }}
-                    title="Xuất toàn bộ Profile và Cookies sang file JSON để chuyển sang tool mới tiktok-at"
+                    disabled={isExportingJson || selectedForRun.size === 0}
+                    style={{
+                      gap: '10px',
+                      borderColor: 'var(--primary)',
+                      color: 'var(--primary)',
+                      opacity: (isExportingJson || selectedForRun.size === 0) ? 0.45 : 1,
+                      cursor: (isExportingJson || selectedForRun.size === 0) ? 'not-allowed' : 'pointer'
+                    }}
+                    title={
+                      selectedForRun.size === 0
+                        ? 'Tick chọn ít nhất 1 profile để xuất file JSON'
+                        : `Xuất ${selectedForRun.size} profile đã chọn và cookies sang file JSON`
+                    }
                   >
                     <FileJson size={18} />
-                    {isExportingJson ? 'Đang xuất JSON...' : 'Xuất Profiles (JSON)'}
+                    {isExportingJson
+                      ? 'Đang xuất JSON...'
+                      : selectedForRun.size > 0
+                        ? `Xuất đã chọn (${selectedForRun.size}) JSON`
+                        : 'Xuất Profiles (JSON)'}
                   </button>
                   <button
                     className="btn"

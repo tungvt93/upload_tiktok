@@ -1,49 +1,18 @@
 /**
- * Script trích xuất danh sách profiles và cookies từ dự án upload_tiktok
- * Đóng gói ra file JSON tương thích 100% với tính năng Import của tiktok-at
- * Hỗ trợ chạy trên cả Windows, macOS và Linux.
+ * Trích xuất danh sách profiles và cookies từ dự án upload_tiktok
+ * Tương thích với tính năng Import của tiktok-at
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
+import { chromium } from 'playwright';
+import Database from 'better-sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const rootDir = path.resolve(__dirname, '..');
 
-// Tự động xác định đường dẫn thư mục gốc và backend
-let rootDir = __dirname;
-let backendDir = path.join(rootDir, 'backend');
-if (!fs.existsSync(backendDir) && fs.existsSync(path.join(rootDir, 'server.js'))) {
-    // Đang chạy bên trong thư mục backend
-    backendDir = rootDir;
-    rootDir = path.join(__dirname, '..');
-}
-
-// Load các thư viện từ node_modules của backend
-const req = createRequire(path.join(backendDir, 'package.json'));
-let Database;
-let chromium;
-
-try {
-    Database = req('better-sqlite3');
-} catch (e) {
-    console.error('❌ Không thể tải thư viện better-sqlite3:', e.message);
-    console.error('👉 Vui lòng chạy "npm install" trong thư mục backend trước.');
-    process.exit(1);
-}
-
-try {
-    const pw = req('playwright');
-    chromium = pw.chromium;
-} catch (e) {
-    console.error('❌ Không thể tải thư viện playwright:', e.message);
-    console.error('👉 Vui lòng chạy "npm install" trong thư mục backend trước.');
-    process.exit(1);
-}
-
-// Đường dẫn database & profiles
 const dbPath = path.join(rootDir, 'data', 'tiktok.db');
 const profilesDir = path.join(rootDir, 'profiles');
 
@@ -77,9 +46,14 @@ async function extractCookiesFromDisk(profileName) {
     }
 }
 
-export async function exportAllProfiles(outputPath) {
+export async function exportProfiles({ targetIds = null, outputPath = null } = {}) {
     console.log('====================================================');
-    console.log('🚀 BẮT ĐẦU TRÍCH XUẤT PROFILES & COOKIES TỪ TOOL CŨ');
+    console.log('🚀 BẮT ĐẦU TRÍCH XUẤT PROFILES & COOKIES');
+    if (targetIds && targetIds.length > 0) {
+        console.log(`🎯 Chỉ định ${targetIds.length} profiles cần xuất`);
+    } else {
+        console.log('🎯 Chế độ xuất toàn bộ profiles');
+    }
     console.log('====================================================\n');
 
     let profilesFromDb = [];
@@ -101,8 +75,14 @@ export async function exportAllProfiles(outputPath) {
 
             // Lấy danh sách profiles
             try {
-                profilesFromDb = db.prepare('SELECT * FROM profiles').all();
-                console.log(`📦 Tìm thấy ${profilesFromDb.length} profile trong cơ sở dữ liệu SQLite.`);
+                const allProfiles = db.prepare('SELECT * FROM profiles').all();
+                if (targetIds && targetIds.length > 0) {
+                    const targetSet = new Set(targetIds.map(String));
+                    profilesFromDb = allProfiles.filter(p => targetSet.has(String(p.id)));
+                } else {
+                    profilesFromDb = allProfiles;
+                }
+                console.log(`📦 Tìm thấy ${profilesFromDb.length} profile trong cơ sở dữ liệu SQLite cần trích xuất.`);
             } catch (err) {
                 console.warn('⚠️ Không đọc được bảng profiles:', err.message);
             }
@@ -115,32 +95,34 @@ export async function exportAllProfiles(outputPath) {
         console.warn(`⚠️ Không tìm thấy database tại: ${dbPath}`);
     }
 
-    // Quét thêm các thư mục trong profilesDir nếu chưa có trong DB
-    const knownNames = new Set(profilesFromDb.map(p => p.name.toLowerCase()));
-    if (fs.existsSync(profilesDir)) {
-        const diskEntries = fs.readdirSync(profilesDir, { withFileTypes: true });
-        for (const entry of diskEntries) {
-            if (entry.isDirectory() && !entry.name.startsWith('.')) {
-                if (!knownNames.has(entry.name.toLowerCase())) {
-                    console.log(`📁 Tìm thấy profile ngoài database trên ổ đĩa: "${entry.name}"`);
-                    profilesFromDb.push({
-                        name: entry.name,
-                        group_id: null,
-                        video_folder: '',
-                        schedule_interval: 10,
-                        auto_increment_schedule: 1,
-                        set_music: 1,
-                        remove_title: 1,
-                        need_content_check: 0
-                    });
-                    knownNames.add(entry.name.toLowerCase());
+    // Quét thêm các thư mục trong profilesDir nếu chưa có trong DB (chỉ khi không chỉ định targetIds)
+    if (!targetIds || targetIds.length === 0) {
+        const knownNames = new Set(profilesFromDb.map(p => p.name.toLowerCase()));
+        if (fs.existsSync(profilesDir)) {
+            const diskEntries = fs.readdirSync(profilesDir, { withFileTypes: true });
+            for (const entry of diskEntries) {
+                if (entry.isDirectory() && !entry.name.startsWith('.')) {
+                    if (!knownNames.has(entry.name.toLowerCase())) {
+                        console.log(`📁 Tìm thấy profile ngoài database trên ổ đĩa: "${entry.name}"`);
+                        profilesFromDb.push({
+                            name: entry.name,
+                            group_id: null,
+                            video_folder: '',
+                            schedule_interval: 10,
+                            auto_increment_schedule: 1,
+                            set_music: 1,
+                            remove_title: 1,
+                            need_content_check: 0
+                        });
+                        knownNames.add(entry.name.toLowerCase());
+                    }
                 }
             }
         }
     }
 
     if (profilesFromDb.length === 0) {
-        console.log('❌ Không tìm thấy profile nào để trích xuất!');
+        console.log('❌ Không tìm thấy profile nào phù hợp để trích xuất!');
         return [];
     }
 
@@ -197,30 +179,33 @@ export async function exportAllProfiles(outputPath) {
         });
     }
 
-    // Ghi ra file JSON
-    const targetFile = outputPath || path.join(rootDir, 'xuat_profiles_tiktok.json');
-    fs.writeFileSync(targetFile, JSON.stringify(exportList, null, 2), 'utf-8');
+    // Ghi ra file JSON nếu có chỉ định outputPath
+    if (outputPath) {
+        fs.writeFileSync(outputPath, JSON.stringify(exportList, null, 2), 'utf-8');
+        console.log(`📁 File đã lưu tại: ${outputPath}`);
+    }
 
     console.log('\n====================================================');
     console.log('🎉 XUẤT THÀNH CÔNG!');
-    console.log(`📊 Tổng số profile: ${exportList.length}`);
+    console.log(`📊 Tổng số profile đã xuất: ${exportList.length}`);
     console.log(`🔑 Số profile có cookies: ${successCookiesCount}/${exportList.length}`);
-    console.log(`📁 File đã lưu tại:`);
-    console.log(`👉 ${targetFile}`);
-    console.log('====================================================');
-    console.log('\n📖 HƯỚNG DẪN IMPORT SANG DỰ ÁN MỚI (tiktok-at):');
-    console.log('1. Mở dự án tiktok-at lên (giao diện web).');
-    console.log('2. Tại thanh công cụ danh sách Profiles, nhấn nút "Nhập Cookies từ file JSON" (biểu tượng file JSON).');
-    console.log(`3. Chọn file vừa tạo: "${path.basename(targetFile)}"`);
-    console.log('4. Hệ thống sẽ tự động tạo các nhóm, profile và nạp session TikTok tương ứng!\n');
+    console.log('====================================================\n');
 
     return exportList;
 }
 
-// Nếu chạy trực tiếp từ dòng lệnh
-if (process.argv[1] && (process.argv[1] === __filename || process.argv[1].endsWith('export_profiles.js'))) {
-    const customOutput = process.argv[2] || null;
-    exportAllProfiles(customOutput)
+// Alias để tương thích
+export async function exportAllProfiles(outputPath, targetIds = null) {
+    if (typeof outputPath === 'object' && outputPath !== null) {
+        return exportProfiles(outputPath);
+    }
+    return exportProfiles({ outputPath, targetIds });
+}
+
+// Chạy trực tiếp từ dòng lệnh
+if (process.argv[1] && (process.argv[1] === __filename || process.argv[1].endsWith('export-profiles.js'))) {
+    const customOutput = process.argv[2] || path.join(rootDir, 'xuat_profiles_tiktok.json');
+    exportProfiles({ outputPath: customOutput })
         .then(() => process.exit(0))
         .catch(err => {
             console.error('\n❌ Có lỗi xảy ra trong quá trình xuất:', err);
