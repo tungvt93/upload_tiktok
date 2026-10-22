@@ -52,6 +52,7 @@ const useProfiles = () => {
   const [exportFolderPath, setExportFolderPath] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [exportResults, setExportResults] = useState(null);
+  const [isExportingJson, setIsExportingJson] = useState(false);
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
   const [statsProfileIds,  setStatsProfileIds]  = useState([]);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
@@ -592,6 +593,32 @@ const useProfiles = () => {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi dọn rác' });
     }
     setTimeout(() => setMessage(null), 5000);
+  };
+
+  const handleExportProfilesJson = async () => {
+    if (isExportingJson) return;
+    setIsExportingJson(true);
+    setMessage({ type: 'info', text: 'Đang xuất Profiles + Cookies sang JSON...' });
+    try {
+      const res = await axios.get('/api/profiles/export-cookies-json', { responseType: 'blob' });
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `tiktok_profiles_export_${Date.now()}.json`;
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setMessage({ type: 'success', text: `Đã xuất file ${filename}` });
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi xuất Profiles sang JSON' });
+    } finally {
+      setIsExportingJson(false);
+      setTimeout(() => setMessage(null), 5000);
+    }
   };
 
   const clearDebugFiles = async () => {
@@ -1226,6 +1253,7 @@ const useProfiles = () => {
     exportFolderPath,
     isExporting,
     exportResults,
+    isExportingJson,
     // edit profile modal
     editingProfileId,
     editingProfile,
@@ -1305,6 +1333,7 @@ const useProfiles = () => {
     startBulkLogin,
     clearTrash,
     clearDebugFiles,
+    handleExportProfilesJson,
     startBulkEngage,
     stopBulkEngage,
     isStatsModalOpen,

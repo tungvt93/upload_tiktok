@@ -15,6 +15,7 @@ import {
   Heart,
   Zap,
   Sliders,
+  FileJson,
 } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import ProfileCard from './ProfileCard';
@@ -51,6 +52,8 @@ const ProfilesView = ({
   openStatsModal,
   clearTrash,
   clearDebugFiles,
+  isExportingJson = false,
+  handleExportProfilesJson,
   deleteSelectedProfiles,
   limitUploads = false,
   setLimitUploads,
@@ -214,6 +217,16 @@ const ProfilesView = ({
               color="var(--status-violet)"
               bg="rgba(139, 92, 246, 0.08)"
               border="rgba(139, 92, 246, 0.25)"
+            />
+            <span className="toolbar-divider" aria-hidden="true" />
+            <IconActionButton
+              icon={<FileJson size={16} />}
+              onClick={handleExportProfilesJson}
+              disabled={isExportingJson}
+              title={isExportingJson ? 'Đang xuất JSON...' : 'Xuất toàn bộ Profile và Cookies sang file JSON để chuyển sang tool mới tiktok-at'}
+              color="#10B981"
+              bg="rgba(16, 185, 129, 0.08)"
+              border="rgba(16, 185, 129, 0.25)"
             />
           </div>
         </div>

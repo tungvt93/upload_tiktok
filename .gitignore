@@ -12,3 +12,4 @@ build/
 *.log
 docs
 uploads/
+xuat_*.json
