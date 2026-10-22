@@ -5,6 +5,7 @@ import GroupsView from './components/GroupsView';
 import ProfilesView from './components/ProfilesView';
 import SettingsView from './components/SettingsView';
 import Sidebar from './components/Sidebar';
+import MusicCheckerView from './components/MusicCheckerView';
 import StatsModal from './components/StatsModal';
 import Toast from './components/Toast';
 import useProfiles from './hooks/useProfiles';
@@ -72,6 +73,8 @@ const App = () => {
               updateGroupName={ui.updateGroupName}
               deleteGroup={ui.deleteGroup}
             />
+          ) : activeTab === 'music-check' ? (
+            <MusicCheckerView profiles={ui.profiles} />
           ) : (
             <SettingsView
               config={ui.config}

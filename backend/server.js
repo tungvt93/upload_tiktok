@@ -35,6 +35,7 @@ import {
 } from './stats-store.js';
 import { runStatsForProfile } from './stats-automation.mjs';
 import { buildBrowserLaunchOptions } from './browser-launch.js';
+import { resolveDouyinVideoUrls, isDouyinVideoUrl, isDouyinNoteUrl, extractDouyinVideoId } from './douyin-resolver.js';
 import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -547,6 +548,49 @@ function parseProxy(proxyStr) {
     return { server, username, password };
 }
 
+// Proxy pool for yt-dlp, drawn from the profiles table. Douyin rate-limits by IP
+// (a burst of ~200 downloads from one address gets every later request 403'd for
+// hours), so after the direct attempt fails we retry through a random profile proxy.
+function proxyConfigToUrl(cfg) {
+    if (!cfg || !cfg.server) return null;
+    try {
+        const u = new URL(cfg.server);
+        // Only real host:port entries — the proxy column occasionally holds junk
+        // (e.g. a pasted file path) that parseProxy happily prefixes with http://.
+        if (!/^(https?|socks5?):$/.test(u.protocol) || !u.port || u.pathname !== '/' || !/^[\w.-]+$/.test(u.hostname)) return null;
+        if (cfg.username) u.username = cfg.username;
+        if (cfg.password) u.password = cfg.password;
+        return u.toString().replace(/\/$/, '');
+    } catch (e) {
+        return null;
+    }
+}
+
+// Proxies that failed at the transport level (dead host, 407, timeout) are benched
+// for a while so retries don't keep landing on them — roughly half the pool is dead
+// at any given time.
+const ytDlpProxyBenchedUntil = new Map(); // proxyUrl -> timestamp
+const YTDLP_PROXY_BENCH_MS = 30 * 60 * 1000;
+
+function getYtDlpProxyPool() {
+    const rows = db.prepare("SELECT DISTINCT proxy FROM profiles WHERE proxy IS NOT NULL AND proxy != '' AND use_proxy != 0").all();
+    const urls = rows.map(r => proxyConfigToUrl(parseProxy(r.proxy))).filter(Boolean);
+    const now = Date.now();
+    return [...new Set(urls)].filter(u => (ytDlpProxyBenchedUntil.get(u) || 0) < now);
+}
+
+function isProxyTransportError(message) {
+    return /curl: \((7|28|35|56)\)|CONNECT tunnel failed|response 407|Connection was reset|Connection timed out|ProxyError/i.test(String(message));
+}
+
+function benchYtDlpProxy(proxyUrl) {
+    ytDlpProxyBenchedUntil.set(proxyUrl, Date.now() + YTDLP_PROXY_BENCH_MS);
+}
+
+function pickRandom(arr) {
+    return arr.length ? arr[Math.floor(Math.random() * arr.length)] : null;
+}
+
 async function injectProfileCookies(browser, profile) {
     if (profile.cookies && profile.cookies.trim()) {
         try {
@@ -608,6 +652,81 @@ app.get('/api/profiles', (req, res) => {
         ...p,
         schedules: p.schedules ? p.schedules.split(',') : []
     })));
+});
+
+app.post('/api/check-music', (req, res) => {
+    const { profileId, txtFilePath } = req.body;
+    if (!profileId || !txtFilePath) {
+        return res.status(400).json({ error: 'profileId and txtFilePath are required' });
+    }
+
+    try {
+        const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+        if (!profile) {
+            return res.status(404).json({ error: 'Profile not found in database' });
+        }
+        
+        // Use Transfer-Encoding: chunked for streaming
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        const checkerScript = path.join(__dirname, 'check_music_automation.mjs');
+        const startMsg = `[Music Check] Starting check for profile ${profile.name} (ID: ${profileId}) using ${txtFilePath}`;
+        console.log(startMsg);
+        res.write(JSON.stringify({ type: 'log', message: startMsg }) + '\n');
+        
+        const child = spawn('node', [checkerScript, profile.name, txtFilePath]);
+        
+        let output = '';
+        child.stdout.on('data', (data) => {
+            const text = data.toString();
+            output += text;
+            
+            // Send each line as a log event
+            text.split('\n').forEach(line => {
+                if (line.trim() && !line.includes('JSON_RESULT:')) {
+                    console.log(`[Music Check ${profileId}] ${line.trim()}`);
+                    res.write(JSON.stringify({ type: 'log', message: line.trim() }) + '\n');
+                }
+            });
+        });
+        
+        child.stderr.on('data', (data) => {
+            const text = data.toString().trim();
+            if (text) {
+                console.error(`[Music Check ERR ${profileId}] ${text}`);
+                res.write(JSON.stringify({ type: 'log', message: `ERROR: ${text}` }) + '\n');
+            }
+        });
+
+        child.on('close', (code) => {
+            console.log(`[Music Check ${profileId}] exited with code ${code}`);
+            try {
+                // Find JSON_RESULT
+                const lines = output.split('\n');
+                const jsonLine = lines.find(l => l.includes('JSON_RESULT:'));
+                if (jsonLine) {
+                    const resultJson = jsonLine.split('JSON_RESULT:')[1].trim();
+                    const results = JSON.parse(resultJson);
+                    res.write(JSON.stringify({ type: 'done', success: true, results }) + '\n');
+                } else {
+                    res.write(JSON.stringify({ type: 'done', success: false, error: 'Could not find JSON result in script output' }) + '\n');
+                }
+            } catch (err) {
+                res.write(JSON.stringify({ type: 'done', success: false, error: 'Failed to parse results', details: err.message }) + '\n');
+            }
+            res.end();
+        });
+
+    } catch (err) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: 'Failed to start checker', details: err.message });
+        } else {
+            res.write(JSON.stringify({ type: 'done', success: false, error: 'Failed to start checker', details: err.message }) + '\n');
+            res.end();
+        }
+    }
 });
 
 app.post('/api/profiles', (req, res) => {
@@ -1829,6 +1948,10 @@ function requireClipboardApiKey(req, res, next) {
 let clipboardActiveDownloads = 0;
 
 const KUAISHOU_MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+const DOUYIN_WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+// Douyin hands back one url_list per rendition pointing at different CDN edges, and
+// some of those edges are unroutable from outside China. Walk a handful before failing.
+const DOUYIN_CDN_ATTEMPTS = 6;
 
 function isDirectVideoUrl(url) {
     return /\.(mp4|mov|webm|mkv)(\?.*)?$/i.test(url);
@@ -1851,7 +1974,8 @@ async function resolveKuaishouVideoUrl(shareUrl) {
         headers: { 'User-Agent': KUAISHOU_MOBILE_UA },
         maxRedirects: 5,
         timeout: 20000,
-        responseType: 'text'
+        responseType: 'text',
+        proxy: false
     });
     const match = String(res.data).match(/"mainMvUrls"\s*:\s*(\[\{.*?\}\])/);
     if (!match) throw new Error('Kuaishou: video URL not found in page (removed/private, or page layout changed)');
@@ -1865,7 +1989,29 @@ async function resolveKuaishouVideoUrl(shareUrl) {
     return urls[0].url;
 }
 
-async function downloadClipboardVideo(url) {
+async function resolveAndNormalizeUrl(urlStr) {
+    if (!urlStr || typeof urlStr !== 'string') return urlStr;
+    let target = urlStr.trim();
+    if (/v\.douyin\.com/i.test(target)) {
+        try {
+            const res = await axios.get(target, {
+                maxRedirects: 0,
+                validateStatus: null,
+                timeout: 10000,
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+            });
+            if (res.headers && res.headers.location) {
+                target = res.headers.location;
+            }
+        } catch (e) {
+            console.log(`[resolveAndNormalizeUrl] Failed redirect resolution for ${target}:`, e.message);
+        }
+    }
+    return target.replace(/https?:\/\/(?:www\.)?iesdouyin\.com\/share\/(video|note)\/(\d+)/i, 'https://www.douyin.com/$1/$2');
+}
+
+async function downloadClipboardVideo(rawUrl) {
+    const url = await resolveAndNormalizeUrl(rawUrl);
     const safeSpawn = (cmd, args, timeoutMs = 300000) => {
         const child = spawn(cmd, args);
         let timeout = null;
@@ -1883,13 +2029,54 @@ async function downloadClipboardVideo(url) {
 
     if (isKuaishouUrl(url)) {
         const directUrl = await resolveKuaishouVideoUrl(url);
-        const httpResponse = await axios({ method: 'GET', url: directUrl, responseType: 'stream', timeout: 60000, headers: { 'User-Agent': KUAISHOU_MOBILE_UA } });
+        const httpResponse = await axios({ method: 'GET', url: directUrl, responseType: 'stream', timeout: 60000, headers: { 'User-Agent': KUAISHOU_MOBILE_UA }, proxy: false });
         const writer = fs.createWriteStream(destPath);
         httpResponse.data.pipe(writer);
         await new Promise((resolve, reject) => {
             writer.on('finish', resolve);
             writer.on('error', reject);
         });
+    } else if (isDouyinVideoUrl(url)) {
+        // yt-dlp can no longer fetch Douyin: its extractor calls the web detail API
+        // unsigned, and Douyin now answers that with 403 "Blocked by
+        // ArgusSecurityPlugin Uifid Not Found" regardless of cookies or source IP.
+        // resolveDouyinVideoUrls drives a real browser session instead and reads the
+        // CDN URLs straight off the detail response.
+        const videoId = extractDouyinVideoId(url);
+        if (!videoId) throw new Error('Douyin: could not read a video id out of the URL');
+        const { urls } = await resolveDouyinVideoUrls(videoId);
+        let lastErr = null;
+        let saved = false;
+        for (const candidate of urls.slice(0, DOUYIN_CDN_ATTEMPTS)) {
+            try {
+                const httpResponse = await axios({
+                    method: 'GET',
+                    url: candidate,
+                    responseType: 'stream',
+                    timeout: 60000,
+                    maxRedirects: 5,
+                    headers: { 'User-Agent': DOUYIN_WEB_UA, Referer: 'https://www.douyin.com/' },
+                    proxy: false
+                });
+                const writer = fs.createWriteStream(destPath);
+                httpResponse.data.pipe(writer);
+                await new Promise((resolve, reject) => {
+                    writer.on('finish', resolve);
+                    writer.on('error', reject);
+                    httpResponse.data.on('error', reject);
+                });
+                saved = true;
+                break;
+            } catch (err) {
+                lastErr = err;
+                // A half-written file would otherwise pass the "output file is missing" check.
+                try { if (fs.existsSync(destPath)) fs.unlinkSync(destPath); } catch (e) {}
+                let host = candidate;
+                try { host = new URL(candidate).hostname; } catch (e) {}
+                console.log(`[ClipboardQueue] Douyin CDN ${host} failed: ${String(err.message || err).slice(0, 140)}`);
+            }
+        }
+        if (!saved) throw new Error(`Douyin: all ${Math.min(urls.length, DOUYIN_CDN_ATTEMPTS)} CDN URLs failed. Last error: ${lastErr && (lastErr.message || lastErr)}`);
     } else if (isDirectVideoUrl(url)) {
         const httpResponse = await axios({ method: 'GET', url, responseType: 'stream', timeout: 60000 });
         const writer = fs.createWriteStream(destPath);
@@ -1908,35 +2095,62 @@ async function downloadClipboardVideo(url) {
         // Douyin's anti-bot randomly 403s / returns an empty body even with valid cookies
         // and impersonation (~50% of requests, confirmed empirically) — retry a few times
         // before giving up, since a retry almost always gets through.
+        // Attempt 1 is direct; later attempts go through a random profile proxy because
+        // Douyin also blocks the machine's own IP after a burst of downloads.
+        const proxyPool = getYtDlpProxyPool();
+        // 1 direct attempt + up to 4 proxy attempts, never the same proxy twice per job
+        const maxAttempts = 1 + Math.min(4, proxyPool.length) + (proxyPool.length ? 0 : 2);
+        const triedProxies = new Set();
         let lastErr;
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const proxyUrl = attempt > 1 ? pickRandom(proxyPool.filter(u => !triedProxies.has(u))) : null;
+            if (proxyUrl) triedProxies.add(proxyUrl);
+            const proxyArgs = proxyUrl ? ['--proxy', proxyUrl] : [];
             try {
                 await new Promise((resolve, reject) => {
                     const child = safeSpawn('yt-dlp', [
                         '--js-runtimes', `node:${process.execPath}`,
                         '--impersonate', 'chrome',
                         ...cookieArgs,
+                        ...proxyArgs,
                         url,
                         '-o', destPath,
                         '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
                         '--merge-output-format', 'mp4',
                         '--no-playlist',
                     ]);
+                    
+                    const timeout = setTimeout(() => {
+                        try { child.kill(); } catch (e) {}
+                        reject(new Error('yt-dlp timed out after 5 minutes'));
+                    }, 300000); // 5 minutes timeout
+
                     let stderrData = '';
                     child.stdout.on('data', () => {});
                     child.stderr.on('data', (data) => { stderrData += data.toString(); });
                     child.on('close', (code) => {
+                        clearTimeout(timeout);
                         if (code === 0) resolve();
                         else reject(new Error(`yt-dlp exited with code ${code}. Stderr: ${stderrData}`));
                     });
-                    child.on('error', (err) => { try { child.kill(); } catch (e) {} reject(err); });
+                    child.on('error', (err) => { 
+                        clearTimeout(timeout);
+                        try { child.kill(); } catch (e) {} 
+                        reject(err); 
+                    });
                 });
                 lastErr = null;
                 break;
             } catch (err) {
                 lastErr = err;
-                if (attempt < 3) {
-                    console.log(`[ClipboardQueue] yt-dlp attempt ${attempt} failed, retrying: ${err.message}`);
+                if (proxyUrl && isProxyTransportError(err.message)) benchYtDlpProxy(proxyUrl);
+                // "Fresh cookies ... are needed" is an anti-bot/signature wall, not an IP
+                // block: every proxy gets the same answer, so retrying only burns the pool
+                // (and benches good proxies on the way). Give up after the first attempt.
+                if (/Fresh cookies/i.test(String(err.message || err))) break;
+                if (attempt < maxAttempts) {
+                    const via = proxyUrl ? ` via proxy ${proxyUrl.replace(/\/\/.*@/, '//***@')}` : ' (direct)';
+                    console.log(`[ClipboardQueue] yt-dlp attempt ${attempt}${via} failed, retrying: ${String(err.message).split('\n')[0].slice(0, 200)}`);
                     await new Promise((r) => setTimeout(r, 2000));
                 }
             }
@@ -1976,7 +2190,7 @@ db.prepare("UPDATE video_queue SET status = 'pending', updated_at = CURRENT_TIME
 processClipboardQueue();
 
 // POST /api/clipboard/enqueue — mobile app calls this right after clipboard copy detected
-app.post('/api/clipboard/enqueue', requireClipboardApiKey, (req, res) => {
+app.post('/api/clipboard/enqueue', requireClipboardApiKey, async (req, res) => {
     const { url, device_id } = req.body || {};
     if (!url || typeof url !== 'string') {
         return res.status(200).json({ success: false, error: 'url is required' });
@@ -1989,7 +2203,8 @@ app.post('/api/clipboard/enqueue', requireClipboardApiKey, (req, res) => {
     let decoded = url.trim();
     try { decoded = decodeURIComponent(decoded); } catch (e) { /* not (fully) percent-encoded, use as-is */ }
     const linkMatch = decoded.match(/https?:\/\/[^\s"'<>]+/);
-    const candidate = linkMatch ? linkMatch[0] : url.trim();
+    let candidate = linkMatch ? linkMatch[0] : url.trim();
+    candidate = await resolveAndNormalizeUrl(candidate);
 
     let parsed;
     try {
@@ -1997,6 +2212,13 @@ app.post('/api/clipboard/enqueue', requireClipboardApiKey, (req, res) => {
         if (!/^https?:$/.test(parsed.protocol)) throw new Error('not http(s)');
     } catch (e) {
         return res.status(200).json({ success: false, error: 'url must be a valid http(s) URL' });
+    }
+
+    // Douyin /note/<id> posts are photo galleries with no video track, so there is
+    // nothing for the queue to download — reject them here instead of letting every
+    // one of them burn a download slot and land in the queue as a failure.
+    if (isDouyinNoteUrl(parsed.href)) {
+        return res.status(200).json({ success: false, error: 'Douyin /note/ links are photo posts, not videos' });
     }
 
     const dup = db.prepare("SELECT id, status FROM video_queue WHERE source_url = ? AND status IN ('pending','downloading')").get(parsed.href);
@@ -2020,9 +2242,18 @@ app.get('/api/clipboard/queue', (req, res) => {
     if (status) {
         sql += ' WHERE status = ?';
         params.push(status);
+        sql += ' ORDER BY created_at DESC LIMIT ?';
+    } else {
+        // Ưu tiên hiển thị: downloading -> failed -> pending -> done
+        sql += ` ORDER BY 
+            CASE status 
+                WHEN 'downloading' THEN 1 
+                WHEN 'failed' THEN 2 
+                WHEN 'pending' THEN 3 
+                ELSE 4 
+            END ASC, created_at DESC LIMIT ?`;
     }
-    sql += ' ORDER BY created_at DESC LIMIT ?';
-    params.push(Number(limit) || 50);
+    params.push(Number(limit) || 100);
     res.json(db.prepare(sql).all(...params));
 });
 
@@ -2089,6 +2320,7 @@ const loggingInProfiles = new Map(); // profileId -> { browser, stop, stats }
 const avatarChangingProfiles = new Set();
 const addingFavoriteMusicProfiles = new Set(); // profileId set — prevents concurrent favorite music operations
 
+/*
 app.post('/api/upload_new_video', async (req, res) => {
     const { video_id, channel_id, profile_id, profile_name } = req.body;
 
@@ -2647,6 +2879,7 @@ app.post('/api/upload_new_video', async (req, res) => {
         console.log(`[${profile.name}] Processing lock released for video_id=${video_id}`);
     }
 });
+*/
 
 app.post('/api/upload-profile', async (req, res) => {
     const { profile_name, video_url } = req.body;
@@ -4019,16 +4252,144 @@ const describeScheduleInput = (input) => {
     return `#${input.index} kind=${inferScheduleFieldKind(input)} hint="${hint.slice(0, 80)}"`;
 };
 
-async function resolveScheduleInputs(page, log) {
-    await page.waitForFunction(() => {
-        const visibleInputs = Array.from(document.querySelectorAll('input.TUXTextInputCore-input')).filter((input) => {
-            const style = window.getComputedStyle(input);
-            const rect = input.getBoundingClientRect();
-            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        });
+// New TikTok Studio schedule UI (some profiles): date/time are Picker comboboxes, not text inputs.
+const SCHEDULE_PICKER_TRIGGER = '.scheduled-picker .Picker__trigger';
 
-        return visibleInputs.length >= 2;
-    }, { timeout: 10000 }).catch(() => null);
+async function resolveSchedulePickers(page, log) {
+    const triggers = page.locator(`${SCHEDULE_PICKER_TRIGGER}:visible`);
+    const count = await triggers.count();
+    if (count < 2) return null;
+
+    const metas = [];
+    for (let index = 0; index < count; index++) {
+        const meta = await triggers.nth(index).evaluate((el) => ({
+            placeholder: '',
+            ariaLabel: el.getAttribute('aria-label') || '',
+            label: '',
+            name: '',
+            id: '',
+            value: (el.querySelector('.Picker__value')?.textContent || '').trim()
+        }));
+        metas.push({ index, mode: 'picker', ...meta });
+    }
+
+    const date = metas.find((m) => /date/i.test(m.ariaLabel)) || metas[0];
+    const time = metas.find((m) => /time/i.test(m.ariaLabel)) || metas.find((m) => m.index !== date.index);
+    log(`Schedule Picker UI detected: date="${date.value}" time="${time?.value}"`);
+    return { date, time };
+}
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function parseScheduleDateValue(value) {
+    const parts = value.split(/[-/.]/).map(Number);
+    if (/^\d{4}/.test(value)) return { year: parts[0], month: parts[1], day: parts[2] }; // YYYY-MM-DD / YYYY.MM.DD
+    if (parts[0] > 12) return { year: parts[2], month: parts[1], day: parts[0] }; // DD/MM/YYYY
+    return { year: parts[2], month: parts[0], day: parts[1] }; // MM/DD/YYYY
+}
+
+async function fillSchedulePicker(page, pickerMeta, value, label, log) {
+    const trigger = page.locator(`${SCHEDULE_PICKER_TRIGGER}:visible`).nth(pickerMeta.index);
+    log(`Setting ${label} via Picker UI (${pickerMeta.ariaLabel || '#' + pickerMeta.index}) => ${value}`);
+
+    await trigger.scrollIntoViewIfNeeded().catch(() => null);
+    if ((await trigger.getAttribute('aria-expanded')) !== 'true') {
+        await trigger.click();
+    }
+    await page.waitForTimeout(800);
+
+    if (label === 'Date') {
+        const { year, month, day } = parseScheduleDateValue(value);
+        const panel = page.locator('[role="dialog"] .DatePicker__panel:visible').first();
+        await panel.waitFor({ state: 'visible', timeout: 5000 });
+
+        // Navigate to target month/year
+        for (let step = 0; step < 24; step++) {
+            const titleMonth = (await panel.locator('.DatePicker__titleMonth').textContent().catch(() => '') || '').trim();
+            const titleYear = Number((await panel.locator('.DatePicker__titleYear').textContent().catch(() => '') || '').trim());
+            const shownMonth = MONTH_NAMES.findIndex((m) => m.toLowerCase().startsWith(titleMonth.toLowerCase().slice(0, 3))) + 1;
+            if (!shownMonth || !titleYear) break;
+            const diff = (year - titleYear) * 12 + (month - shownMonth);
+            if (diff === 0) break;
+            await panel.locator(diff > 0 ? 'button[aria-label="Next month"]' : 'button[aria-label="Previous month"]').click();
+            await page.waitForTimeout(400);
+        }
+
+        const dayEl = panel.locator('button.DatePicker__day[data-outside="false"]')
+            .filter({ hasText: new RegExp(`^${day}$`) }).first();
+        if (await dayEl.getAttribute('data-disabled') === 'true') {
+            log(`Warning: day ${day} is disabled in Picker calendar.`);
+        }
+        await dayEl.click();
+        log(`Clicked day ${day} (${MONTH_NAMES[month - 1]} ${year}) in Picker calendar.`);
+    } else {
+        const [hourStr, rest = ''] = value.split(':');
+        let hour = Number(hourStr);
+        const minute = Number(rest.slice(0, 2));
+        const meridiem = /pm/i.test(rest) ? 'PM' : /am/i.test(rest) ? 'AM' : null;
+        if (meridiem === 'PM' && hour < 12) hour += 12;
+        if (meridiem === 'AM' && hour === 12) hour = 0;
+
+        const panel = page.locator('[role="dialog"] .TimePicker__panel:visible').first();
+        await panel.waitFor({ state: 'visible', timeout: 5000 });
+        const hoursCol = panel.locator('[role="listbox"][aria-label="Hours"]');
+        const minutesCol = panel.locator('[role="listbox"][aria-label="Minutes"]');
+        const is12h = (await hoursCol.locator('button[aria-label="Hours 13"]').count()) === 0;
+
+        const hourLabel = is12h ? String(hour % 12 || 12).padStart(2, '0') : String(hour).padStart(2, '0');
+        let hourEl = hoursCol.locator(`button[aria-label="Hours ${hourLabel}"]`);
+        if (!(await hourEl.count())) hourEl = hoursCol.locator(`button[aria-label="Hours ${Number(hourLabel)}"]`);
+        await hourEl.first().scrollIntoViewIfNeeded().catch(() => null);
+        await hourEl.first().click();
+        await page.waitForTimeout(400);
+
+        // Minutes list is in 5-min steps; pick exact match, otherwise nearest available
+        const minuteOptions = await minutesCol.locator('button[role="option"]').evaluateAll((els) =>
+            els.map((el) => ({ label: el.getAttribute('aria-label'), num: Number(el.textContent.trim()) })));
+        let target = minuteOptions.find((o) => o.num === minute);
+        if (!target && minuteOptions.length) {
+            target = minuteOptions.reduce((best, o) => (Math.abs(o.num - minute) < Math.abs(best.num - minute) ? o : best));
+            log(`Warning: minute ${minute} not available in Picker, using nearest ${target.num}.`);
+        }
+        if (target) {
+            const minuteEl = minutesCol.locator(`button[aria-label="${target.label}"]`).first();
+            await minuteEl.scrollIntoViewIfNeeded().catch(() => null);
+            await minuteEl.click();
+            await page.waitForTimeout(400);
+        }
+
+        if (is12h) {
+            const ampmEl = panel.locator('[role="listbox"]').nth(2)
+                .locator('button[role="option"]').filter({ hasText: hour >= 12 ? /PM/i : /AM/i }).first();
+            if (await ampmEl.count()) await ampmEl.click();
+        }
+    }
+
+    await page.waitForTimeout(800);
+    if ((await trigger.getAttribute('aria-expanded')) === 'true') {
+        await page.keyboard.press('Escape').catch(() => null);
+        await page.waitForTimeout(500);
+    }
+
+    const shown = (await trigger.locator('.Picker__value').textContent().catch(() => '') || '').trim();
+    log(`${label} Picker value after select: ${shown || '<empty>'}`);
+}
+
+async function resolveScheduleInputs(page, log) {
+    await page.waitForFunction((pickerSelector) => {
+        const isVisible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
+        const visibleInputs = Array.from(document.querySelectorAll('input.TUXTextInputCore-input')).filter(isVisible);
+        const visiblePickers = Array.from(document.querySelectorAll(pickerSelector)).filter(isVisible);
+
+        return visibleInputs.length >= 2 || visiblePickers.length >= 2;
+    }, SCHEDULE_PICKER_TRIGGER, { timeout: 10000 }).catch(() => null);
+
+    const pickers = await resolveSchedulePickers(page, log);
+    if (pickers) return pickers;
 
     const locator = page.locator('input.TUXTextInputCore-input:visible');
     const count = await locator.count();
@@ -4080,6 +4441,10 @@ async function resolveScheduleInputs(page, log) {
 async function fillScheduleInput(page, inputMeta, value, label, log) {
     if (!inputMeta) {
         throw new Error(`${label} input not found`);
+    }
+
+    if (inputMeta.mode === 'picker') {
+        return fillSchedulePicker(page, inputMeta, value, label, log);
     }
 
     const input = page.locator('input.TUXTextInputCore-input:visible').nth(inputMeta.index);
@@ -5686,6 +6051,12 @@ app.post('/api/distribution/distribute', (req, res) => {
 
         let totalDistributed = 0;
         let videoIndex = 0;
+
+        // Shuffle videoFiles to distribute randomly instead of sequentially
+        for (let i = videoFiles.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [videoFiles[i], videoFiles[j]] = [videoFiles[j], videoFiles[i]];
+        }
 
         // Round-robin distribution
         while (videoIndex < videoFiles.length) {
