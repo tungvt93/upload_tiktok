@@ -259,11 +259,15 @@ export function parseScheduleValue(dateStr, timeStr) {
             if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
         }
 
+        // Set year/month/day in ONE call. Doing it field-by-field rolls the date
+        // over whenever "today" is a day the target month does not have
+        // (e.g. on Oct 31, setMonth(8) => Sep 31 => Oct 1, silently +1 month).
         const date = new Date();
-        if (year) date.setFullYear(year);
-        if (month) date.setMonth(month - 1);
-        if (day) date.setDate(day);
+        const finalYear = year || date.getFullYear();
+        const finalMonth = month ? month - 1 : date.getMonth();
+        const finalDay = day || date.getDate();
         date.setHours(hours, minutes, 0, 0);
+        date.setFullYear(finalYear, finalMonth, finalDay);
 
         return date;
     } catch (e) {

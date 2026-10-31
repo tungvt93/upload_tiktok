@@ -1969,6 +1969,42 @@ const DOUYIN_WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
 // some of those edges are unroutable from outside China. Walk a handful before failing.
 const DOUYIN_CDN_ATTEMPTS = 6;
 
+// axios `timeout` only covers the wait for response headers. Once the body is
+// streaming, a CDN that stops sending mid-file leaves the pipe hanging forever
+// (no 'finish', no 'error'), which pins a queue slot until the process restarts.
+const CLIPBOARD_STREAM_IDLE_MS = 60000;
+
+function streamResponseToFile(httpResponse, destPath, idleMs = CLIPBOARD_STREAM_IDLE_MS) {
+    return new Promise((resolve, reject) => {
+        const source = httpResponse.data;
+        const writer = fs.createWriteStream(destPath);
+        let settled = false;
+        let idleTimer = null;
+        const finish = (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(idleTimer);
+            if (err) {
+                try { source.destroy(); } catch (e) {}
+                writer.destroy();
+                reject(err);
+            } else {
+                resolve();
+            }
+        };
+        const armIdle = () => {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => finish(new Error(`Download stalled: no data for ${idleMs / 1000}s`)), idleMs);
+        };
+        source.on('data', armIdle);
+        source.on('error', finish);
+        writer.on('error', finish);
+        writer.on('finish', () => finish());
+        armIdle();
+        source.pipe(writer);
+    });
+}
+
 function isDirectVideoUrl(url) {
     return /\.(mp4|mov|webm|mkv)(\?.*)?$/i.test(url);
 }
@@ -2046,12 +2082,12 @@ async function downloadClipboardVideo(rawUrl) {
     if (isKuaishouUrl(url)) {
         const directUrl = await resolveKuaishouVideoUrl(url);
         const httpResponse = await axios({ method: 'GET', url: directUrl, responseType: 'stream', timeout: 60000, headers: { 'User-Agent': KUAISHOU_MOBILE_UA }, proxy: false });
-        const writer = fs.createWriteStream(destPath);
-        httpResponse.data.pipe(writer);
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
+        try {
+            await streamResponseToFile(httpResponse, destPath);
+        } catch (err) {
+            try { if (fs.existsSync(destPath)) fs.unlinkSync(destPath); } catch (e) {}
+            throw err;
+        }
     } else if (isDouyinVideoUrl(url)) {
         // yt-dlp can no longer fetch Douyin: its extractor calls the web detail API
         // unsigned, and Douyin now answers that with 403 "Blocked by
@@ -2074,13 +2110,7 @@ async function downloadClipboardVideo(rawUrl) {
                     headers: { 'User-Agent': DOUYIN_WEB_UA, Referer: 'https://www.douyin.com/' },
                     proxy: false
                 });
-                const writer = fs.createWriteStream(destPath);
-                httpResponse.data.pipe(writer);
-                await new Promise((resolve, reject) => {
-                    writer.on('finish', resolve);
-                    writer.on('error', reject);
-                    httpResponse.data.on('error', reject);
-                });
+                await streamResponseToFile(httpResponse, destPath);
                 saved = true;
                 break;
             } catch (err) {
@@ -2095,12 +2125,12 @@ async function downloadClipboardVideo(rawUrl) {
         if (!saved) throw new Error(`Douyin: all ${Math.min(urls.length, DOUYIN_CDN_ATTEMPTS)} CDN URLs failed. Last error: ${lastErr && (lastErr.message || lastErr)}`);
     } else if (isDirectVideoUrl(url)) {
         const httpResponse = await axios({ method: 'GET', url, responseType: 'stream', timeout: 60000 });
-        const writer = fs.createWriteStream(destPath);
-        httpResponse.data.pipe(writer);
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
+        try {
+            await streamResponseToFile(httpResponse, destPath);
+        } catch (err) {
+            try { if (fs.existsSync(destPath)) fs.unlinkSync(destPath); } catch (e) {}
+            throw err;
+        }
     } else {
         // Douyin (and some other sites) reject requests without a "fresh" cookie jar
         // (an anti-bot fingerprint cookie set by visiting the site in a real browser),
@@ -4271,6 +4301,13 @@ const describeScheduleInput = (input) => {
 // New TikTok Studio schedule UI (some profiles): date/time are Picker comboboxes, not text inputs.
 const SCHEDULE_PICKER_TRIGGER = '.scheduled-picker .Picker__trigger';
 
+// Legacy TikTok Studio schedule UI: readonly text inputs backed by a custom
+// calendar + a two-column time dropdown. Selectors verified against the live DOM.
+const CALENDAR_WRAPPER = '.calendar-wrapper';
+const TIME_PICKER_CONTAINER = '.tiktok-timepicker-time-picker-container';
+const TIME_PICKER_COLUMN = '.tiktok-timepicker-time-scroll-container';
+const TIME_PICKER_OPTION = '.tiktok-timepicker-option-item';
+
 async function resolveSchedulePickers(page, log) {
     const triggers = page.locator(`${SCHEDULE_PICKER_TRIGGER}:visible`);
     const count = await triggers.count();
@@ -4454,6 +4491,27 @@ async function resolveScheduleInputs(page, log) {
     return selected;
 }
 
+// Dismiss an open schedule dropdown. Escape alone does not always close TikTok's
+// calendar/time popups; a click on neutral page chrome does. Left open, the popup
+// overlays the form and can intercept the Post click further down the flow.
+async function closeSchedulePopup(page, popupSelector, log) {
+    const popup = page.locator(popupSelector).first();
+    for (const attempt of ['escape', 'click-away']) {
+        if (!(await popup.isVisible({ timeout: 500 }).catch(() => false))) return true;
+        if (attempt === 'escape') {
+            await page.keyboard.press('Escape').catch(() => null);
+        } else {
+            await page.mouse.click(5, 5).catch(() => null);
+        }
+        await page.waitForTimeout(500);
+    }
+    const stillOpen = await popup.isVisible({ timeout: 500 }).catch(() => false);
+    if (stillOpen && typeof log === 'function') {
+        log(`Warning: schedule popup ${popupSelector} stayed open after Escape + click-away.`);
+    }
+    return !stillOpen;
+}
+
 async function fillScheduleInput(page, inputMeta, value, label, log) {
     if (!inputMeta) {
         throw new Error(`${label} input not found`);
@@ -4474,73 +4532,151 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     await input.click({ clickCount: 3 });
     await page.waitForTimeout(500);
 
-    // Special handling for the TikTok Time Picker
+    // Special handling for the TikTok Time Picker.
+    //
+    // The real DOM is two scrolling columns, NOT the `.tiktok-timepicker-left` /
+    // `-right` classes this used to look for (those match nothing, so no option was
+    // ever clicked and the code fell through to a raw value fill that React discards):
+    //
+    //   .tiktok-timepicker-time-picker-container
+    //     .tiktok-timepicker-picker-decoration            ":"
+    //     .tiktok-timepicker-time-scroll-container  [0]   hours   00..23
+    //       .tiktok-timepicker-option-list > .tiktok-timepicker-option-item
+    //     .tiktok-timepicker-time-scroll-container  [1]   minutes 00,05,..,55
     if (label === 'Time') {
-        const pickerSelector = '.tiktok-timepicker-time-picker-container';
-        const picker = page.locator(pickerSelector);
+        const picker = page.locator(TIME_PICKER_CONTAINER).first();
 
         try {
             if (await picker.isVisible({ timeout: 2000 })) {
                 log(`Time picker detected. Selecting items directly...`);
-                const [targetHour, targetMinute] = value.split(':');
 
-                const hourEl = picker.locator(`.tiktok-timepicker-left:has-text("${targetHour}")`).first();
-                if (await hourEl.isVisible()) await hourEl.click({ force: true });
+                const [hourRaw, minuteRaw = ''] = value.split(':');
+                let hour = Number(hourRaw);
+                const minute = Number(minuteRaw.slice(0, 2));
+                if (/pm/i.test(value) && hour < 12) hour += 12;
+                if (/am/i.test(value) && hour === 12) hour = 0;
 
-                const minuteEl = picker.locator(`.tiktok-timepicker-right:has-text("${targetMinute}")`).first();
-                if (await minuteEl.isVisible()) await minuteEl.click({ force: true });
+                const columns = picker.locator(TIME_PICKER_COLUMN);
+                const hourCol = columns.nth(0);
+                const minuteCol = columns.nth(1);
 
-                await input.click();
-                await page.waitForTimeout(500);
-                return;
+                const clickOption = async (column, text, what) => {
+                    const option = column.locator(TIME_PICKER_OPTION)
+                        .filter({ hasText: new RegExp(`^${text}$`) }).first();
+                    if (!(await option.count())) {
+                        throw new Error(`${what} option "${text}" not present in picker`);
+                    }
+                    await option.scrollIntoViewIfNeeded().catch(() => null);
+                    await option.click({ force: true });
+                    await page.waitForTimeout(400);
+                };
+
+                await clickOption(hourCol, String(hour).padStart(2, '0'), 'Hour');
+
+                // The minutes column only offers 5-minute steps; snap to the nearest.
+                const minuteOptions = await minuteCol.locator(TIME_PICKER_OPTION)
+                    .evaluateAll((els) => els.map((el) => Number(el.textContent.trim()))
+                        .filter((n) => Number.isFinite(n)));
+                let targetMinute = minute;
+                if (minuteOptions.length && !minuteOptions.includes(minute)) {
+                    targetMinute = minuteOptions.reduce((best, o) =>
+                        (Math.abs(o - minute) < Math.abs(best - minute) ? o : best), minuteOptions[0]);
+                    log(`Warning: minute ${minute} unavailable, snapping to ${targetMinute}.`);
+                }
+                await clickOption(minuteCol, String(targetMinute).padStart(2, '0'), 'Minute');
+
+                // Close the dropdown before returning: if it stays open it overlays
+                // the form and can swallow the later Post click. Never close it by
+                // clicking the input again -- that click lands on the overlay and
+                // Playwright's actionability check blocks for the full 30s timeout.
+                await closeSchedulePopup(page, TIME_PICKER_CONTAINER, log);
+
+                const picked = await input.inputValue().catch(() => '');
+                log(`Time picker selection result: "${picked}"`);
+                const expected = `${String(hour).padStart(2, '0')}:${String(targetMinute).padStart(2, '0')}`;
+                if (picked.replace(/\s/g, '') === expected) return;
+                log(`Time picker value "${picked}" != expected "${expected}". Falling back to fill.`);
             }
         } catch (e) {
             log(`Time picker interaction failed: ${e.message}. Falling back to fill.`);
+            await closeSchedulePopup(page, TIME_PICKER_CONTAINER, log);
         }
     }
 
-    // Special handling for the TikTok Date Picker
+    // Special handling for the TikTok Date Picker.
+    //
+    // The grid always renders whole weeks, so the first and last rows carry days
+    // from the neighbouring months. Those share `class="day"` with real days, which
+    // made the old text-match ambiguous: rolling 23:50 Oct 31 -> 00:00 Nov 1 looked
+    // for "1" while October was still displayed and would have hit *Oct 1*. The
+    // calendar also never advanced a month, so a cross-month roll could not work at
+    // all. Navigate by the header first, then address the day by grid index.
     if (label === 'Date') {
-        const pickerSelector = '.calendar-wrapper';
         try {
             // Click input once to open calendar if not already open
-            if (!(await page.locator(pickerSelector).isVisible({ timeout: 500 }).catch(() => false))) {
+            if (!(await page.locator(CALENDAR_WRAPPER).isVisible({ timeout: 500 }).catch(() => false))) {
                 await input.click();
             }
             await page.waitForTimeout(1000);
 
-            const picker = page.locator(pickerSelector).first();
+            const picker = page.locator(CALENDAR_WRAPPER).first();
             if (await picker.isVisible({ timeout: 3000 })) {
                 log(`Calendar picker detected. Selecting day directly...`);
 
-                // Parse the target day from value (expected YYYY-MM-DD or MM/DD/YYYY)
-                const parts = value.split(/[-/.]/).map(Number);
-                let targetDay = parts[2]; // Default for YYYY-MM-DD or YYYY.MM.DD
-                if (value.includes('/') && parts[0] <= 12) targetDay = parts[1]; // MM/DD/YYYY
-                else if (value.includes('/') && parts[0] > 12) targetDay = parts[0]; // DD/MM/YYYY
+                const { year, month, day } = parseScheduleDateValue(value);
+                log(`Target date: ${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
 
-                log(`Extracted target day: ${targetDay}`);
-
-                // Click the day span. Filter for 'valid' to stay in current month.
-                // We use :text-is to match exact text and avoid "2" matching "22"
-                const dayEl = picker.locator(`span.day.valid`).filter({ hasText: new RegExp(`^${targetDay}$`) }).first();
-
-                if (await dayEl.isVisible()) {
-                    await dayEl.click({ force: true });
-                    log(`Successfully clicked day ${targetDay} in calendar.`);
-                    await page.waitForTimeout(1000);
-
-                    // Verify if picker closed or check if it stayed
-                    if (!(await picker.isVisible({ timeout: 1000 }).catch(() => false))) {
-                        return;
+                // Walk the header arrows (nth(0) = previous month, nth(1) = next month)
+                // until the displayed month/year matches the target.
+                let navigated = false;
+                for (let step = 0; step < 24; step++) {
+                    const shownMonthName = ((await picker.locator('.month-title').textContent().catch(() => '')) || '').trim();
+                    const shownYear = Number(((await picker.locator('.year-title').textContent().catch(() => '')) || '').trim());
+                    const shownMonth = MONTH_NAMES.findIndex((m) => m.toLowerCase().startsWith(shownMonthName.toLowerCase().slice(0, 3))) + 1;
+                    if (!shownMonth || !shownYear) {
+                        log(`Could not read calendar header (month="${shownMonthName}" year="${shownYear}").`);
+                        break;
                     }
-                } else {
-                    log(`Day ${targetDay} not visible/valid in current month view.`);
+                    const diff = (year - shownYear) * 12 + (month - shownMonth);
+                    if (diff === 0) { navigated = true; break; }
+                    log(`Calendar shows ${shownMonthName} ${shownYear}; moving ${diff > 0 ? 'forward' : 'back'} one month.`);
+                    await picker.locator('.arrow').nth(diff > 0 ? 1 : 0).click({ force: true });
+                    await page.waitForTimeout(500);
+                }
+
+                if (navigated) {
+                    // Day 1 of the displayed month is the first cell reading "1":
+                    // leading cells belong to the previous month and count upward to
+                    // its last day, so they can never be "1".
+                    const cells = await picker.locator('.day-span-container span.day')
+                        .evaluateAll((els) => els.map((el) => ({
+                            text: el.textContent.trim(),
+                            cls: typeof el.className === 'string' ? el.className : ''
+                        })));
+                    const firstOfMonth = cells.findIndex((c) => c.text === '1');
+                    const targetIndex = firstOfMonth + (day - 1);
+
+                    if (firstOfMonth === -1 || targetIndex >= cells.length || cells[targetIndex].text !== String(day)) {
+                        log(`Could not locate day ${day} in the ${MONTH_NAMES[month - 1]} ${year} grid.`);
+                    } else {
+                        if (!/\bvalid\b/.test(cells[targetIndex].cls)) {
+                            log(`Warning: day ${day} is not marked valid (likely in the past).`);
+                        }
+                        await picker.locator('.day-span-container span.day').nth(targetIndex).click({ force: true });
+                        await page.waitForTimeout(1000);
+
+                        const picked = await input.inputValue().catch(() => '');
+                        log(`Date picker selection result: "${picked}"`);
+                        const expected = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                        if (picked === expected || picked === value) return;
+                        log(`Date picker value "${picked}" != expected "${expected}". Falling back to fill.`);
+                    }
                 }
             }
         } catch (e) {
             log(`Date picker interaction failed: ${e.message}. Falling back to manual fill.`);
         }
+        await closeSchedulePopup(page, CALENDAR_WRAPPER, log);
     }
 
 
@@ -4858,6 +4994,7 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
             // Selector tổng hợp cho cả danh sách video và trạng thái trống (Upload first video / No content)
             const combinedSelector = [
                 '[data-tt="components_PublishStageLabel_FlexCenter"]',
+                '[data-tt="components_PublishStageLabel_TUXText"]',
                 'button:has-text("Upload first video")',
                 'button:has-text("Upload video")',
                 'a:has-text("Upload video")',
@@ -4875,8 +5012,13 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
             // Đợi 1 trong các phần tử xuất hiện (tối đa 15s)
             await page.waitForSelector(combinedSelector, { timeout: 15000, state: 'attached' });
 
-            const firstStatusLabel = page.locator('[data-tt="components_PublishStageLabel_FlexCenter"]').first();
-            const statusLabelCount = await firstStatusLabel.count().catch(() => 0);
+            // UI cũ: label nằm trong FlexCenter (có icon Alarm khi scheduled).
+            // UI mới (một số nick): chỉ còn span TUXText, vd "Oct 30, 10:10 PM (GMT+7) Saigon".
+            const flexCenterLabel = page.locator('[data-tt="components_PublishStageLabel_FlexCenter"]').first();
+            const tuxTextLabel = page.locator('[data-tt="components_PublishStageLabel_TUXText"]').first();
+            const flexCenterCount = await flexCenterLabel.count().catch(() => 0);
+            const tuxTextCount = await tuxTextLabel.count().catch(() => 0);
+            const statusLabelCount = flexCenterCount + tuxTextCount;
 
             const uploadFirstVideoBtn = page.locator('button:has-text("Upload first video"), button:has-text("Upload video"), a:has-text("Upload video"), a:has-text("Upload first video"), div:has-text("Upload video to get started"), div:has-text("Upload your first video"), div:has-text("No content"), div:has-text("No videos")').first();
             const isUploadFirstVisible = await uploadFirstVideoBtn.isVisible().catch(() => false);
@@ -4886,20 +5028,24 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
                 return null;
             }
 
-            // Check xem có icon Alarm (data-testid="Alarm") = đang Scheduled
-            const alarmIcon = firstStatusLabel.locator('[data-testid="Alarm"]');
-            const hasAlarm = (await alarmIcon.count()) > 0;
+            // Lấy text thời gian: ưu tiên TUXText bên trong FlexCenter (UI cũ), fallback TUXText độc lập (UI mới)
+            const timeEl = flexCenterCount > 0
+                ? flexCenterLabel.locator('[data-tt="components_PublishStageLabel_TUXText"]').first()
+                : tuxTextLabel;
+            await timeEl.waitFor({ timeout: 5000, state: 'visible' }).catch(() => null);
+            const timeText = ((await timeEl.textContent().catch(() => '')) || '').trim();
 
-            if (!hasAlarm) {
-                log('Top video is Public / not scheduled. Using default upload flow (video 1 = immediate publish).');
+            // Scheduled nếu có icon Alarm (UI cũ) hoặc text chứa giờ dạng HH:mm (UI mới không còn icon)
+            const hasAlarm = flexCenterCount > 0
+                && (await flexCenterLabel.locator('[data-testid="Alarm"]').count().catch(() => 0)) > 0;
+            const looksLikeTime = /\d{1,2}:\d{2}/.test(timeText);
+
+            if (!hasAlarm && !looksLikeTime) {
+                log(`Top video is Public / not scheduled (label: "${timeText}"). Using default upload flow (video 1 = immediate publish).`);
                 return null;
             }
 
-            // Extract thời gian từ label
-            const timeEl = firstStatusLabel.locator('[data-tt="components_PublishStageLabel_TUXText"]');
-            await timeEl.waitFor({ timeout: 5000, state: 'visible' }).catch(() => null);
-            const timeText = (await timeEl.textContent() || '').trim();
-            log(`Found scheduled video with time: "${timeText}"`);
+            log(`Found scheduled video with time: "${timeText}" (${hasAlarm ? 'Alarm icon' : 'time text'})`);
 
             if (!timeText) {
                 throw new Error('Scheduled time text is empty.');
