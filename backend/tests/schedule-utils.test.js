@@ -10,7 +10,9 @@ import {
     parseTikTokContentTimeText,
     parseScheduleValue,
     displayedDateMatches,
-    displayedTimeMatches
+    displayedTimeMatches,
+    parseScheduleDateValue,
+    isValidScheduleDateParts
 } from '../schedule-utils.js';
 
 test('computeNextScheduledTime starts at +20 minutes and rounds up to 5-minute mark', () => {
@@ -158,4 +160,28 @@ test('displayedTimeMatches accepts 24h and 12h renderings of the same instant', 
     assert.equal(displayedTimeMatches('12:00 PM', { hour: 0, minute: 0 }), false);
     assert.equal(displayedTimeMatches('22:40', { hour: 22, minute: 40 }), true);
     assert.equal(displayedTimeMatches('10:40 PM', { hour: 22, minute: 40 }), true);
+});
+
+test('parseScheduleDateValue understands every format formatScheduleValue emits', () => {
+    const expected = { year: 2026, month: 11, day: 1 };
+    for (const shown of ['Nov 1, 2026', '1 Nov 2026', 'November 1, 2026',
+                         '2026-11-01', '2026.11.01', '11/01/2026']) {
+        assert.deepEqual(parseScheduleDateValue(shown), expected, shown);
+        assert.equal(isValidScheduleDateParts(parseScheduleDateValue(shown)), true, shown);
+    }
+});
+
+test('parseScheduleDateValue reports unparsable input instead of returning NaN parts', () => {
+    // Regression: "Nov 1, 2026" used to yield {month: NaN}, which made the calendar
+    // month arithmetic NaN; `diff > 0` was then false and the navigation loop clicked
+    // "previous month" 24 times, landing on November 2024.
+    for (const bad of ['rubbish', '', null, undefined, 'Nov 2026']) {
+        assert.equal(isValidScheduleDateParts(parseScheduleDateValue(bad)), false, String(bad));
+    }
+});
+
+test('inferScheduleFieldKind does not mistake the old UI timezone field for the time field', () => {
+    assert.equal(inferScheduleFieldKind({ value: '(GMT+7) Local Time' }), 'timezone');
+    assert.equal(inferScheduleFieldKind({ value: '(UTC-5) Local Time' }), 'timezone');
+    assert.equal(inferScheduleFieldKind({ value: '00:20' }), 'time');
 });

@@ -58,6 +58,10 @@ export function inferScheduleFieldKind(meta = {}) {
     const hint = getScheduleHintText(meta);
     if (!hint) return 'unknown';
 
+    // Priority 0: the older UI adds a third control, "(GMT+7) Local Time". It
+    // contains the word "time", so without this it is claimed as the time field.
+    if (/\b(gmt|utc)\b/.test(hint) || /local time|time\s?zone/.test(hint)) return 'timezone';
+
     // Priority 1: explicitly mentions date/time words
     if (/\b(date|day|ngay)\b/.test(hint)) return 'date';
     if (/\b(time|hour|minute|gio)\b/.test(hint)) return 'time';
@@ -325,6 +329,46 @@ export function displayedDateMatches(text, { year, month, day }) {
     // DD/MM/YYYY vs MM/DD/YYYY is ambiguous; accept either reading.
     if (c > 31) return c === year && ((a === month && b === day) || (a === day && b === month));
     return false;
+}
+
+/**
+ * Split a date string we generated (or read back) into calendar parts.
+ *
+ * Must understand every shape `formatScheduleValue` can emit — including the
+ * older UI's "Nov 1, 2026". When it could not, the callers' month arithmetic
+ * silently became NaN and the calendar navigation walked backwards to its
+ * iteration cap instead of stopping.
+ *
+ * Returns NaN fields when the value cannot be parsed; callers must check.
+ */
+export function parseScheduleDateValue(value) {
+    const nothing = { year: NaN, month: NaN, day: NaN };
+    if (!value) return nothing;
+    const text = String(value).trim();
+
+    const named = text.match(
+        /(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})|(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?)[\s,]+(\d{4})/i
+    );
+    if (named) {
+        const name = (named[1] || named[4]).toLowerCase();
+        return {
+            year: Number(named[5]),
+            month: MONTH_ABBR.findIndex((m) => m.toLowerCase() === name) + 1,
+            day: Number(named[2] || named[3])
+        };
+    }
+
+    const parts = text.split(/[-/.]/).map(Number);
+    if (parts.length < 3 || parts.some((n) => !Number.isFinite(n))) return nothing;
+    if (/^\d{4}/.test(text)) return { year: parts[0], month: parts[1], day: parts[2] }; // YYYY-MM-DD
+    if (parts[0] > 12) return { year: parts[2], month: parts[1], day: parts[0] };       // DD/MM/YYYY
+    return { year: parts[2], month: parts[0], day: parts[1] };                          // MM/DD/YYYY
+}
+
+/** True when the parts form a usable calendar date. */
+export function isValidScheduleDateParts({ year, month, day } = {}) {
+    return Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)
+        && month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 2000;
 }
 
 /** True when `text` ("00:00", "12:00 AM", ...) denotes the given wall-clock time. */

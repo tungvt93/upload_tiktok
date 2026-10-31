@@ -19,7 +19,9 @@ import {
     inferScheduleFieldKind,
     sortScheduleInputs,
     displayedDateMatches,
-    displayedTimeMatches
+    displayedTimeMatches,
+    parseScheduleDateValue,
+    isValidScheduleDateParts
 } from './schedule-utils.js';
 import {
     initGroupSchema,
@@ -4336,13 +4338,6 @@ async function resolveSchedulePickers(page, log) {
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-function parseScheduleDateValue(value) {
-    const parts = value.split(/[-/.]/).map(Number);
-    if (/^\d{4}/.test(value)) return { year: parts[0], month: parts[1], day: parts[2] }; // YYYY-MM-DD / YYYY.MM.DD
-    if (parts[0] > 12) return { year: parts[2], month: parts[1], day: parts[0] }; // DD/MM/YYYY
-    return { year: parts[2], month: parts[0], day: parts[1] }; // MM/DD/YYYY
-}
-
 async function fillSchedulePicker(page, pickerMeta, value, label, log) {
     const trigger = page.locator(`${SCHEDULE_PICKER_TRIGGER}:visible`).nth(pickerMeta.index);
     log(`Setting ${label} via Picker UI (${pickerMeta.ariaLabel || '#' + pickerMeta.index}) => ${value}`);
@@ -4355,6 +4350,9 @@ async function fillSchedulePicker(page, pickerMeta, value, label, log) {
 
     if (label === 'Date') {
         const { year, month, day } = parseScheduleDateValue(value);
+        if (!isValidScheduleDateParts({ year, month, day })) {
+            throw new Error(`Cannot parse target date "${value}"`);
+        }
         const panel = page.locator('[role="dialog"] .DatePicker__panel:visible').first();
         await panel.waitFor({ state: 'visible', timeout: 5000 });
 
@@ -4498,16 +4496,18 @@ async function resolveScheduleInputs(page, log) {
 // overlays the form and can intercept the Post click further down the flow.
 async function closeSchedulePopup(page, popupSelector, log) {
     const popup = page.locator(popupSelector).first();
-    for (const attempt of ['escape', 'click-away']) {
-        if (!(await popup.isVisible({ timeout: 500 }).catch(() => false))) return true;
-        if (attempt === 'escape') {
-            await page.keyboard.press('Escape').catch(() => null);
-        } else {
-            await page.mouse.click(5, 5).catch(() => null);
-        }
-        await page.waitForTimeout(500);
-    }
-    const stillOpen = await popup.isVisible({ timeout: 500 }).catch(() => false);
+    const isOpen = () => popup.isVisible({ timeout: 500 }).catch(() => false);
+
+    // Always send Escape, even when `popupSelector` reports nothing visible: a UI
+    // variant may render the dropdown under a class we do not match, and an unseen
+    // overlay still swallows the Post click. Escape on a closed popup is harmless.
+    await page.keyboard.press('Escape').catch(() => null);
+    await page.waitForTimeout(400);
+    if (!(await isOpen())) return true;
+
+    await page.mouse.click(5, 5).catch(() => null);
+    await page.waitForTimeout(500);
+    const stillOpen = await isOpen();
     if (stillOpen && typeof log === 'function') {
         log(`Warning: schedule popup ${popupSelector} stayed open after Escape + click-away.`);
     }
@@ -4627,24 +4627,63 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
                 log(`Calendar picker detected. Selecting day directly...`);
 
                 const { year, month, day } = parseScheduleDateValue(value);
+
+                // Never walk the calendar on an unparsable target. A NaN month makes
+                // every comparison below false, so `diff > 0` stays false and the loop
+                // clicks "previous month" until it hits its own cap -- observed as the
+                // calendar sitting on November 2024, 24 clicks behind.
+                if (!isValidScheduleDateParts({ year, month, day })) {
+                    throw new Error(`Cannot parse target date "${value}"`);
+                }
                 log(`Target date: ${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
 
-                // Walk the header arrows (nth(0) = previous month, nth(1) = next month)
-                // until the displayed month/year matches the target.
+                // Identify the month arrows by their on-screen position rather than
+                // by DOM order: leftmost is "previous", rightmost is "next". Index
+                // order is not reliable across the two Studio UI variants.
+                const arrows = picker.locator('.arrow');
+                const arrowBoxes = await arrows.evaluateAll((els) =>
+                    els.map((el, i) => ({ i, x: el.getBoundingClientRect().left })));
+                arrowBoxes.sort((a, b) => a.x - b.x);
+                const prevArrow = arrowBoxes.length ? arrows.nth(arrowBoxes[0].i) : null;
+                const nextArrow = arrowBoxes.length ? arrows.nth(arrowBoxes[arrowBoxes.length - 1].i) : null;
+                log(`Calendar arrows: ${arrowBoxes.length} found (prev=#${arrowBoxes[0]?.i}, next=#${arrowBoxes[arrowBoxes.length - 1]?.i}).`);
+
+                const readHeader = async () => {
+                    const name = ((await picker.locator('.month-title').textContent().catch(() => '')) || '').trim();
+                    const yr = Number(((await picker.locator('.year-title').textContent().catch(() => '')) || '').trim());
+                    return {
+                        name,
+                        year: yr,
+                        month: MONTH_NAMES.findIndex((m) => m.toLowerCase().startsWith(name.toLowerCase().slice(0, 3))) + 1,
+                        text: `${name} ${yr}`
+                    };
+                };
+
+                // Walk to the target month. Bail the moment a click fails to change the
+                // header, instead of hammering the same arrow up to the iteration cap.
                 let navigated = false;
+                let lastHeaderText = null;
                 for (let step = 0; step < 24; step++) {
-                    const shownMonthName = ((await picker.locator('.month-title').textContent().catch(() => '')) || '').trim();
-                    const shownYear = Number(((await picker.locator('.year-title').textContent().catch(() => '')) || '').trim());
-                    const shownMonth = MONTH_NAMES.findIndex((m) => m.toLowerCase().startsWith(shownMonthName.toLowerCase().slice(0, 3))) + 1;
-                    if (!shownMonth || !shownYear) {
-                        log(`Could not read calendar header (month="${shownMonthName}" year="${shownYear}").`);
+                    const shown = await readHeader();
+                    if (!shown.month || !shown.year) {
+                        log(`Could not read calendar header (month="${shown.name}" year="${shown.year}").`);
                         break;
                     }
-                    const diff = (year - shownYear) * 12 + (month - shownMonth);
+                    const diff = (year - shown.year) * 12 + (month - shown.month);
                     if (diff === 0) { navigated = true; break; }
-                    log(`Calendar shows ${shownMonthName} ${shownYear}; moving ${diff > 0 ? 'forward' : 'back'} one month.`);
-                    await picker.locator('.arrow').nth(diff > 0 ? 1 : 0).click({ force: true });
-                    await page.waitForTimeout(500);
+                    if (shown.text === lastHeaderText) {
+                        log(`Calendar stuck on ${shown.text} -- month arrow did not respond. Aborting navigation.`);
+                        break;
+                    }
+                    lastHeaderText = shown.text;
+                    const arrow = diff > 0 ? nextArrow : prevArrow;
+                    if (!arrow) {
+                        log(`No month arrows found in calendar; cannot navigate.`);
+                        break;
+                    }
+                    log(`Calendar shows ${shown.text}; moving ${diff > 0 ? 'forward' : 'back'} one month.`);
+                    await arrow.click({ force: true });
+                    await page.waitForTimeout(600);
                 }
 
                 if (navigated) {
