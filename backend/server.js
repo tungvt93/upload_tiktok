@@ -21,7 +21,8 @@ import {
     displayedDateMatches,
     displayedTimeMatches,
     parseScheduleDateValue,
-    isValidScheduleDateParts
+    isValidScheduleDateParts,
+    looksLikeScheduledLabel
 } from './schedule-utils.js';
 import {
     initGroupSchema,
@@ -5080,17 +5081,22 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
             await timeEl.waitFor({ timeout: 5000, state: 'visible' }).catch(() => null);
             const timeText = ((await timeEl.textContent().catch(() => '')) || '').trim();
 
-            // Scheduled nếu có icon Alarm (UI cũ) hoặc text chứa giờ dạng HH:mm (UI mới không còn icon)
+            // Scheduled nếu có icon Alarm (UI cũ) hoặc label kèm timezone (UI mới không còn icon).
+            //
+            // KHÔNG dùng /\d{1,2}:\d{2}/ ở đây: video ĐÃ public cũng hiện giờ
+            // ("Nov 1, 12:25 AM"), nên mọi video đã đăng đều bị coi là đang lên lịch
+            // và luồng upload lấy nhầm giờ public đó làm mốc. Chỉ video lên lịch mới
+            // kèm timezone: "Nov 1, 12:50 AM (GMT+7) Saigon".
             const hasAlarm = flexCenterCount > 0
                 && (await flexCenterLabel.locator('[data-testid="Alarm"]').count().catch(() => 0)) > 0;
-            const looksLikeTime = /\d{1,2}:\d{2}/.test(timeText);
+            const hasTimezone = looksLikeScheduledLabel(timeText);
 
-            if (!hasAlarm && !looksLikeTime) {
+            if (!hasAlarm && !hasTimezone) {
                 log(`Top video is Public / not scheduled (label: "${timeText}"). Using default upload flow (video 1 = immediate publish).`);
                 return null;
             }
 
-            log(`Found scheduled video with time: "${timeText}" (${hasAlarm ? 'Alarm icon' : 'time text'})`);
+            log(`Found scheduled video with time: "${timeText}" (${hasAlarm ? 'Alarm icon' : 'timezone suffix'})`);
 
             if (!timeText) {
                 throw new Error('Scheduled time text is empty.');

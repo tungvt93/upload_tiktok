@@ -12,7 +12,8 @@ import {
     displayedDateMatches,
     displayedTimeMatches,
     parseScheduleDateValue,
-    isValidScheduleDateParts
+    isValidScheduleDateParts,
+    looksLikeScheduledLabel
 } from '../schedule-utils.js';
 
 test('computeNextScheduledTime starts at +20 minutes and rounds up to 5-minute mark', () => {
@@ -184,4 +185,32 @@ test('inferScheduleFieldKind does not mistake the old UI timezone field for the 
     assert.equal(inferScheduleFieldKind({ value: '(GMT+7) Local Time' }), 'timezone');
     assert.equal(inferScheduleFieldKind({ value: '(UTC-5) Local Time' }), 'timezone');
     assert.equal(inferScheduleFieldKind({ value: '00:20' }), 'time');
+});
+
+// --- Content page: telling a scheduled video apart from an already-published one ---
+
+test('looksLikeScheduledLabel does not treat a published video as scheduled', () => {
+    // Regression: the old test was /\d{1,2}:\d{2}/, and a published label
+    // ("Nov 1, 12:25 AM") contains "12:25", so every published video was read as
+    // scheduled and its publish time became the base for the next upload.
+    assert.equal(looksLikeScheduledLabel('Nov 1, 12:25 AM'), false);
+    assert.equal(looksLikeScheduledLabel('Oct 31, 9:05 PM'), false);
+    assert.equal(looksLikeScheduledLabel('12:25'), false);
+    assert.equal(looksLikeScheduledLabel(''), false);
+    assert.equal(looksLikeScheduledLabel(null), false);
+});
+
+test('looksLikeScheduledLabel recognises the scheduled label by its timezone suffix', () => {
+    assert.equal(looksLikeScheduledLabel('Nov 1, 12:50 AM (GMT+7) Saigon'), true);
+    assert.equal(looksLikeScheduledLabel('Oct 31, 11:50 PM (GMT+7) Saigon'), true);
+    assert.equal(looksLikeScheduledLabel('Oct 30, 10:10 PM (GMT+7) Saigon'), true);
+    assert.equal(looksLikeScheduledLabel('Nov 1, 9:00 AM (UTC-5) New York'), true);
+});
+
+test('a scheduled label still parses to the right instant after the suffix check', () => {
+    const d = parseTikTokContentTimeText('Nov 1, 12:50 AM (GMT+7) Saigon');
+    assert.equal(d.getMonth(), 10); // November
+    assert.equal(d.getDate(), 1);
+    assert.equal(d.getHours(), 0);  // 12:50 AM -> 00:50
+    assert.equal(d.getMinutes(), 50);
 });

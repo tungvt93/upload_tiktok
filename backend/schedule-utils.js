@@ -383,3 +383,20 @@ export function displayedTimeMatches(text, { hour, minute }) {
     }
     return h === hour && Number(m[2]) === minute;
 }
+
+// A scheduled video's status label carries the target timezone -- "Nov 1, 12:50 AM
+// (GMT+7) Saigon" -- while an already-published one shows only "Nov 1, 12:25 AM".
+const SCHEDULED_LABEL_TZ_RE = /\((?:GMT|UTC)\s*[+-]?\d{0,2}(?::\d{2})?\)/i;
+
+/**
+ * True when a Content-page status label denotes a *scheduled* video.
+ *
+ * The previous test was `/\d{1,2}:\d{2}/`, which any published label also
+ * satisfies ("Nov 1, 12:25 AM" contains "12:25"), so every published video was
+ * read as scheduled and the upload flow took its publish time as the base.
+ * Used for the variant that renders no Alarm icon; when the icon is present it
+ * remains the primary signal.
+ */
+export function looksLikeScheduledLabel(text) {
+    return !!text && SCHEDULED_LABEL_TZ_RE.test(String(text));
+}
