@@ -6,7 +6,11 @@ import {
     computeAutoIncrementTime,
     inferScheduleFieldKind,
     formatScheduleValue,
-    sortScheduleInputs
+    sortScheduleInputs,
+    parseTikTokContentTimeText,
+    parseScheduleValue,
+    displayedDateMatches,
+    displayedTimeMatches
 } from '../schedule-utils.js';
 
 test('computeNextScheduledTime starts at +20 minutes and rounds up to 5-minute mark', () => {
@@ -57,6 +61,41 @@ test('computeAutoIncrementTime increments from previous scheduled slot by 10 min
     assert.equal(scheduled.toISOString(), '2026-04-12T09:50:00.000Z');
 });
 
+test('parseTikTokContentTimeText normalizes year to current year instead of 2001', () => {
+    const parsedEng = parseTikTokContentTimeText('Sep 6, 02:30');
+    assert.equal(parsedEng.getFullYear(), new Date().getFullYear());
+    assert.equal(parsedEng.getMonth(), 8); // September (0-indexed 8)
+    assert.equal(parsedEng.getDate(), 6);
+    assert.equal(parsedEng.getHours(), 2);
+    assert.equal(parsedEng.getMinutes(), 30);
+
+    const parsedVn = parseTikTokContentTimeText('6 thg 9, 02:30');
+    assert.equal(parsedVn.getFullYear(), new Date().getFullYear());
+    assert.equal(parsedVn.getMonth(), 8);
+    assert.equal(parsedVn.getDate(), 6);
+
+    const parsedNewUi = parseTikTokContentTimeText('Oct 30, 10:10 PM (GMT+7) Saigon');
+    assert.equal(parsedNewUi.getFullYear(), new Date().getFullYear());
+    assert.equal(parsedNewUi.getMonth(), 9);
+    assert.equal(parsedNewUi.getDate(), 30);
+    assert.equal(parsedNewUi.getHours(), 22);
+    assert.equal(parsedNewUi.getMinutes(), 10);
+
+    const parsedNum = parseTikTokContentTimeText('09/06 02:30');
+    assert.equal(parsedNum.getFullYear(), new Date().getFullYear());
+    assert.equal(parsedNum.getMonth(), 8);
+    assert.equal(parsedNum.getDate(), 6);
+});
+
+test('parseScheduleValue correctly handles date and time strings without defaulting to 2001', () => {
+    const parsed = parseScheduleValue('2026-09-05', '10:30 PM');
+    assert.equal(parsed.getFullYear(), 2026);
+    assert.equal(parsed.getMonth(), 8);
+    assert.equal(parsed.getDate(), 5);
+    assert.equal(parsed.getHours(), 22);
+    assert.equal(parsed.getMinutes(), 30);
+});
+
 test('inferScheduleFieldKind detects date and time from input hints', () => {
     assert.equal(inferScheduleFieldKind({ placeholder: 'Select date' }), 'date');
     assert.equal(inferScheduleFieldKind({ ariaLabel: 'Time' }), 'time');
@@ -84,4 +123,39 @@ test('sortScheduleInputs keeps fields ordered top-to-bottom then left-to-right',
         sortScheduleInputs(inputs).map((input) => input.index),
         [0, 1, 2]
     );
+});
+
+// --- Older TikTok Studio schedule UI: "Oct 31, 2026" date field, Date-then-Time order ---
+
+test('inferScheduleFieldKind detects the old UI month-name date field', () => {
+    assert.equal(inferScheduleFieldKind({ value: 'Oct 31, 2026' }), 'date');
+    assert.equal(inferScheduleFieldKind({ value: '31 Oct 2026' }), 'date');
+    assert.equal(inferScheduleFieldKind({ value: 'November 1, 2026' }), 'date');
+    // must not steal the time field
+    assert.equal(inferScheduleFieldKind({ value: '22:40' }), 'time');
+});
+
+test('formatScheduleValue mirrors the old UI month-name date format', () => {
+    const target = new Date(2026, 10, 1, 0, 0, 0, 0); // 1 Nov 2026 00:00
+    assert.equal(formatScheduleValue(target, 'date', { value: 'Oct 31, 2026' }), 'Nov 1, 2026');
+    // newer UI keeps ISO
+    assert.equal(formatScheduleValue(target, 'date', { value: '2026-10-31' }), '2026-11-01');
+});
+
+test('displayedDateMatches compares meaning across both UI date formats', () => {
+    const expected = { year: 2026, month: 11, day: 1 };
+    for (const shown of ['Nov 1, 2026', '1 Nov 2026', 'November 1, 2026', '2026-11-01', '11/01/2026', '01/11/2026']) {
+        assert.equal(displayedDateMatches(shown, expected), true, shown);
+    }
+    for (const shown of ['Oct 31, 2026', '2026-10-31', '12/01/2026', '', null]) {
+        assert.equal(displayedDateMatches(shown, expected), false, String(shown));
+    }
+});
+
+test('displayedTimeMatches accepts 24h and 12h renderings of the same instant', () => {
+    assert.equal(displayedTimeMatches('00:00', { hour: 0, minute: 0 }), true);
+    assert.equal(displayedTimeMatches('12:00 AM', { hour: 0, minute: 0 }), true);
+    assert.equal(displayedTimeMatches('12:00 PM', { hour: 0, minute: 0 }), false);
+    assert.equal(displayedTimeMatches('22:40', { hour: 22, minute: 40 }), true);
+    assert.equal(displayedTimeMatches('10:40 PM', { hour: 22, minute: 40 }), true);
 });

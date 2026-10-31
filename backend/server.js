@@ -17,7 +17,9 @@ import {
     formatScheduleValue,
     getScheduleHintText,
     inferScheduleFieldKind,
-    sortScheduleInputs
+    sortScheduleInputs,
+    displayedDateMatches,
+    displayedTimeMatches
 } from './schedule-utils.js';
 import {
     initGroupSchema,
@@ -4593,9 +4595,10 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
 
                 const picked = await input.inputValue().catch(() => '');
                 log(`Time picker selection result: "${picked}"`);
-                const expected = `${String(hour).padStart(2, '0')}:${String(targetMinute).padStart(2, '0')}`;
-                if (picked.replace(/\s/g, '') === expected) return;
-                log(`Time picker value "${picked}" != expected "${expected}". Falling back to fill.`);
+                // Compare the meaning, not the text: the field may render 12-hour
+                // ("12:00 AM") while we asked for "00:00".
+                if (displayedTimeMatches(picked, { hour, minute: targetMinute })) return;
+                log(`Time picker value "${picked}" != expected ${hour}:${targetMinute}. Falling back to fill.`);
             }
         } catch (e) {
             log(`Time picker interaction failed: ${e.message}. Falling back to fill.`);
@@ -4667,9 +4670,12 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
 
                         const picked = await input.inputValue().catch(() => '');
                         log(`Date picker selection result: "${picked}"`);
-                        const expected = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                        if (picked === expected || picked === value) return;
-                        log(`Date picker value "${picked}" != expected "${expected}". Falling back to fill.`);
+                        // Compare the meaning, not the text: the older UI renders
+                        // "Nov 1, 2026" where the newer one renders "2026-11-01".
+                        // A string compare here reports a false failure and then the
+                        // raw-fill fallback overwrites a date that was already correct.
+                        if (displayedDateMatches(picked, { year, month, day })) return;
+                        log(`Date picker value "${picked}" != expected ${year}-${month}-${day}. Falling back to fill.`);
                     }
                 }
             }

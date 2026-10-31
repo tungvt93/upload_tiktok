@@ -1,5 +1,13 @@
 const pad = (value) => String(value).padStart(2, '0');
 
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTH_RE_SRC = 'jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec';
+// "Oct 31, 2026" / "Oct 31 2026" / "31 Oct 2026" — the older TikTok Studio date field.
+const MONTH_NAME_DATE_RE = new RegExp(
+    `\\b(?:(?:${MONTH_RE_SRC})[a-z]*\\.?\\s+\\d{1,2}|\\d{1,2}\\s+(?:${MONTH_RE_SRC})[a-z]*\\.?)\\b[\\s,]+\\d{4}\\b`,
+    'i'
+);
+
 export function computeNextScheduledTime({ index, lastScheduledTime, intervalMinutes = 10, now = new Date() }) {
     if (index < 3) return null;
     const stepMin = Number(intervalMinutes) === 5 ? 5 : 10;
@@ -59,6 +67,13 @@ export function inferScheduleFieldKind(meta = {}) {
         return 'date';
     }
 
+    // Priority 2b: month-name dates — the older Studio UI renders "Oct 31, 2026"
+    // (and "31 Oct 2026" in some locales), which matches none of the numeric
+    // patterns above and used to fall through as 'unknown'.
+    if (MONTH_NAME_DATE_RE.test(hint)) {
+        return 'date';
+    }
+
     // Priority 3: Looks like a Time pattern (HH:mm)
     if (/\b(am|pm)\b/.test(hint) || /\b\d{1,2}:\d{2}\b/.test(hint)) {
         return 'time';
@@ -91,6 +106,11 @@ export function formatScheduleValue(date, kind, meta = {}) {
     }
 
     if (kind === 'date') {
+        // Older Studio UI renders the date as "Oct 31, 2026"; typing an ISO string
+        // into that field is rejected, so mirror whatever shape the field already has.
+        if (MONTH_NAME_DATE_RE.test(hint)) {
+            return `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${year}`;
+        }
         if (/dd\s*\/\s*mm/.test(hint)) return `${day}/${month}/${year}`;
         if (/mm\s*\/\s*dd/.test(hint) || hint.includes('/')) return `${month}/${day}/${year}`;
         if (hint.includes('.')) return `${year}.${month}.${day}`;
@@ -274,4 +294,48 @@ export function parseScheduleValue(dateStr, timeStr) {
         console.error('Error parsing schedule value:', e);
         return null;
     }
+}
+
+/**
+ * True when `text` (whatever shape the field renders: "2026-11-01", "11/01/2026",
+ * "Nov 1, 2026", ...) denotes the given calendar date.
+ *
+ * Verification cannot be a string compare: the same date is displayed differently
+ * per UI variant, so comparing against our generated string reports a false
+ * failure on the older month-name UI and triggers a destructive raw-fill fallback.
+ */
+export function displayedDateMatches(text, { year, month, day }) {
+    if (!text) return false;
+    const t = String(text).trim();
+
+    const named = t.match(
+        /(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})|(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?)[\s,]+(\d{4})/i
+    );
+    if (named) {
+        const name = (named[1] || named[4]).toLowerCase();
+        return Number(named[5]) === year
+            && MONTH_ABBR.findIndex((m) => m.toLowerCase() === name) + 1 === month
+            && Number(named[2] || named[3]) === day;
+    }
+
+    const nums = t.match(/(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})/);
+    if (!nums) return false;
+    const [a, b, c] = [Number(nums[1]), Number(nums[2]), Number(nums[3])];
+    if (a > 31) return a === year && b === month && c === day;            // YYYY-MM-DD
+    // DD/MM/YYYY vs MM/DD/YYYY is ambiguous; accept either reading.
+    if (c > 31) return c === year && ((a === month && b === day) || (a === day && b === month));
+    return false;
+}
+
+/** True when `text` ("00:00", "12:00 AM", ...) denotes the given wall-clock time. */
+export function displayedTimeMatches(text, { hour, minute }) {
+    if (!text) return false;
+    const m = String(text).match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+    if (!m) return false;
+    let h = Number(m[1]);
+    if (m[3]) {
+        if (/pm/i.test(m[3]) && h < 12) h += 12;
+        if (/am/i.test(m[3]) && h === 12) h = 0;
+    }
+    return h === hour && Number(m[2]) === minute;
 }
