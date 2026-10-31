@@ -400,3 +400,16 @@ const SCHEDULED_LABEL_TZ_RE = /\((?:GMT|UTC)\s*[+-]?\d{0,2}(?::\d{2})?\)/i;
 export function looksLikeScheduledLabel(text) {
     return !!text && SCHEDULED_LABEL_TZ_RE.test(String(text));
 }
+
+/**
+ * Decide whether a Content-page status label belongs to a *scheduled* video.
+ *
+ * The two UI variants signal it differently and neither signal is universal, so
+ * both are accepted:
+ *   - older UI: an Alarm icon next to the time (the timezone suffix may be absent)
+ *   - newer UI: no icon at all, but the time carries "(GMT+7) Saigon"
+ * A published video has neither, in either UI.
+ */
+export function isScheduledStatusLabel({ hasAlarmIcon = false, labelText = '' } = {}) {
+    return !!hasAlarmIcon || looksLikeScheduledLabel(labelText);
+}

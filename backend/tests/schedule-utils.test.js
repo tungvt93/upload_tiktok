@@ -13,7 +13,8 @@ import {
     displayedTimeMatches,
     parseScheduleDateValue,
     isValidScheduleDateParts,
-    looksLikeScheduledLabel
+    looksLikeScheduledLabel,
+    isScheduledStatusLabel
 } from '../schedule-utils.js';
 
 test('computeNextScheduledTime starts at +20 minutes and rounds up to 5-minute mark', () => {
@@ -213,4 +214,19 @@ test('a scheduled label still parses to the right instant after the suffix check
     assert.equal(d.getDate(), 1);
     assert.equal(d.getHours(), 0);  // 12:50 AM -> 00:50
     assert.equal(d.getMinutes(), 50);
+});
+
+test('isScheduledStatusLabel keeps the old Alarm-icon UI working', () => {
+    // Old UI, scheduled: Alarm icon is the signal. The timezone suffix may be
+    // absent there, so detection must not depend on it.
+    assert.equal(isScheduledStatusLabel({ hasAlarmIcon: true, labelText: 'Nov 1, 12:50 AM' }), true);
+    assert.equal(isScheduledStatusLabel({ hasAlarmIcon: true, labelText: 'Nov 1, 12:50 AM (GMT+7) Saigon' }), true);
+
+    // Newer UI, scheduled: no icon, timezone carries the signal.
+    assert.equal(isScheduledStatusLabel({ hasAlarmIcon: false, labelText: 'Oct 30, 10:10 PM (GMT+7) Saigon' }), true);
+
+    // Published in either UI: neither signal.
+    assert.equal(isScheduledStatusLabel({ hasAlarmIcon: false, labelText: 'Nov 1, 12:25 AM' }), false);
+    assert.equal(isScheduledStatusLabel({ hasAlarmIcon: false, labelText: 'Oct 31, 11:40 PM' }), false);
+    assert.equal(isScheduledStatusLabel({}), false);
 });

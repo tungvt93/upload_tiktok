@@ -22,7 +22,8 @@ import {
     displayedTimeMatches,
     parseScheduleDateValue,
     isValidScheduleDateParts,
-    looksLikeScheduledLabel
+    looksLikeScheduledLabel,
+    isScheduledStatusLabel
 } from './schedule-utils.js';
 import {
     initGroupSchema,
@@ -5091,7 +5092,7 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
                 && (await flexCenterLabel.locator('[data-testid="Alarm"]').count().catch(() => 0)) > 0;
             const hasTimezone = looksLikeScheduledLabel(timeText);
 
-            if (!hasAlarm && !hasTimezone) {
+            if (!isScheduledStatusLabel({ hasAlarmIcon: hasAlarm, labelText: timeText })) {
                 log(`Top video is Public / not scheduled (label: "${timeText}"). Using default upload flow (video 1 = immediate publish).`);
                 return null;
             }
