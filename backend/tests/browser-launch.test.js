@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {
     STEALTH_IGNORE_DEFAULT_ARGS,
     resolveIgnoreDefaultArgs,
-    buildBrowserLaunchOptions
+    buildBrowserLaunchOptions,
+    usesPatchright,
+    resolveBrowserEngine
 } from '../browser-launch.js';
 
 const parseProxy = (str) => (str ? { server: `http://${str}`, username: 'u', password: 'p' } : null);
@@ -80,4 +82,26 @@ test('buildBrowserLaunchOptions: extraArgs and viewport pass through', () => {
     });
     assert.deepEqual(opts.args, ['--disable-blink-features=AutomationControlled', '--window-size=1440,900']);
     assert.deepEqual(opts.viewport, { width: 1440, height: 900 });
+});
+
+test('usesPatchright: only an explicit 1 turns it on', () => {
+    assert.equal(usesPatchright({ use_patchright: 1 }), true);
+    assert.equal(usesPatchright({ use_patchright: 0 }), false);
+    assert.equal(usesPatchright({}), false);
+    assert.equal(usesPatchright(null), false);
+});
+
+test('resolveBrowserEngine: patchright runs on installed Chrome', () => {
+    const base = { headless: false };
+    assert.deepEqual(resolveBrowserEngine({ use_patchright: 1 }, base), {
+        engine: 'patchright',
+        options: { headless: false, channel: 'chrome' }
+    });
+    assert.equal(base.channel, undefined);
+});
+
+test('resolveBrowserEngine: playwright keeps bundled Chromium', () => {
+    const { engine, options } = resolveBrowserEngine({ use_patchright: 0 }, { headless: false });
+    assert.equal(engine, 'playwright');
+    assert.equal(options.channel, undefined);
 });

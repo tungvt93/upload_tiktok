@@ -20,6 +20,7 @@
     "fingerprint-injector": "^2.1.86",
     "lowdb": "^7.0.1",
     "nodemon": "^3.1.14",
+    "patchright": "1.59.4",
     "playwright": "^1.59.1",
     "playwright-core": "^1.59.1"
   },
