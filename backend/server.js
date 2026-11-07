@@ -3,7 +3,6 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { chromium } from 'playwright';
 import Database from 'better-sqlite3';
 import { FingerprintGenerator } from 'fingerprint-generator';
 import { FingerprintInjector } from 'fingerprint-injector';
@@ -40,7 +39,7 @@ import {
   markAllDone, cancelJob, isAborted, getExcelBuffer,
 } from './stats-store.js';
 import { runStatsForProfile } from './stats-automation.mjs';
-import { buildBrowserLaunchOptions } from './browser-launch.js';
+import { buildBrowserLaunchOptions, launchProfileBrowser } from './browser-launch.js';
 import { resolveDouyinVideoUrls, isDouyinVideoUrl, isDouyinNoteUrl, extractDouyinVideoId } from './douyin-resolver.js';
 import { randomUUID } from 'node:crypto';
 import { exportAllProfiles } from '../export_profiles.js';
@@ -333,6 +332,11 @@ try {
     if (!hasUseFingerprint) {
         db.exec('ALTER TABLE profiles ADD COLUMN use_fingerprint INTEGER DEFAULT 1;');
         console.log('Added use_fingerprint column to profiles table');
+    }
+    const hasUsePatchright = tableInfo.some((col) => col.name === 'use_patchright');
+    if (!hasUsePatchright) {
+        db.exec('ALTER TABLE profiles ADD COLUMN use_patchright INTEGER DEFAULT 0;');
+        console.log('Added use_patchright column to profiles table');
     }
 } catch (err) {
     console.error('Migration error (fingerprint columns):', err);
@@ -1724,6 +1728,10 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = req.body.use_fingerprint ? 1 : 0;
         db.prepare('UPDATE profiles SET use_fingerprint = ? WHERE id = ?').run(val, profileId);
     }
+    if (req.body.use_patchright !== undefined) {
+        const val = req.body.use_patchright ? 1 : 0;
+        db.prepare('UPDATE profiles SET use_patchright = ? WHERE id = ?').run(val, profileId);
+    }
 
     res.json({ success: true });
 });
@@ -1739,13 +1747,13 @@ app.post('/api/profiles/bulk-update', (req, res) => {
         'group_id', 'proxy', 'use_proxy', 'is_scheduled', 'auto_increment_schedule',
         'schedule_interval', 'set_music', 'upload_count', 'channel_ids', 'needs_render',
         'remove_title', 'need_content_check', 'render_video_long', 'render_concat_video',
-        'cookies', 'music_search', 'use_fingerprint'
+        'cookies', 'music_search', 'use_fingerprint', 'use_patchright'
     ];
 
     const booleanFields = [
         'use_proxy', 'is_scheduled', 'set_music', 'auto_increment_schedule',
         'needs_render', 'remove_title', 'need_content_check', 'render_video_long',
-        'render_concat_video', 'use_fingerprint'
+        'render_concat_video', 'use_fingerprint', 'use_patchright'
     ];
 
     const fieldsToUpdate = [];
@@ -3649,7 +3657,7 @@ app.post('/api/open-profile', async (req, res) => {
             log: (msg) => console.log(`[${profile.name}] ${msg}`)
         });
 
-        const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+        const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
         await applyProfileFingerprint(browser, profile);
         await injectProfileCookies(browser, profile);
         manualBrowsers.set(profileId, browser);
@@ -3683,7 +3691,7 @@ async function changeAvatar(profile, avatarImage) {
 
     const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy });
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
     avatarChangingProfiles.add(profileId);
@@ -3880,7 +3888,7 @@ async function addFavoriteMusic(profile, searchTerm) {
 
     const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy });
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
     addingFavoriteMusicProfiles.add(profileId);
@@ -5276,7 +5284,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         log: (msg) => console.log(`[${profile.name}] ${msg}`)
     });
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
 
@@ -6492,7 +6500,7 @@ async function runEngageSession(profile) {
 
     const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy, log });
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
     await injectProfileCookies(browser, profile);
 
@@ -7251,7 +7259,7 @@ async function runTikTokLogin(profile) {
 
     const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy });
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
     const session = {
         browser,

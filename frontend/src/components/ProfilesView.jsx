@@ -156,6 +156,7 @@ const ProfilesView = ({
   updateProfileRemoveTitle,
   updateProfileNeedContentCheck,
   updateProfileUseFingerprint,
+  updateProfileUsePatchright,
   resetProfileFingerprint,
   handleSelectAvatar,
   handleUpdateMusicSearchTerm
@@ -516,6 +517,7 @@ const ProfilesView = ({
         onUpdateRemoveTitle={updateProfileRemoveTitle}
         onUpdateNeedContentCheck={updateProfileNeedContentCheck}
         onUpdateUseFingerprint={updateProfileUseFingerprint}
+        onUpdateUsePatchright={updateProfileUsePatchright}
         onResetFingerprint={resetProfileFingerprint}
         onSelectAvatar={handleSelectAvatar}
         selectedAvatarPath={editingProfileId ? (avatarSelections[editingProfileId] || '') : ''}

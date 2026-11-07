@@ -25,6 +25,8 @@ export const STEALTH_IGNORE_DEFAULT_ARGS = Object.freeze([
 //   --disable-prompt-on-repost                    → "confirm form resubmission" on reload()/goBack()
 //   --disable-search-engine-choice-screen         → EU search-engine chooser on first load
 
+import { chromium as playwrightChromium } from 'playwright';
+
 const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
 
 /**
@@ -71,4 +73,33 @@ export function buildBrowserLaunchOptions(profile, { parseProxy, log, extraArgs 
         }
     }
     return options;
+}
+
+/** A profile runs on Patchright only when its use_patchright flag is explicitly on. */
+export function usesPatchright(profile) {
+    return Boolean(profile) && Number(profile.use_patchright) === 1;
+}
+
+/**
+ * Pick the browser engine for a profile.
+ * Patchright always runs on the installed Google Chrome (`channel: 'chrome'`);
+ * Playwright keeps its bundled Chromium.
+ */
+export function resolveBrowserEngine(profile, options = {}) {
+    if (usesPatchright(profile)) {
+        return { engine: 'patchright', options: { ...options, channel: 'chrome' } };
+    }
+    return { engine: 'playwright', options };
+}
+
+/**
+ * launchPersistentContext() on the engine selected for this profile.
+ * Patchright is imported on first use so Playwright-only profiles never load it.
+ */
+export async function launchProfileBrowser(userDataDir, profile, browserOptions) {
+    const { engine, options } = resolveBrowserEngine(profile, browserOptions);
+    const chromium = engine === 'patchright'
+        ? (await import('patchright')).chromium
+        : playwrightChromium;
+    return chromium.launchPersistentContext(userDataDir, options);
 }

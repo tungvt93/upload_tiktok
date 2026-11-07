@@ -1,6 +1,5 @@
 // backend/stats-automation.mjs
-import { chromium } from 'playwright';
-import { buildBrowserLaunchOptions } from './browser-launch.js';
+import { buildBrowserLaunchOptions, launchProfileBrowser } from './browser-launch.js';
 import path from 'path';
 
 const CONTENT_URL = 'https://www.tiktok.com/tiktokstudio/content';
@@ -30,7 +29,7 @@ export async function runStatsForProfile(profile, jobId, ctx) {
       viewport: { width: 1440, height: 900 },
     });
 
-    browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
 
     if (typeof applyProfileFingerprint === 'function') {
       await applyProfileFingerprint(browser, profile);

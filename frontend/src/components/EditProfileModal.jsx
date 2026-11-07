@@ -40,6 +40,7 @@ const EditProfileModal = ({
   onUpdateNeedContentCheck,
   onUpdateRenderVideoLong,
   onUpdateUseFingerprint,
+  onUpdateUsePatchright,
   onResetFingerprint,
   onSelectAvatar,
   selectedAvatarPath,
@@ -491,6 +492,27 @@ const EditProfileModal = ({
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* Browser Engine */}
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <input
+                    type="checkbox"
+                    checked={profile.use_patchright === 1}
+                    onChange={(e) => onUpdateUsePatchright && onUpdateUsePatchright(profile.id, e.target.checked)}
+                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                      <ShieldCheck size={14} color="#8b5cf6" style={{ flexShrink: 0 }} />
+                      Chạy bằng Patchright (Google Chrome)
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      Bật: dùng Patchright với Google Chrome đã cài trên máy. Tắt: dùng Playwright với Chromium đi kèm. Áp dụng từ lần mở trình duyệt tiếp theo.
+                    </span>
+                  </div>
+                </label>
               </div>
             </div>
 

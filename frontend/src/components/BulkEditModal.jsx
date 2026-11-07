@@ -36,7 +36,8 @@ const BulkEditModal = ({
     needs_render: { active: false, value: 1 },
     render_video_long: { active: false, value: 0 },
     render_concat_video: { active: false, value: 0 },
-    use_fingerprint: { active: false, value: 1 }
+    use_fingerprint: { active: false, value: 1 },
+    use_patchright: { active: false, value: 1 }
   });
 
   const toggleFieldActive = (key) => {
@@ -424,6 +425,30 @@ const BulkEditModal = ({
                 >
                   <option value={1}>Bật (Duy trì vân tay cố định)</option>
                   <option value={0}>Tắt</option>
+                </select>
+              </div>
+
+              {/* Browser Engine */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: '600', minWidth: '210px', cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={fields.use_patchright.active}
+                    onChange={() => toggleFieldActive('use_patchright')}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <Fingerprint size={14} color="#8b5cf6" />
+                  Trình duyệt tự động
+                </label>
+                <select
+                  disabled={!fields.use_patchright.active}
+                  className="input input-compact"
+                  style={{ flex: 1, opacity: fields.use_patchright.active ? 1 : 0.4 }}
+                  value={fields.use_patchright.value}
+                  onChange={(e) => updateFieldValue('use_patchright', Number(e.target.value))}
+                >
+                  <option value={1}>Patchright (Google Chrome)</option>
+                  <option value={0}>Playwright (Chromium)</option>
                 </select>
               </div>
 
