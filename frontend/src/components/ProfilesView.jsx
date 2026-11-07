@@ -155,6 +155,8 @@ const ProfilesView = ({
   updateProfileRenderVideoLong,
   updateProfileRemoveTitle,
   updateProfileNeedContentCheck,
+  updateProfileUseFingerprint,
+  resetProfileFingerprint,
   handleSelectAvatar,
   handleUpdateMusicSearchTerm
 }) => {
@@ -513,6 +515,8 @@ const ProfilesView = ({
         onUpdateRenderVideoLong={updateProfileRenderVideoLong}
         onUpdateRemoveTitle={updateProfileRemoveTitle}
         onUpdateNeedContentCheck={updateProfileNeedContentCheck}
+        onUpdateUseFingerprint={updateProfileUseFingerprint}
+        onResetFingerprint={resetProfileFingerprint}
         onSelectAvatar={handleSelectAvatar}
         selectedAvatarPath={editingProfileId ? (avatarSelections[editingProfileId] || '') : ''}
         musicSearchTerm={editingProfileId ? (musicSearchTerms[editingProfileId] || '') : ''}

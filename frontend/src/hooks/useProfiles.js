@@ -924,6 +924,37 @@ const useProfiles = () => {
     }
   };
 
+  const updateProfileUseFingerprint = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, use_fingerprint: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { use_fingerprint: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const resetProfileFingerprint = async (id) => {
+    if (processingRef.current.has(id)) return;
+    processingRef.current.add(id);
+    try {
+      await axios.post(`/api/profiles/${id}/random-fingerprint`);
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
   const updateProfileAutoIncrementSchedule = async (id, enabled) => {
     if (processingRef.current.has(id)) return;
     setProfiles((prev) =>
@@ -1357,6 +1388,8 @@ const useProfiles = () => {
     updateProfileRenderVideoLong,
     updateProfileRemoveTitle,
     updateProfileNeedContentCheck,
+    updateProfileUseFingerprint,
+    resetProfileFingerprint,
     updateProfileAutoIncrementSchedule,
     updateProfileScheduleInterval,
     updateProfileUploadCount,

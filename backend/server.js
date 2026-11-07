@@ -2044,7 +2044,7 @@ async function resolveKuaishouVideoUrl(shareUrl) {
         throw new Error('Kuaishou: failed to parse video URL data');
     }
     if (!Array.isArray(urls) || urls.length === 0 || !urls[0].url) throw new Error('Kuaishou: no video URL found');
-    return urls[0].url;
+    return { url: urls[0].url, caption: extractKuaishouCaption(res.data) };
 }
 
 async function resolveAndNormalizeUrl(urlStr) {
@@ -2068,8 +2068,48 @@ async function resolveAndNormalizeUrl(urlStr) {
     return target.replace(/https?:\/\/(?:www\.)?iesdouyin\.com\/share\/(video|note)\/(\d+)/i, 'https://www.douyin.com/$1/$2');
 }
 
+// Turn a video title/caption into a Windows-safe file base name. Keeps Unicode
+// (Chinese/Vietnamese titles are the norm here), drops hashtags when there is
+// other text left, and caps the length so the full path stays well under MAX_PATH.
+function titleToFileBase(title, maxLen = 80) {
+    if (!title || typeof title !== 'string') return '';
+    let s = title.replace(/[\r\n\t]+/g, ' ');
+    const withoutTags = s.replace(/#[^\s#]+/g, ' ').replace(/@[^\s@]+/g, ' ');
+    if (withoutTags.trim()) s = withoutTags;
+    s = s.replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+    s = Array.from(s).slice(0, maxLen).join('').trim();
+    s = s.replace(/[. ]+$/, '');
+    if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(s)) s = `_${s}`;
+    return s;
+}
+
+// Rename a finished download to "<title>.mp4" inside the same folder, adding
+// " (2)", " (3)"… on collision. Any failure keeps the original file name.
+function renameToTitle(filePath, title) {
+    const base = titleToFileBase(title);
+    if (!base) return filePath;
+    const dir = path.dirname(filePath);
+    const ext = path.extname(filePath) || '.mp4';
+    let target = path.join(dir, `${base}${ext}`);
+    for (let n = 2; fs.existsSync(target); n++) target = path.join(dir, `${base} (${n})${ext}`);
+    try {
+        fs.renameSync(filePath, target);
+        return target;
+    } catch (e) {
+        console.log(`[ClipboardQueue] Could not rename to title "${base}": ${e.message}`);
+        return filePath;
+    }
+}
+
+function extractKuaishouCaption(html) {
+    const m = String(html).match(/"caption"\s*:\s*("(?:[^"\\]|\\.)*")/);
+    if (!m) return '';
+    try { return JSON.parse(m[1]); } catch (e) { return ''; }
+}
+
 async function downloadClipboardVideo(rawUrl) {
     const url = await resolveAndNormalizeUrl(rawUrl);
+    let videoTitle = '';
     const safeSpawn = (cmd, args, timeoutMs = 300000) => {
         const child = spawn(cmd, args);
         let timeout = null;
@@ -2086,7 +2126,8 @@ async function downloadClipboardVideo(rawUrl) {
     const destPath = path.join(CLIPBOARD_INBOX_DIR, safeFileName);
 
     if (isKuaishouUrl(url)) {
-        const directUrl = await resolveKuaishouVideoUrl(url);
+        const { url: directUrl, caption } = await resolveKuaishouVideoUrl(url);
+        videoTitle = caption;
         const httpResponse = await axios({ method: 'GET', url: directUrl, responseType: 'stream', timeout: 60000, headers: { 'User-Agent': KUAISHOU_MOBILE_UA }, proxy: false });
         try {
             await streamResponseToFile(httpResponse, destPath);
@@ -2102,7 +2143,8 @@ async function downloadClipboardVideo(rawUrl) {
         // CDN URLs straight off the detail response.
         const videoId = extractDouyinVideoId(url);
         if (!videoId) throw new Error('Douyin: could not read a video id out of the URL');
-        const { urls } = await resolveDouyinVideoUrls(videoId);
+        const { urls, desc } = await resolveDouyinVideoUrls(videoId);
+        videoTitle = desc;
         let lastErr = null;
         let saved = false;
         for (const candidate of urls.slice(0, DOUYIN_CDN_ATTEMPTS)) {
@@ -2130,6 +2172,7 @@ async function downloadClipboardVideo(rawUrl) {
         }
         if (!saved) throw new Error(`Douyin: all ${Math.min(urls.length, DOUYIN_CDN_ATTEMPTS)} CDN URLs failed. Last error: ${lastErr && (lastErr.message || lastErr)}`);
     } else if (isDirectVideoUrl(url)) {
+        try { videoTitle = decodeURIComponent(path.basename(new URL(url).pathname)).replace(/\.[^.]+$/, ''); } catch (e) {}
         const httpResponse = await axios({ method: 'GET', url, responseType: 'stream', timeout: 60000 });
         try {
             await streamResponseToFile(httpResponse, destPath);
@@ -2170,15 +2213,26 @@ async function downloadClipboardVideo(rawUrl) {
                         '-f', 'bestvideo[height<=1080]+bestaudio/best/best',
                         '--merge-output-format', 'mp4',
                         '--no-playlist',
+                        // Print the title to stdout (used for the file name) while still
+                        // downloading; --print alone would imply --simulate.
+                        '--no-simulate',
+                        '--encoding', 'utf-8',
+                        '--print', 'title',
                     ]);
-                    
+
                     const timeout = setTimeout(() => {
                         try { child.kill(); } catch (e) {}
                         reject(new Error('yt-dlp timed out after 5 minutes'));
                     }, 300000); // 5 minutes timeout
 
                     let stderrData = '';
-                    child.stdout.on('data', () => {});
+                    let stdoutData = '';
+                    child.stdout.setEncoding('utf8'); // don't split multi-byte chars across chunks
+                    child.stdout.on('data', (data) => {
+                        stdoutData += data;
+                        const firstLine = stdoutData.split(/\r?\n/).find(l => l.trim());
+                        if (firstLine) videoTitle = firstLine.trim();
+                    });
                     child.stderr.on('data', (data) => { stderrData += data.toString(); });
                     child.on('close', (code) => {
                         clearTimeout(timeout);
@@ -2211,7 +2265,7 @@ async function downloadClipboardVideo(rawUrl) {
     }
 
     if (!fs.existsSync(destPath)) throw new Error('Download finished but output file is missing');
-    return destPath;
+    return renameToTitle(destPath, videoTitle);
 }
 
 function processClipboardQueue() {
@@ -4550,8 +4604,25 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     if (label === 'Time') {
         const picker = page.locator(TIME_PICKER_CONTAINER).first();
 
+        // The picker occasionally fails to open (e.g. the date calendar from the
+        // previous step is still closing). Retry opening it. Never fall through to a
+        // raw text fill for the time: TikTok's React state ignores it, the input
+        // merely *displays* the typed value, and the video silently keeps the
+        // default time (observed: "01:40" shown, "Nov 4, 10:10 PM" scheduled).
+        let pickerOpen = await picker.isVisible({ timeout: 2000 }).catch(() => false);
+        for (let reopen = 1; !pickerOpen && reopen <= 3; reopen++) {
+            log(`Time picker not visible; closing popups and reopening (${reopen}/3)...`);
+            await closeSchedulePopup(page, CALENDAR_WRAPPER, log);
+            await input.click({ timeout: 5000 }).catch(() => null);
+            await page.waitForTimeout(1000);
+            pickerOpen = await picker.isVisible({ timeout: 2000 }).catch(() => false);
+        }
+        if (!pickerOpen) {
+            throw new Error('Time picker did not open after retries; refusing raw fill (TikTok ignores it).');
+        }
+
         try {
-            if (await picker.isVisible({ timeout: 2000 })) {
+            {
                 log(`Time picker detected. Selecting items directly...`);
 
                 const [hourRaw, minuteRaw = ''] = value.split(':');
@@ -4600,11 +4671,12 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
                 // Compare the meaning, not the text: the field may render 12-hour
                 // ("12:00 AM") while we asked for "00:00".
                 if (displayedTimeMatches(picked, { hour, minute: targetMinute })) return;
-                log(`Time picker value "${picked}" != expected ${hour}:${targetMinute}. Falling back to fill.`);
+                throw new Error(`Time picker value "${picked}" != expected ${hour}:${targetMinute}`);
             }
         } catch (e) {
-            log(`Time picker interaction failed: ${e.message}. Falling back to fill.`);
+            log(`Time picker interaction failed: ${e.message}.`);
             await closeSchedulePopup(page, TIME_PICKER_CONTAINER, log);
+            throw e;
         }
     }
 
@@ -4741,6 +4813,40 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
 
     const actualValue = await input.inputValue().catch(() => '');
     log(`${label} input value after fill: ${actualValue || '<empty>'}`);
+}
+
+// Read the date/time inputs back after filling and make sure they hold what we
+// meant to schedule. Throws on mismatch so the caller can refuse to post a video
+// whose schedule did not take (instead of publishing at TikTok's default time).
+async function verifyScheduleApplied(page, scheduleInputs, dateValue, timeValue, log) {
+    const readInput = async (meta) => {
+        if (!meta || meta.mode === 'picker' || typeof meta.index !== 'number') return null;
+        return page.locator('input.TUXTextInputCore-input:visible').nth(meta.index)
+            .inputValue().catch(() => null);
+    };
+    const problems = [];
+
+    const actualDate = await readInput(scheduleInputs.date);
+    const dateParts = parseScheduleDateValue(dateValue);
+    if (actualDate !== null && isValidScheduleDateParts(dateParts) && !displayedDateMatches(actualDate, dateParts)) {
+        problems.push(`date shows "${actualDate}", expected "${dateValue}"`);
+    }
+
+    const actualTime = await readInput(scheduleInputs.time);
+    const [hourRaw, minuteRaw = ''] = String(timeValue).split(':');
+    let hour = Number(hourRaw);
+    const minute = Number(minuteRaw.slice(0, 2));
+    if (/pm/i.test(timeValue) && hour < 12) hour += 12;
+    if (/am/i.test(timeValue) && hour === 12) hour = 0;
+    if (actualTime !== null && Number.isFinite(hour) && Number.isFinite(minute)
+        && !displayedTimeMatches(actualTime, { hour, minute })) {
+        problems.push(`time shows "${actualTime}", expected "${timeValue}"`);
+    }
+
+    if (problems.length) {
+        throw new Error(`Schedule verification failed: ${problems.join('; ')}`);
+    }
+    log(`Schedule verified: date="${actualDate ?? 'n/a'}" time="${actualTime ?? 'n/a'}".`);
 }
 
 async function runSingleProfile(profile, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false, specificFile = null) {
@@ -5109,8 +5215,42 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
                 throw new Error(`Failed to parse scheduled time text: "${timeText}".`);
             }
 
-            log(`Existing schedule detected! Base time: ${parsed.toISOString()}`);
-            return parsed;
+            // The content list is ordered by creation, NOT by schedule time, so the
+            // top row is not necessarily the latest slot. Scan every visible row and
+            // use the latest scheduled time as the base, otherwise a single video
+            // with a wrong/default time at the top makes the whole batch jump days.
+            let base = parsed;
+            try {
+                const rows = await page.evaluate(() => {
+                    const out = [];
+                    document.querySelectorAll('[data-tt="components_PublishStageLabel_TUXText"]').forEach((el) => {
+                        const fc = el.closest('[data-tt="components_PublishStageLabel_FlexCenter"]');
+                        out.push({
+                            text: (el.textContent || '').trim(),
+                            alarm: !!(fc && fc.querySelector('[data-testid="Alarm"]'))
+                        });
+                    });
+                    return out;
+                });
+                let scanned = 0;
+                for (const row of rows) {
+                    if (!row.text || !isScheduledStatusLabel({ hasAlarmIcon: row.alarm, labelText: row.text })) continue;
+                    const t = parseTikTokContentTimeText(row.text);
+                    if (!t || Number.isNaN(t.getTime())) continue;
+                    scanned++;
+                    if (t.getTime() > base.getTime()) base = t;
+                }
+                if (base.getTime() !== parsed.getTime()) {
+                    log(`Latest scheduled video ${base.toISOString()} is later than the top row ${parsed.toISOString()} (scanned ${scanned} scheduled rows). Using the latest as base.`);
+                } else {
+                    log(`Scanned ${scanned} scheduled rows; top row is already the latest.`);
+                }
+            } catch (scanErr) {
+                log(`Could not scan all rows for the latest schedule (${scanErr.message}); using top row.`);
+            }
+
+            log(`Existing schedule detected! Base time: ${base.toISOString()}`);
+            return base;
         } catch (e) {
             log(`[Content Check Attempt ${attempt}/${maxAttempts}] Failed: ${e.message}`);
             if (attempt < maxAttempts) {
@@ -5784,6 +5924,8 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
             // --- TASK 3: Scheduled Publishing ---
             if (profile.auto_increment_schedule) {
+                let scheduleFailed = false;
+                const lastScheduledTimeBeforeVideo = lastScheduledTime;
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
                     if (hasExistingSchedule) {
@@ -5810,6 +5952,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
                         await page.waitForTimeout(2000);
+                        await verifyScheduleApplied(page, scheduleInputs, dateValue, timeValue, log);
 
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
 
@@ -5838,11 +5981,24 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
                         await page.waitForTimeout(2000);
+                        await verifyScheduleApplied(page, scheduleInputs, dateValue, timeValue, log);
 
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
                     }
                 } catch (e) {
                     log(`Auto-increment scheduling failed: ${e.message}`);
+                    scheduleFailed = true;
+                }
+
+                // Never post a video whose schedule did not take: it would publish at
+                // TikTok's default time and poison the base for later runs. Keep the
+                // file for the next run and give the slot back.
+                if (scheduleFailed) {
+                    lastScheduledTime = lastScheduledTimeBeforeVideo;
+                    log(`Skipping post for video ${i + 1} (schedule not applied). File kept; resetting page.`);
+                    await page.close().catch(() => null);
+                    page = await browser.newPage();
+                    continue;
                 }
             } else if (profile.is_scheduled && i >= 3) {
                 try {
