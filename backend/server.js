@@ -4,7 +4,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
-import { FingerprintGenerator } from 'fingerprint-generator';
 import { FingerprintInjector } from 'fingerprint-injector';
 import { exec, spawn, execSync, execFileSync } from 'child_process';
 import axios from 'axios';
@@ -39,7 +38,14 @@ import {
   markAllDone, cancelJob, isAborted, getExcelBuffer,
 } from './stats-store.js';
 import { runStatsForProfile } from './stats-automation.mjs';
-import { buildBrowserLaunchOptions, launchProfileBrowser } from './browser-launch.js';
+import { buildBrowserLaunchOptions, launchProfileBrowser, shouldInjectFingerprint } from './browser-launch.js';
+import { createFingerprintGenerator, parseStoredFingerprint } from './fingerprint.js';
+import { jitterMs, randomBetween, typeLikeHuman } from './human-delay.js';
+
+// Scheduled times get 0..N extra 5-minute steps on top of the profile's
+// interval, so a batch is not published at perfectly regular intervals.
+// Capped at 2 (max +10 minutes per video) so the schedule does not drift far.
+const SCHEDULE_JITTER_STEPS = 2;
 import { resolveDouyinVideoUrls, isDouyinVideoUrl, isDouyinNoteUrl, extractDouyinVideoId } from './douyin-resolver.js';
 import { randomUUID } from 'node:crypto';
 import { exportAllProfiles } from '../export_profiles.js';
@@ -47,11 +53,8 @@ import { exportAllProfiles } from '../export_profiles.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const fingerprintGenerator = new FingerprintGenerator({
-    browsers: [{ name: 'chrome', minVersion: 110 }],
-    operatingSystems: ['windows'],
-    devices: ['desktop'],
-});
+const fingerprintGenerator = createFingerprintGenerator();
+const fingerprintInjector = new FingerprintInjector();
 
 const app = express();
 const PORT = 3010;
@@ -350,68 +353,41 @@ function getOrGenerateFingerprint(profileId) {
         return null;
     }
 
-    if (profile.fingerprint) {
-        try {
-            return JSON.parse(profile.fingerprint);
-        } catch (e) {
-            console.error(`Error parsing fingerprint JSON for profile ${profileId}:`, e);
-        }
-    }
+    const stored = parseStoredFingerprint(profile.fingerprint);
+    if (stored) return stored;
 
-    // Generate new fingerprint
+    // Missing, malformed, or a legacy row without the headers block → regenerate once.
     const generated = fingerprintGenerator.getFingerprint();
     db.prepare('UPDATE profiles SET fingerprint = ? WHERE id = ?').run(JSON.stringify(generated), profileId);
-    console.log(`[${profile.name}] Generated and saved new fingerprint`);
+    console.log(`[${profile.name}] ${profile.fingerprint ? 'Replaced legacy fingerprint' : 'Generated and saved new fingerprint'}`);
     return generated;
 }
 
+/** Fingerprint to launch this profile with, or null (Patchright / use_fingerprint off). */
+function resolveLaunchFingerprint(profile) {
+    if (!shouldInjectFingerprint(profile)) return null;
+    return getOrGenerateFingerprint(profile.id);
+}
+
+/** buildBrowserLaunchOptions() with the profile's fingerprint wired in (UA, viewport). */
+function buildProfileLaunchOptions(profile, opts = {}) {
+    return buildBrowserLaunchOptions(profile, { ...opts, fingerprint: resolveLaunchFingerprint(profile) });
+}
+
+/**
+ * Inject the stored fingerprint into a freshly launched persistent context.
+ * No-op for Patchright profiles and for profiles with use_fingerprint off:
+ * real Chrome without overrides is the cleanest fingerprint there is.
+ * `--disable-blink-features=AutomationControlled` (browser-launch.js) already
+ * makes navigator.webdriver === false, so nothing is overridden by hand here.
+ */
 async function applyProfileFingerprint(browserContext, profile) {
     try {
-        if (!profile || profile.use_fingerprint === 0) return;
-        const fpData = getOrGenerateFingerprint(profile.id);
-        if (!fpData) return;
-
-        const fp = fpData.fingerprint || fpData;
-        const userAgent = fp.navigator?.userAgent;
-        const hardwareConcurrency = fp.navigator?.hardwareConcurrency || 8;
-        const deviceMemory = fp.navigator?.deviceMemory || 8;
-        const videoCard = fp.videoCard || { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)' };
-
-        // Inject lightweight stealth & unique hardware fingerprint without touching network/headers/codecs
-        await browserContext.addInitScript(({ ua, concurrency, memory, gpu }) => {
-            // Remove Playwright / Chrome automation flag
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-
-            // Override hardware concurrency & memory
-            if (concurrency) Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => concurrency });
-            if (memory) Object.defineProperty(navigator, 'deviceMemory', { get: () => memory });
-            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-
-            // Override WebGL Vendor & Renderer for unique GPU fingerprint per profile
-            try {
-                const getParameterFn = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function (parameter) {
-                    if (parameter === 37445) return gpu.vendor || 'Google Inc. (NVIDIA)';
-                    if (parameter === 37446) return gpu.renderer || 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060)';
-                    return getParameterFn.apply(this, arguments);
-                };
-                if (typeof WebGL2RenderingContext !== 'undefined') {
-                    const getParameter2Fn = WebGL2RenderingContext.prototype.getParameter;
-                    WebGL2RenderingContext.prototype.getParameter = function (parameter) {
-                        if (parameter === 37445) return gpu.vendor || 'Google Inc. (NVIDIA)';
-                        if (parameter === 37446) return gpu.renderer || 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060)';
-                        return getParameter2Fn.apply(this, arguments);
-                    };
-                }
-            } catch (e) {}
-        }, {
-            ua: userAgent,
-            concurrency: hardwareConcurrency,
-            memory: deviceMemory,
-            gpu: videoCard
-        });
-
-        console.log(`[${profile.name}] Applied lightweight fingerprint successfully (GPU: ${videoCard.renderer ? videoCard.renderer.split(' ')[0] : 'Standard'})`);
+        const fp = resolveLaunchFingerprint(profile);
+        if (!fp) return;
+        await fingerprintInjector.attachFingerprintToPlaywright(browserContext, fp);
+        const { navigator, screen, videoCard } = fp.fingerprint;
+        console.log(`[${profile.name}] Applied fingerprint (${navigator.platform || 'Win32'}, ${screen.width}x${screen.height}, GPU: ${videoCard?.renderer?.split(' ')[0] || 'n/a'})`);
     } catch (err) {
         console.error(`[${profile?.name || 'Profile'}] Failed to apply fingerprint:`, err);
     }
@@ -3652,7 +3628,7 @@ app.post('/api/open-profile', async (req, res) => {
 
     try {
         const userDataDir = path.join(PROFILES_DIR, profile.name);
-        const browserOptions = buildBrowserLaunchOptions(profile, {
+        const browserOptions = buildProfileLaunchOptions(profile, {
             parseProxy,
             log: (msg) => console.log(`[${profile.name}] ${msg}`)
         });
@@ -3689,7 +3665,7 @@ async function changeAvatar(profile, avatarImage) {
         } catch (e) {}
     };
 
-    const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy });
+    const browserOptions = buildProfileLaunchOptions(profile, { parseProxy });
 
     const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
@@ -3705,7 +3681,7 @@ async function changeAvatar(profile, avatarImage) {
         // Step 1: Navigate to TikTok and find the user's profile URL
         log('Navigating to TikTok...');
         await page.goto('https://www.tiktok.com', { waitUntil: 'networkidle', timeout: 60000 });
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(jitterMs(3000));
 
         // Try to get the profile link from the page
         let profileUrl = null;
@@ -3725,10 +3701,10 @@ async function changeAvatar(profile, avatarImage) {
             try {
                 const profileBtn = await page.waitForSelector('#header-profile-avatar, [data-e2e="profile-icon"]', { timeout: 5000 });
                 await profileBtn.click();
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(jitterMs(2000));
                 const viewLink = await page.waitForSelector(':text("View profile")', { timeout: 5000 });
                 await viewLink.click();
-                await page.waitForTimeout(4000);
+                await page.waitForTimeout(jitterMs(4000));
                 profileUrl = page.url();
                 log(`Profile URL from menu: ${profileUrl}`);
             } catch (e) {
@@ -3739,7 +3715,7 @@ async function changeAvatar(profile, avatarImage) {
         // Navigate to profile page if we have a URL and aren't already there
         if (profileUrl && !page.url().includes('/@')) {
             await page.goto(profileUrl, { waitUntil: 'networkidle', timeout: 30000 });
-            await page.waitForTimeout(4000);
+            await page.waitForTimeout(jitterMs(4000));
         }
 
         log(`On page: ${page.url()}`);
@@ -3755,7 +3731,7 @@ async function changeAvatar(profile, avatarImage) {
         if (editBtn) {
             await editBtn.click();
             log('Clicked Edit profile');
-            await page.waitForTimeout(4000);
+            await page.waitForTimeout(jitterMs(4000));
         } else {
             const bodyText = await page.evaluate(() => (document.body.innerText || '').substring(0, 500));
             log(`Page text: ${bodyText}`);
@@ -3773,7 +3749,7 @@ async function changeAvatar(profile, avatarImage) {
         if (fileInput) {
             await fileInput.setInputFiles(avatarImage);
             log(`Uploaded avatar: ${avatarImage}`);
-            await page.waitForTimeout(4000);
+            await page.waitForTimeout(jitterMs(4000));
 
             // Step 4: Click Apply in crop/zoom modal (class ef1kawg9)
             let applyBtn = null;
@@ -3785,7 +3761,7 @@ async function changeAvatar(profile, avatarImage) {
             if (applyBtn) {
                 await applyBtn.click({ force: true });
                 log('Clicked Apply (crop modal)');
-                await page.waitForTimeout(3000);
+                await page.waitForTimeout(jitterMs(3000));
             } else {
                 // Fallback: try generic Apply
                 try {
@@ -3793,7 +3769,7 @@ async function changeAvatar(profile, avatarImage) {
                     if (btn) {
                         await btn.click({ force: true });
                         log('Clicked Apply (fallback)');
-                        await page.waitForTimeout(3000);
+                        await page.waitForTimeout(jitterMs(3000));
                     }
                 } catch (e) {}
             }
@@ -3812,7 +3788,7 @@ async function changeAvatar(profile, avatarImage) {
         if (saveBtn) {
             await saveBtn.click({ force: true });
             log('Clicked Save');
-            await page.waitForTimeout(4000);
+            await page.waitForTimeout(jitterMs(4000));
         }
 
         log('Avatar change flow completed');
@@ -3886,7 +3862,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         return;
     }
 
-    const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy });
+    const browserOptions = buildProfileLaunchOptions(profile, { parseProxy });
 
     const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
@@ -3918,7 +3894,7 @@ async function addFavoriteMusic(profile, searchTerm) {
                         initialized = true;
                         break;
                     }
-                    await page.waitForTimeout(1000);
+                    await page.waitForTimeout(jitterMs(1000));
                 }
                 if (initialized) break;
             } catch (e) {
@@ -3976,7 +3952,7 @@ async function addFavoriteMusic(profile, searchTerm) {
                         input.style.zIndex = '99999';
                     }
                 });
-                await page.waitForTimeout(500);
+                await page.waitForTimeout(jitterMs(500));
                 const [fileChooser] = await Promise.all([
                     page.waitForEvent('filechooser', { timeout: 5000 }),
                     page.click('input[type="file"]')
@@ -4007,7 +3983,7 @@ async function addFavoriteMusic(profile, searchTerm) {
             const cancelBtn = page.locator('button:has-text("Cancel")');
             await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
             log('Upload complete (Cancel button gone). Waiting for processing...');
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(jitterMs(3000));
         } catch (e) {
             log(`Wait for upload completion timed out or failed: ${e.message}`);
         }
@@ -4029,7 +4005,7 @@ async function addFavoriteMusic(profile, searchTerm) {
                 if (editBtn && await editBtn.isVisible()) {
                     log('Clicking Edit Video first...');
                     await editBtn.click();
-                    await page.waitForTimeout(3000);
+                    await page.waitForTimeout(jitterMs(3000));
                     soundsBtn = await page.waitForSelector(
                         'button[data-button-name="sounds"]:not([disabled])',
                         { timeout: 60000, state: 'visible' }
@@ -4072,7 +4048,7 @@ async function addFavoriteMusic(profile, searchTerm) {
                 } catch (err) {}
             }
             if (searchInput) break;
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(jitterMs(1000));
         }
 
         if (!searchInput) {
@@ -4082,7 +4058,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         }
 
         log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(jitterMs(4000));
 
         const musicTerms = (searchTerm || '').split(',').map(s => s.trim()).filter(Boolean);
         if (musicTerms.length === 0) {
@@ -4091,7 +4067,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         }
 
         log(`Favorite music flow starting for ${musicTerms.length} song(s)...`);
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(jitterMs(2000));
 
         for (let termIdx = 0; termIdx < musicTerms.length; termIdx++) {
             const currentTerm = musicTerms[termIdx];
@@ -4108,19 +4084,19 @@ async function addFavoriteMusic(profile, searchTerm) {
                     await page.keyboard.press('Control+A');
                     await page.keyboard.press('Backspace');
                 }
-                await page.waitForTimeout(1000);
+                await page.waitForTimeout(jitterMs(1000));
             }
 
             // Fill search term and trigger search
             log(`Setting search term: "${currentTerm}"`);
             await searchInput.focus();
             await searchInput.click();
-            await page.keyboard.type(currentTerm, { delay: 30 });
-            await page.waitForTimeout(1500);
+            await typeLikeHuman(page, currentTerm);
+            await page.waitForTimeout(jitterMs(1500));
 
             await page.keyboard.press('Enter');
             log(`Enter pressed for "${currentTerm}", waiting for search results...`);
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(jitterMs(1000));
 
             try {
                 await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 20000 });
@@ -4128,7 +4104,7 @@ async function addFavoriteMusic(profile, searchTerm) {
             } catch (e) {
                 log(`Wait for search results timed out for "${currentTerm}". Proceeding anyway...`);
             }
-            await page.waitForTimeout(1500);
+            await page.waitForTimeout(jitterMs(1500));
 
             // Click star/bookmark on first search result
             const firstItem = await page.$('div[role="listitem"][data-item-id]');
@@ -4140,7 +4116,7 @@ async function addFavoriteMusic(profile, searchTerm) {
 
             log(`Hovering first result for "${currentTerm}"...`);
             await firstItem.hover();
-            await page.waitForTimeout(1200);
+            await page.waitForTimeout(jitterMs(1200));
 
             const starClicked = await page.evaluate(() => {
                 const item = document.querySelector('div[role="listitem"][data-item-id]');
@@ -4176,7 +4152,7 @@ async function addFavoriteMusic(profile, searchTerm) {
                 log(`WARNING: Could not click star for "${currentTerm}" — ${starClicked}`);
             }
 
-            await page.waitForTimeout(1500);
+            await page.waitForTimeout(jitterMs(1500));
         }
 
         log('Favorite music flow completed for all terms');
@@ -4410,7 +4386,7 @@ async function fillSchedulePicker(page, pickerMeta, value, label, log) {
     if ((await trigger.getAttribute('aria-expanded')) !== 'true') {
         await trigger.click();
     }
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(jitterMs(800));
 
     if (label === 'Date') {
         const { year, month, day } = parseScheduleDateValue(value);
@@ -4429,7 +4405,7 @@ async function fillSchedulePicker(page, pickerMeta, value, label, log) {
             const diff = (year - titleYear) * 12 + (month - shownMonth);
             if (diff === 0) break;
             await panel.locator(diff > 0 ? 'button[aria-label="Next month"]' : 'button[aria-label="Previous month"]').click();
-            await page.waitForTimeout(400);
+            await page.waitForTimeout(jitterMs(400));
         }
 
         const dayEl = panel.locator('button.DatePicker__day[data-outside="false"]')
@@ -4458,7 +4434,7 @@ async function fillSchedulePicker(page, pickerMeta, value, label, log) {
         if (!(await hourEl.count())) hourEl = hoursCol.locator(`button[aria-label="Hours ${Number(hourLabel)}"]`);
         await hourEl.first().scrollIntoViewIfNeeded().catch(() => null);
         await hourEl.first().click();
-        await page.waitForTimeout(400);
+        await page.waitForTimeout(jitterMs(400));
 
         // Minutes list is in 5-min steps; pick exact match, otherwise nearest available
         const minuteOptions = await minutesCol.locator('button[role="option"]').evaluateAll((els) =>
@@ -4472,7 +4448,7 @@ async function fillSchedulePicker(page, pickerMeta, value, label, log) {
             const minuteEl = minutesCol.locator(`button[aria-label="${target.label}"]`).first();
             await minuteEl.scrollIntoViewIfNeeded().catch(() => null);
             await minuteEl.click();
-            await page.waitForTimeout(400);
+            await page.waitForTimeout(jitterMs(400));
         }
 
         if (is12h) {
@@ -4482,10 +4458,10 @@ async function fillSchedulePicker(page, pickerMeta, value, label, log) {
         }
     }
 
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(jitterMs(800));
     if ((await trigger.getAttribute('aria-expanded')) === 'true') {
         await page.keyboard.press('Escape').catch(() => null);
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(jitterMs(500));
     }
 
     const shown = (await trigger.locator('.Picker__value').textContent().catch(() => '') || '').trim();
@@ -4566,11 +4542,11 @@ async function closeSchedulePopup(page, popupSelector, log) {
     // variant may render the dropdown under a class we do not match, and an unseen
     // overlay still swallows the Post click. Escape on a closed popup is harmless.
     await page.keyboard.press('Escape').catch(() => null);
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(jitterMs(400));
     if (!(await isOpen())) return true;
 
     await page.mouse.click(5, 5).catch(() => null);
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(jitterMs(500));
     const stillOpen = await isOpen();
     if (stillOpen && typeof log === 'function') {
         log(`Warning: schedule popup ${popupSelector} stayed open after Escape + click-away.`);
@@ -4596,7 +4572,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     await input.evaluate(el => el.removeAttribute('readonly')).catch(() => null);
 
     await input.click({ clickCount: 3 });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(jitterMs(500));
 
     // Special handling for the TikTok Time Picker.
     //
@@ -4622,7 +4598,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
             log(`Time picker not visible; closing popups and reopening (${reopen}/3)...`);
             await closeSchedulePopup(page, CALENDAR_WRAPPER, log);
             await input.click({ timeout: 5000 }).catch(() => null);
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(jitterMs(1000));
             pickerOpen = await picker.isVisible({ timeout: 2000 }).catch(() => false);
         }
         if (!pickerOpen) {
@@ -4651,7 +4627,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
                     }
                     await option.scrollIntoViewIfNeeded().catch(() => null);
                     await option.click({ force: true });
-                    await page.waitForTimeout(400);
+                    await page.waitForTimeout(jitterMs(400));
                 };
 
                 await clickOption(hourCol, String(hour).padStart(2, '0'), 'Hour');
@@ -4702,7 +4678,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
             if (!(await page.locator(CALENDAR_WRAPPER).isVisible({ timeout: 500 }).catch(() => false))) {
                 await input.click();
             }
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(jitterMs(1000));
 
             const picker = page.locator(CALENDAR_WRAPPER).first();
             if (await picker.isVisible({ timeout: 3000 })) {
@@ -4765,7 +4741,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
                     }
                     log(`Calendar shows ${shown.text}; moving ${diff > 0 ? 'forward' : 'back'} one month.`);
                     await arrow.click({ force: true });
-                    await page.waitForTimeout(600);
+                    await page.waitForTimeout(jitterMs(600));
                 }
 
                 if (navigated) {
@@ -4787,7 +4763,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
                             log(`Warning: day ${day} is not marked valid (likely in the past).`);
                         }
                         await picker.locator('.day-span-container span.day').nth(targetIndex).click({ force: true });
-                        await page.waitForTimeout(1000);
+                        await page.waitForTimeout(jitterMs(1000));
 
                         const picked = await input.inputValue().catch(() => '');
                         log(`Date picker selection result: "${picked}"`);
@@ -4808,7 +4784,8 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
 
 
     await input.fill('');
-    await input.type(value, { delay: 50 });
+    await input.focus();
+    await typeLikeHuman(page, value);
     await input.evaluate((el, val) => {
         el.value = val;
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -4817,7 +4794,7 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
     }, value).catch(() => null);
     await input.press('Enter').catch(() => null);
     await input.press('Tab').catch(() => null);
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(jitterMs(1000));
 
     const actualValue = await input.inputValue().catch(() => '');
     log(`${label} input value after fill: ${actualValue || '<empty>'}`);
@@ -5043,20 +5020,20 @@ async function dismissOnboardingModals(page, log) {
                 if (cancelBtn) {
                     log('✅ Dismissing "Turn on automatic content checks" → Cancel');
                     await cancelBtn.click();
-                    await page.waitForTimeout(800);
+                    await page.waitForTimeout(jitterMs(800));
                 }
             } else if (text.includes("Discard this post") || text.includes("discarded permanently")) {
                 const notNowBtn = await tuxModal.$('button:has-text("Not now")');
                 if (notNowBtn && await notNowBtn.isVisible()) {
                     log('✅ Dismissing "Discard this post?" → Not now');
                     await notNowBtn.click();
-                    await page.waitForTimeout(800);
+                    await page.waitForTimeout(jitterMs(800));
                 } else {
                     const discardBtn = await tuxModal.$('button:has-text("Discard")');
                     if (discardBtn && await discardBtn.isVisible()) {
                         log('✅ Dismissing "Discard this post?" → Discard');
                         await discardBtn.click();
-                        await page.waitForTimeout(800);
+                        await page.waitForTimeout(jitterMs(800));
                     }
                 }
             } else {
@@ -5066,7 +5043,7 @@ async function dismissOnboardingModals(page, log) {
                     if (el && await el.isVisible()) {
                         log(`✅ Dismissing TUXModal → ${btnSel}`);
                         await el.click();
-                        await page.waitForTimeout(800);
+                        await page.waitForTimeout(jitterMs(800));
                         break;
                     }
                 }
@@ -5083,7 +5060,7 @@ async function dismissOnboardingModals(page, log) {
         if (el) {
             log('✅ Dismissing tutorial/joyride tooltip → Got it');
             await el.click();
-            await page.waitForTimeout(800);
+            await page.waitForTimeout(jitterMs(800));
 
             // Joyride may have multiple steps
             try {
@@ -5094,7 +5071,7 @@ async function dismissOnboardingModals(page, log) {
                 if (el2) {
                     log('✅ Dismissing joyride step 2 → Got it');
                     await el2.click();
-                    await page.waitForTimeout(500);
+                    await page.waitForTimeout(jitterMs(500));
                 }
             } catch (e) { /* no second step */ }
         }
@@ -5109,7 +5086,7 @@ async function dismissOnboardingModals(page, log) {
         if (el) {
             log('✅ Dismissing editor guide tooltip → Got it');
             await el.click();
-            await page.waitForTimeout(800);
+            await page.waitForTimeout(jitterMs(800));
         }
     } catch (e) { /* not found */ }
 
@@ -5120,7 +5097,7 @@ async function dismissOnboardingModals(page, log) {
             log('✅ Dismissing sound guide callout ("Use these sounds...")');
             await sgEl.click().catch(() => null);
             await page.keyboard.press('Escape').catch(() => null);
-            await page.waitForTimeout(500);
+            await page.waitForTimeout(jitterMs(500));
         }
     } catch (e) { /* not found */ }
 }
@@ -5142,7 +5119,7 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
                 waitUntil: 'domcontentloaded',
                 timeout: 30000
             });
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(jitterMs(3000));
 
             // Tự động đóng các popup có thể xuất hiện chắn màn hình
             await dismissPopups(page).catch(() => null);
@@ -5263,7 +5240,7 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
             log(`[Content Check Attempt ${attempt}/${maxAttempts}] Failed: ${e.message}`);
             if (attempt < maxAttempts) {
                 log(`Retrying content check (attempt ${attempt + 1}/${maxAttempts}) in 3 seconds...`);
-                await page.waitForTimeout(3000);
+                await page.waitForTimeout(jitterMs(3000));
                 await dismissPopups(page).catch(() => null);
                 await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null);
             } else {
@@ -5279,7 +5256,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     let lastScheduledTime = null;
     let hasExistingSchedule = false;
 
-    const browserOptions = buildBrowserLaunchOptions(profile, {
+    const browserOptions = buildProfileLaunchOptions(profile, {
         parseProxy,
         log: (msg) => console.log(`[${profile.name}] ${msg}`)
     });
@@ -5372,7 +5349,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             break;
                         }
                         log(`[Poll #${poll}] Waiting 1s...`);
-                        await page.waitForTimeout(1000);
+                        await page.waitForTimeout(jitterMs(1000));
                         log(`[Poll #${poll}] Wait done.`);
                     }
 
@@ -5431,7 +5408,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             input.style.zIndex = '99999';
                         }
                     });
-                    await page.waitForTimeout(500);
+                    await page.waitForTimeout(jitterMs(500));
                     const [fileChooser] = await Promise.all([
                         page.waitForEvent('filechooser', { timeout: 5000 }),
                         page.click('input[type="file"]')
@@ -5445,12 +5422,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             if (!uploaded) throw new Error('Could not find file input or upload button');
 
             log(`Video file selection complete. Waiting for UI...`);
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(jitterMs(3000));
 
             // Dismiss any onboarding modals that may appear after file selection
             await dismissOnboardingModals(page, log);
             await dismissPopups(page);
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(jitterMs(1000));
             // Gọi lần 2 để đảm bảo popup đã được dismiss (popup có thể xuất hiện chậm)
             await dismissPopups(page);
 
@@ -5469,7 +5446,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                     // Loop dismiss popups mỗi 2s trong khi đợi Post button ready
                     for (let i = 0; i < 600; i++) { // max 20 phút
-                        await page.waitForTimeout(2000);
+                        await page.waitForTimeout(jitterMs(2000));
                         await dismissPopups(page);
                         await dismissOnboardingModals(page, log);
 
@@ -5483,7 +5460,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 })();
 
                 await uploadCompletedPromise;
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(jitterMs(2000));
 
                 // Dismiss popups & tooltips that appeared after video upload completion
                 await dismissOnboardingModals(page, log);
@@ -5496,7 +5473,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             try {
                 log(`Waiting for upload UI components...`);
                 await page.waitForSelector('.video-info-container, textarea, .DraftEditor-root, button:has-text("Edit video"), [data-button-name="sounds"], button:has-text("Post")', { timeout: 60000 });
-                await page.waitForTimeout(5000);
+                await page.waitForTimeout(jitterMs(5000));
 
                 const shouldRemoveTitle = Number(profile.remove_title) === 1;
                 if (shouldRemoveTitle) {
@@ -5512,7 +5489,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 await page.keyboard.press('Control+A');
                                 await page.keyboard.press('Meta+A');
                                 await page.keyboard.press('Backspace');
-                                await page.waitForTimeout(500);
+                                await page.waitForTimeout(jitterMs(500));
                                 log(`Caption clearing attempt finished.`);
                             }
                         } catch (e) { }
@@ -5560,7 +5537,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     if (soundsBtn) {
                         log(`Opening Sounds panel...`);
                         await soundsBtn.click();
-                        await page.waitForTimeout(1500);
+                        await page.waitForTimeout(jitterMs(1500));
 
                         // Dismiss guide tooltips (e.g. "Phone mode" -> Got it) and any editor popups
                         await dismissOnboardingModals(page, log);
@@ -5599,7 +5576,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                     } catch (err) {}
                                 }
                                 if (searchInput) break;
-                                await page.waitForTimeout(1000);
+                                await page.waitForTimeout(jitterMs(1000));
                             }
 
                             if (!searchInput) {
@@ -5607,21 +5584,21 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_search.png`) }).catch(() => null);
                             } else {
                                 log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
-                                await page.waitForTimeout(4000);
+                                await page.waitForTimeout(jitterMs(4000));
 
                                 // Fill search term and trigger search
                                 log(`Setting search term: "${searchTerm}"`);
                                 await searchInput.focus();
                                 await searchInput.click();
-                                await page.keyboard.type(searchTerm, { delay: 30 });
+                                await typeLikeHuman(page, searchTerm);
                                 log('Search term filled, waiting for suggestions...');
-                                await page.waitForTimeout(2000);
+                                await page.waitForTimeout(jitterMs(2000));
 
                                 await page.keyboard.press('Enter');
                                 log('Enter pressed, waiting for new search results to load...');
 
                                  // Wait a moment for TikTok to switch to loading state
-                                 await page.waitForTimeout(1000);
+                                 await page.waitForTimeout(jitterMs(1000));
 
                                 try {
                                     await page.waitForSelector('div[role="listitem"][data-item-id], .MusicPanelSearchResultList__empty', { timeout: 30000 });
@@ -5629,7 +5606,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 } catch (e) {
                                     log('Wait for search results timed out or failed. Proceeding anyway...');
                                 }
-                                await page.waitForTimeout(2000); // Short stabilization wait after refresh
+                                await page.waitForTimeout(jitterMs(2000)); // Short stabilization wait after refresh
 
                                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
 
@@ -5654,7 +5631,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                             await page.keyboard.press('Control+A');
                                             await page.keyboard.press('Backspace');
                                         }
-                                        await page.waitForTimeout(1500);
+                                        await page.waitForTimeout(jitterMs(1500));
 
                                         // Click Recent tab
                                         log('Looking for Recent tab...');
@@ -5684,7 +5661,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                         if (recentTab) {
                                             log('Clicking Recent tab...');
                                             await recentTab.click();
-                                            await page.waitForTimeout(3000); // Wait for recent list to load
+                                            await page.waitForTimeout(jitterMs(3000)); // Wait for recent list to load
 
                                             // Click the first record in recent list
                                             const firstRecentItem = await page.$('div[role="listitem"][data-item-id]');
@@ -5701,7 +5678,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                                                     // Enter -50 in the PropSettingInput
                                                     log(`Waiting for PropSettingInput to appear...`);
-                                                    await page.waitForTimeout(800);
+                                                    await page.waitForTimeout(jitterMs(800));
                                                     const propInput = await page.waitForSelector(
                                                         'input.PropSettingInput__input, input[class*="PropSettingInput"]',
                                                         { timeout: 3000, state: 'visible' }
@@ -5735,7 +5712,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                                             // After sound is added, enter -50 in the PropSettingInput
                                             log(`Waiting for PropSettingInput to appear...`);
-                                            await page.waitForTimeout(800);
+                                            await page.waitForTimeout(jitterMs(800));
                                             const propInput = await page.waitForSelector(
                                                 'input.PropSettingInput__input, input[class*="PropSettingInput"]',
                                                 { timeout: 3000, state: 'visible' }
@@ -5776,7 +5753,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             }
                         }
 
-                        await page.waitForTimeout(1000);
+                        await page.waitForTimeout(jitterMs(1000));
 
                         const saveBtn = 'button:has-text("Save"), .save-btn, button.jsx-2503522271.save-btn';
                         const sBtn = await page.waitForSelector(saveBtn, { timeout: 5000, state: 'visible' }).catch(() => null);
@@ -5784,7 +5761,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             await sBtn.click();
                             log(`Changes saved in editor.`);
                             await page.waitForSelector('button:has-text("Post")', { timeout: 10000, state: 'visible' });
-                            await page.waitForTimeout(1000);
+                            await page.waitForTimeout(jitterMs(1000));
                         }
                     } else {
                         log(`Editor/Sounds button not found. Skipping editor steps.`);
@@ -5804,7 +5781,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 const cancelBtn = page.locator('button:has-text("Cancel")');
                 await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
                 log("Upload complete (Cancel button is gone). Waiting 5s for UI to settle...");
-                await page.waitForTimeout(5000);
+                await page.waitForTimeout(jitterMs(5000));
             } catch (uploadErr) {
                 log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
             }
@@ -5882,16 +5859,16 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                         log("Stuck in checking for 3 minutes. Toggling Content check lite off and on again...");
                                         try {
                                             await switchContent.click({ force: true });
-                                            await page.waitForTimeout(1000);
+                                            await page.waitForTimeout(jitterMs(1000));
                                             await switchContent.click({ force: true });
-                                            await page.waitForTimeout(2000);
+                                            await page.waitForTimeout(jitterMs(2000));
                                             toggledRetry = true;
                                             checkStartTime = Date.now(); // Reset timer after toggling
                                         } catch (toggleErr) {
                                             log(`Failed to toggle retry switch: ${toggleErr.message}`);
                                         }
                                     }
-                                    await page.waitForTimeout(5000);
+                                    await page.waitForTimeout(jitterMs(5000));
                                 } else {
                                     log(`Content check failed/restricted/warned/errored with status: ${status}`);
                                     break;
@@ -5945,21 +5922,21 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
                         await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
                         log(`Selected "Schedule" option (existing batch).`);
-                        await page.waitForTimeout(3000);
+                        await page.waitForTimeout(jitterMs(3000));
 
                         // 2. Resolve inputs
                         const scheduleInputs = await resolveScheduleInputs(page, log);
 
                         // 3. Increment from lastScheduledTime
                         const intervalMin = profile.schedule_interval || 5;
-                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
+                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin, jitterSteps: SCHEDULE_JITTER_STEPS });
                         const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                         const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
                         log(`Video ${i + 1}: Scheduling at ${dateValue} ${timeValue} (from existing batch).`);
                         await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
-                        await page.waitForTimeout(2000);
+                        await page.waitForTimeout(jitterMs(2000));
                         await verifyScheduleApplied(page, scheduleInputs, dateValue, timeValue, log);
 
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
@@ -5974,21 +5951,21 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
                         await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
                         log(`Selected "Schedule" option.`);
-                        await page.waitForTimeout(3000);
+                        await page.waitForTimeout(jitterMs(3000));
 
                         // 2. Resolve inputs
                         const scheduleInputs = await resolveScheduleInputs(page, log);
 
                         // Video 2+: Increment by intervalMinutes (5 or 10 mins)
                         const intervalMin = profile.schedule_interval || 5;
-                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin, now: new Date() });
+                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin, now: new Date(), jitterSteps: SCHEDULE_JITTER_STEPS });
                         const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                         const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
                         log(`Video ${i + 1}: Setting incremented schedule: ${dateValue} ${timeValue}`);
                         await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
-                        await page.waitForTimeout(2000);
+                        await page.waitForTimeout(jitterMs(2000));
                         await verifyScheduleApplied(page, scheduleInputs, dateValue, timeValue, log);
 
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
@@ -6016,7 +5993,8 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     lastScheduledTime = computeNextScheduledTime({
                         index: i,
                         lastScheduledTime,
-                        now: new Date()
+                        now: new Date(),
+                        jitterSteps: SCHEDULE_JITTER_STEPS
                     });
 
                     if (lastScheduledTime) {
@@ -6035,7 +6013,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         });
 
                         log(`Selected "Schedule" option.`);
-                        await page.waitForTimeout(3000);
+                        await page.waitForTimeout(jitterMs(3000));
 
                         // 3. Resolve visible date/time inputs and fill them via Playwright
                         const scheduleInputs = await resolveScheduleInputs(page, log);
@@ -6045,7 +6023,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         await fillScheduleInput(page, scheduleInputs.date, resolvedDateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, resolvedTimeValue, 'Time', log);
 
-                        await page.waitForTimeout(3000); // Increased wait for UI to settle
+                        await page.waitForTimeout(jitterMs(3000)); // Increased wait for UI to settle
 
                         // Verification screenshot
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_scheduled_${i + 1}.png`) }).catch(() => null);
@@ -6127,7 +6105,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                 // Success detection polling (Wait up to 15s per attempt)
                 for (let poll = 0; poll < 3; poll++) {
-                    await page.waitForTimeout(5000);
+                    await page.waitForTimeout(jitterMs(5000));
 
                     const postBtnGone = !await page.$('button:has-text("Post")');
                     const successMsg = await page.$('text="Uploaded", text="Success", text="View video", text="Manage your posts", text="Share video"');
@@ -6204,7 +6182,8 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 // Wait before next loop iteration to let things settle
                 if (i < videos.length - 1) {
                     log(`Preparing for next video...`);
-                    await page.waitForTimeout(5000);
+                    // A person does not start the next upload exactly 5s after the last one.
+                    await page.waitForTimeout(randomBetween(5000, 12000));
                 }
             }
         }
@@ -6498,7 +6477,7 @@ async function runEngageSession(profile) {
         } catch (e) { }
     };
 
-    const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy, log });
+    const browserOptions = buildProfileLaunchOptions(profile, { parseProxy, log });
 
     const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
@@ -6515,7 +6494,7 @@ async function runEngageSession(profile) {
 
         // Điều hướng đến trang For You
         await page.goto('https://www.tiktok.com/foryou', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(jitterMs(3000));
 
         // Dismiss any initial popups/login prompts
         await engageDismissPopups(page, log);
@@ -6601,10 +6580,10 @@ async function runEngageSession(profile) {
 
             } catch (loopErr) {
                 log(`Loop error (continuing): ${loopErr.message}`);
-                await page.waitForTimeout(3000);
+                await page.waitForTimeout(jitterMs(3000));
                 // Cố gắng quay về For You nếu bị lạc
                 await page.goto('https://www.tiktok.com/foryou', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(jitterMs(2000));
             }
         }
 
@@ -6685,7 +6664,7 @@ async function engageComment(page, log) {
         return false;
     }
 
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(jitterMs(1500));
 
     // Tìm input box comment
     const inputSelectors = [
@@ -6700,14 +6679,14 @@ async function engageComment(page, log) {
             const input = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
             if (input) {
                 await input.click();
-                await page.waitForTimeout(500);
+                await page.waitForTimeout(jitterMs(500));
                 await page.keyboard.type(comment, { delay: randomInt(50, 120) });
                 await page.waitForTimeout(randomInt(500, 1000));
 
                 // Submit comment
                 await page.keyboard.press('Enter');
                 log(`Commented: "${comment}"`);
-                await page.waitForTimeout(1000);
+                await page.waitForTimeout(jitterMs(1000));
 
                 // Đóng comment panel bằng ESC hoặc click ngoài
                 await page.keyboard.press('Escape');
@@ -6875,7 +6854,7 @@ async function engageDismissPopups(page, log) {
             if (el && await el.isVisible()) {
                 await el.click();
                 log(`Dismissed popup: ${sel}`);
-                await page.waitForTimeout(500);
+                await page.waitForTimeout(jitterMs(500));
             }
         } catch (e) { }
     }
@@ -6897,7 +6876,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
             waitUntil: 'domcontentloaded',
             timeout: 30000
         });
-        await emailPage.waitForTimeout(5000);
+        await emailPage.waitForTimeout(jitterMs(5000));
 
         const currentUrl = emailPage.url();
         log(`Hotmail tab URL: ${currentUrl}`);
@@ -6944,7 +6923,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
             log('Hotmail: email entered');
 
             // Click Next
-            await emailPage.waitForTimeout(500);
+            await emailPage.waitForTimeout(jitterMs(500));
             const nextBtn = await emailPage.waitForSelector(
                 'input[type="submit"], button[type="submit"], #idSIButton9',
                 { timeout: 5000 }
@@ -6960,7 +6939,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
             //   Variant B: "Verify your email" screen with "Use your password" link
             //   Variant C: "Other ways to sign in" must be clicked first, then "Use your password" appears
             //   Variant D: "Other ways to sign in" then "Password" option then password field
-            await emailPage.waitForTimeout(4000);
+            await emailPage.waitForTimeout(jitterMs(4000));
             const afterNextUrl = emailPage.url();
             log(`Hotmail: after Next URL = ${afterNextUrl}`);
 
@@ -6984,7 +6963,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                 if (otherWaysBtn && await otherWaysBtn.isVisible().catch(() => false)) {
                     await otherWaysBtn.click();
                     log(`Hotmail: clicked "Other ways to sign in" via ${sel}`);
-                    await emailPage.waitForTimeout(3000);
+                    await emailPage.waitForTimeout(jitterMs(3000));
                     break;
                 }
             }
@@ -7005,7 +6984,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                 if (usePwBtn && await usePwBtn.isVisible().catch(() => false)) {
                     await usePwBtn.click();
                     log(`Hotmail: clicked "Use your password" via ${sel}`);
-                    await emailPage.waitForTimeout(3000);
+                    await emailPage.waitForTimeout(jitterMs(3000));
                     break;
                 }
             }
@@ -7027,7 +7006,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                     await passField.fill(profile.pass_email);
                     log('Hotmail: password entered');
 
-                    await emailPage.waitForTimeout(500);
+                    await emailPage.waitForTimeout(jitterMs(500));
                     // Submit button — Fluent UI <button>Next</button> may not have type="submit"
                     const signInBtn = await emailPage.waitForSelector(
                         'input[type="submit"]:visible, button[type="submit"]:visible, #idSIButton9, button:has-text("Next"):visible, button:has-text("Sign in"):visible',
@@ -7038,7 +7017,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                         log('Hotmail: clicked Sign in');
                     }
 
-                    await emailPage.waitForTimeout(5000);
+                    await emailPage.waitForTimeout(jitterMs(5000));
                     log(`Hotmail: after sign-in URL = ${emailPage.url()}`);
 
                     // Dismiss "Stay signed in?" if present
@@ -7049,11 +7028,11 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                     if (stayBtn) {
                         await stayBtn.click();
                         log('Hotmail: dismissed "Stay signed in?" prompt');
-                        await emailPage.waitForTimeout(3000);
+                        await emailPage.waitForTimeout(jitterMs(3000));
                     }
                 } else if (passField && !profile.pass_email) {
                     log('Hotmail: password field found but no pass_email set. Waiting 60s for manual login...');
-                    await emailPage.waitForTimeout(60000);
+                    await emailPage.waitForTimeout(jitterMs(60000));
                 } else {
                     // Check if we're already redirected to inbox (auto-login via session cookie)
                     const currentPwUrl = emailPage.url();
@@ -7092,7 +7071,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                         log(`Hotmail: debug visible buttons: ${JSON.stringify(debugBtns)}`);
 
                         log('Hotmail: password field not found. Waiting 60s for manual login...');
-                        await emailPage.waitForTimeout(60000);
+                        await emailPage.waitForTimeout(jitterMs(60000));
                     }
                 }
             }
@@ -7112,7 +7091,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                 waitUntil: 'domcontentloaded',
                 timeout: 20000
             }).catch(() => null);
-            await emailPage.waitForTimeout(5000);
+            await emailPage.waitForTimeout(jitterMs(5000));
         }
 
         // Poll inbox for TikTok verification email
@@ -7124,7 +7103,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
         while (Date.now() - pollStart < maxPollTime) {
             // Reload inbox to get latest emails
             await emailPage.reload({ waitUntil: 'domcontentloaded' }).catch(() => null);
-            await emailPage.waitForTimeout(3000);
+            await emailPage.waitForTimeout(jitterMs(3000));
 
             // Collect text fingerprints of all TikTok emails currently in inbox
             const emailIds = await emailPage.evaluate(() => {
@@ -7185,7 +7164,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                     if (!clicked) continue;
 
                     log(`Opened TikTok email #${i + 1}, extracting code...`);
-                    await emailPage.waitForTimeout(5000);
+                    await emailPage.waitForTimeout(jitterMs(5000));
 
                     const code = await emailPage.evaluate(() => {
                         const body = (document.body.innerText || '').replace(/\s+/g, ' ');
@@ -7220,13 +7199,13 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                         await emailPage.goto('https://outlook.live.com/mail/', {
                             waitUntil: 'domcontentloaded', timeout: 15000
                         }).catch(() => null);
-                        await emailPage.waitForTimeout(3000);
+                        await emailPage.waitForTimeout(jitterMs(3000));
                     } else {
                         log(`Email #${i + 1}: could not extract code, checking next...`);
                         await emailPage.goto('https://outlook.live.com/mail/', {
                             waitUntil: 'domcontentloaded', timeout: 15000
                         }).catch(() => null);
-                        await emailPage.waitForTimeout(3000);
+                        await emailPage.waitForTimeout(jitterMs(3000));
                     }
                 }
 
@@ -7235,7 +7214,7 @@ async function retrieveVerificationCode(browser, profile, log, triedCodes = new 
                 log('No TikTok emails in inbox yet, waiting 10s...');
             }
 
-            await emailPage.waitForTimeout(10000);
+            await emailPage.waitForTimeout(jitterMs(10000));
         }
 
         log('Timed out waiting for verification email');
@@ -7257,7 +7236,7 @@ async function runTikTokLogin(profile) {
         } catch (e) {}
     };
 
-    const browserOptions = buildBrowserLaunchOptions(profile, { parseProxy });
+    const browserOptions = buildProfileLaunchOptions(profile, { parseProxy });
 
     const browser = await launchProfileBrowser(userDataDir, profile, browserOptions);
     await applyProfileFingerprint(browser, profile);
@@ -7307,7 +7286,7 @@ async function runTikTokLogin(profile) {
                         waitUntil: 'domcontentloaded',
                         timeout: 30000
                     });
-                    await tiktokPage.waitForTimeout(3000);
+                    await tiktokPage.waitForTimeout(jitterMs(3000));
 
                     const currentUrl = tiktokPage.url();
                     log('Checking login state via profile elements...');
@@ -7337,7 +7316,7 @@ async function runTikTokLogin(profile) {
             waitUntil: 'domcontentloaded',
             timeout: 30000
         });
-        await tiktokPage.waitForTimeout(3000);
+        await tiktokPage.waitForTimeout(jitterMs(3000));
         session.stats.step = 'tiktok_login_page';
 
         // --- STEP 2: Detect if already logged in ---
@@ -7364,7 +7343,7 @@ async function runTikTokLogin(profile) {
         }
         if (phoneEmailBtn) {
             await phoneEmailBtn.click();
-            await tiktokPage.waitForTimeout(2000);
+            await tiktokPage.waitForTimeout(jitterMs(2000));
             log('Clicked "Use phone / email / username"');
         }
 
@@ -7380,7 +7359,7 @@ async function runTikTokLogin(profile) {
         }
         if (emailLoginLink) {
             await emailLoginLink.click();
-            await tiktokPage.waitForTimeout(2000);
+            await tiktokPage.waitForTimeout(jitterMs(2000));
             log('Clicked "Log in with email"');
         }
 
@@ -7407,7 +7386,8 @@ async function runTikTokLogin(profile) {
 
         await emailInput.click();
         await emailInput.fill('');
-        await emailInput.type(profile.email, { delay: 80 });
+        await emailInput.focus();
+        await typeLikeHuman(tiktokPage, profile.email);
         log('Email entered');
         session.stats.step = 'email_entered';
 
@@ -7420,7 +7400,8 @@ async function runTikTokLogin(profile) {
 
         await passwordInput.click();
         await passwordInput.fill('');
-        await passwordInput.type(profile.pass, { delay: 80 });
+        await passwordInput.focus();
+        await typeLikeHuman(tiktokPage, profile.pass);
         log('Password entered');
         session.stats.step = 'password_entered';
 
@@ -7443,7 +7424,7 @@ async function runTikTokLogin(profile) {
         await loginButton.click();
         log('Login button clicked');
         session.stats.step = 'submitted_credentials';
-        await tiktokPage.waitForTimeout(3000);
+        await tiktokPage.waitForTimeout(jitterMs(3000));
 
         // --- STEP 7: Handle captcha & verification code ---
         const captchaMaxWait = 5 * 60 * 1000;
@@ -7502,7 +7483,7 @@ async function runTikTokLogin(profile) {
             if (captchaDetected && !pageState.hasCaptcha) {
                 log('CAPTCHA appears solved. Checking login state...');
                 session.stats.step = 'captcha_solved';
-                await tiktokPage.waitForTimeout(3000);
+                await tiktokPage.waitForTimeout(jitterMs(3000));
                 break;
             }
 
@@ -7518,7 +7499,7 @@ async function runTikTokLogin(profile) {
                 }
             }
 
-            await tiktokPage.waitForTimeout(2000);
+            await tiktokPage.waitForTimeout(jitterMs(2000));
         }
 
         // --- STEP 8: Check login result ---
@@ -7562,13 +7543,13 @@ async function runTikTokLogin(profile) {
                 if (opt && await opt.isVisible().catch(() => false)) {
                     await opt.click();
                     log(`Clicked email option via ${sel}`);
-                    await tiktokPage.waitForTimeout(5000);
+                    await tiktokPage.waitForTimeout(jitterMs(5000));
                     break;
                 }
             }
             // After clicking email option, look for "Send code" or similar confirmation button
             // The button may take a moment to become enabled
-            await tiktokPage.waitForTimeout(2000);
+            await tiktokPage.waitForTimeout(jitterMs(2000));
             const sendBtnSelectors = [
                 'button:has-text("Send code"):not([disabled])',
                 'button:has-text("Send")',
@@ -7588,7 +7569,7 @@ async function runTikTokLogin(profile) {
                             await btn.click({ force: true });
                             log(`Clicked "${(await btn.innerText().catch(() => sel))}" via ${sel}`);
                             session.stats.step = 'code_sent';
-                            await tiktokPage.waitForTimeout(45000);
+                            await tiktokPage.waitForTimeout(jitterMs(45000));
                             break;
                         }
                     }
@@ -7626,7 +7607,7 @@ async function runTikTokLogin(profile) {
                 session.stats.step = 'code_sent';
                 sendBtnClicked = true;
                 // Wait for TikTok to send the email — new email needs time to arrive in inbox
-                await tiktokPage.waitForTimeout(45000);
+                await tiktokPage.waitForTimeout(jitterMs(45000));
                 break;
             }
         }
@@ -7704,7 +7685,7 @@ async function runTikTokLogin(profile) {
                 }
 
                 log(`Retrieved verification code (${code}). Hotmail tab closed. Waiting 2s before entering code...`);
-                await tiktokPage.waitForTimeout(2000);
+                await tiktokPage.waitForTimeout(jitterMs(2000));
 
                 // Always re-find code input — page may have changed during Hotmail retrieval
                 codeInput = null;
@@ -7724,7 +7705,7 @@ async function runTikTokLogin(profile) {
                     await codeInput.click().catch(() => {});
                     await tiktokPage.keyboard.press('Control+A').catch(() => {});
                     await tiktokPage.keyboard.press('Backspace').catch(() => {});
-                    await codeInput.type(code, { delay: 100 }).catch(() => {});
+                    await typeLikeHuman(tiktokPage, code).catch(() => {});
                 } catch (e) {}
 
                 await codeInput.evaluate((el, val) => {
@@ -7739,7 +7720,7 @@ async function runTikTokLogin(profile) {
                 }, code);
 
                 log(`Verification code ${code} entered.`);
-                await tiktokPage.waitForTimeout(1000);
+                await tiktokPage.waitForTimeout(jitterMs(1000));
 
                 // Press Enter & Click submit button
                 await tiktokPage.keyboard.press('Enter').catch(() => {});
@@ -7755,7 +7736,7 @@ async function runTikTokLogin(profile) {
                 let hasExplicitError = false;
 
                 for (let poll = 0; poll < 15; poll++) {
-                    await tiktokPage.waitForTimeout(1000);
+                    await tiktokPage.waitForTimeout(jitterMs(1000));
                     const currentUrl = tiktokPage.url();
 
                     // Check URL redirection
@@ -7799,7 +7780,7 @@ async function runTikTokLogin(profile) {
 
                 if (!hasExplicitError) {
                     log('Verification submitted. Waiting additional 10s for page transition...');
-                    await tiktokPage.waitForTimeout(10000);
+                    await tiktokPage.waitForTimeout(jitterMs(10000));
                     const checkUrl = tiktokPage.url();
                     if (!checkUrl.includes('/login') && !checkUrl.includes('/passport')) {
                         log('Login successful after verification!');
@@ -7819,7 +7800,7 @@ async function runTikTokLogin(profile) {
                 // Wait for user to handle manually
                 for (let i = 0; i < 60; i++) {
                     if (session.stop) break;
-                    await tiktokPage.waitForTimeout(5000);
+                    await tiktokPage.waitForTimeout(jitterMs(5000));
                     const url = tiktokPage.url();
                     if (!url.includes('/login') && !url.includes('/passport')) {
                         log('Login completed (manually)!');
@@ -7852,7 +7833,7 @@ async function runTikTokLogin(profile) {
                 log(`Failed to save cookies: ${e.message}`);
             }
             log('Login successful! Keeping browser open for 10 seconds before closing...');
-            await tiktokPage.waitForTimeout(10000).catch(() => new Promise(r => setTimeout(r, 10000)));
+            await tiktokPage.waitForTimeout(jitterMs(10000)).catch(() => new Promise(r => setTimeout(r, 10000)));
         }
         loggingInProfiles.delete(profileId);
         await browser.close().catch(() => null);
@@ -7877,7 +7858,7 @@ const dismissPopups = async (page) => {
             if (discardBtn && await discardBtn.isVisible()) {
                 await discardBtn.click();
                 console.log('[dismissPopups] Dismissed draft banner "wasn\'t saved" → Discard');
-                await page.waitForTimeout(500);
+                await page.waitForTimeout(jitterMs(500));
                 return true;
             }
         }
@@ -8035,6 +8016,7 @@ app.post('/api/stats/start', async (req, res) => {
       markError,
       isAborted,
       applyProfileFingerprint,
+      resolveLaunchFingerprint,
       injectProfileCookies,
       parseProxy
     };

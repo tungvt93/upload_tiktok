@@ -15,6 +15,7 @@ export async function runStatsForProfile(profile, jobId, ctx) {
     markError,
     isAborted,
     applyProfileFingerprint,
+    resolveLaunchFingerprint,
     injectProfileCookies,
     parseProxy
   } = ctx;
@@ -24,9 +25,10 @@ export async function runStatsForProfile(profile, jobId, ctx) {
 
   try {
     // Stats automation does NOT use proxy — direct connection for stability
-    const browserOptions = buildBrowserLaunchOptions(null, {
+    const browserOptions = buildBrowserLaunchOptions(profile && { ...profile, proxy: null }, {
       extraArgs: ['--window-size=1440,900'],
       viewport: { width: 1440, height: 900 },
+      fingerprint: typeof resolveLaunchFingerprint === 'function' ? resolveLaunchFingerprint(profile) : null,
     });
 
     browser = await launchProfileBrowser(userDataDir, profile, browserOptions);

@@ -230,3 +230,33 @@ test('isScheduledStatusLabel keeps the old Alarm-icon UI working', () => {
     assert.equal(isScheduledStatusLabel({ hasAlarmIcon: false, labelText: 'Oct 31, 11:40 PM' }), false);
     assert.equal(isScheduledStatusLabel({}), false);
 });
+
+test('computeAutoIncrementTime with jitterSteps adds 0..N extra 5-minute steps and snaps to the 5-minute grid', () => {
+    const last = new Date(2026, 10, 1, 9, 0, 0, 0);
+    // random → 0: no extra step, same as the exact interval
+    assert.equal(computeAutoIncrementTime({ lastScheduledTime: last, intervalMinutes: 10, jitterSteps: 2, random: () => 0 }).getTime(),
+        new Date(2026, 10, 1, 9, 10).getTime());
+    // random → ~1: +2 steps = +10 minutes on top of the interval
+    assert.equal(computeAutoIncrementTime({ lastScheduledTime: last, intervalMinutes: 10, jitterSteps: 2, random: () => 0.999 }).getTime(),
+        new Date(2026, 10, 1, 9, 20).getTime());
+    // middle draw: +1 step → 09:15, which the 10-minute grid would have rounded away
+    assert.equal(computeAutoIncrementTime({ lastScheduledTime: last, intervalMinutes: 10, jitterSteps: 2, random: () => 0.5 }).getTime(),
+        new Date(2026, 10, 1, 9, 15).getTime());
+});
+
+test('computeNextScheduledTime with jitterSteps keeps the +20 minute floor and the 5-minute grid', () => {
+    const now = new Date(2026, 10, 1, 9, 1, 0, 0);
+    const first = computeNextScheduledTime({ index: 3, lastScheduledTime: null, intervalMinutes: 10, now, jitterSteps: 2, random: () => 0 });
+    assert.equal(first.getTime(), new Date(2026, 10, 1, 9, 25).getTime(), 'now+20 = 09:21 → snapped up to 09:25');
+    const later = computeNextScheduledTime({ index: 4, lastScheduledTime: first, intervalMinutes: 10, now, jitterSteps: 2, random: () => 0.6 });
+    assert.equal(later.getTime(), new Date(2026, 10, 1, 9, 40).getTime(), '09:25 + 10 + 5 jitter');
+});
+
+test('schedule jitter stays within bounds and on the 5-minute grid across many draws', () => {
+    const last = new Date(2026, 10, 1, 9, 0, 0, 0);
+    for (let i = 0; i < 200; i++) {
+        const t = computeAutoIncrementTime({ lastScheduledTime: last, intervalMinutes: 5, jitterSteps: 2 });
+        const diffMin = (t.getTime() - last.getTime()) / 60000;
+        assert.ok([5, 10, 15].includes(diffMin), `diff ${diffMin}`);
+    }
+});
