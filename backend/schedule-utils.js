@@ -8,23 +8,43 @@ const MONTH_NAME_DATE_RE = new RegExp(
     'i'
 );
 
-export function computeNextScheduledTime({ index, lastScheduledTime, intervalMinutes = 10, now = new Date() }) {
+const FIVE_MINUTES_IN_MS = 5 * 60 * 1000;
+
+// TikTok Studio's minute picker only offers 00,05,...,55, so any random spread
+// has to be a whole number of 5-minute steps. `jitterSteps` is the maximum
+// number of extra 5-minute steps added on top of the configured interval
+// (0 = exact interval, the historical behaviour). With jitter the result is
+// snapped to the 5-minute grid instead of the interval grid, so a 10-minute
+// interval can still land on :15 or :25 like a hand-made schedule would.
+function scheduleJitterMs(jitterSteps, random) {
+    const steps = Math.max(0, Math.floor(Number(jitterSteps) || 0));
+    if (steps === 0) return 0;
+    return Math.floor(random() * (steps + 1)) * FIVE_MINUTES_IN_MS;
+}
+
+function snapToGrid(time, gridMs) {
+    return new Date(Math.ceil(time.getTime() / gridMs) * gridMs);
+}
+
+export function computeNextScheduledTime({ index, lastScheduledTime, intervalMinutes = 10, now = new Date(), jitterSteps = 0, random = Math.random }) {
     if (index < 3) return null;
     const stepMin = Number(intervalMinutes) === 5 ? 5 : 10;
     const stepMs = stepMin * 60 * 1000;
     const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
+    const jitter = scheduleJitterMs(jitterSteps, random);
 
     const baseTime = index === 3 || !lastScheduledTime
-        ? new Date(now.getTime() + TWENTY_MINUTES_IN_MS)
-        : new Date(lastScheduledTime.getTime() + stepMs);
+        ? new Date(now.getTime() + TWENTY_MINUTES_IN_MS + jitter)
+        : new Date(lastScheduledTime.getTime() + stepMs + jitter);
 
-    return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
+    return snapToGrid(baseTime, jitterSteps > 0 ? FIVE_MINUTES_IN_MS : stepMs);
 }
 
-export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 5, now = new Date() }) {
+export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 5, now = new Date(), jitterSteps = 0, random = Math.random }) {
     const stepMin = Number(intervalMinutes) === 10 ? 10 : (Number(intervalMinutes) || 5);
     const stepMs = stepMin * 60 * 1000;
     const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
+    const jitter = scheduleJitterMs(jitterSteps, random);
 
     let baseTime;
     if (lastScheduledTime && lastScheduledTime instanceof Date && !Number.isNaN(lastScheduledTime.getTime())) {
@@ -32,12 +52,12 @@ export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 
         if (validLastTime.getFullYear() < 2020) {
             validLastTime.setFullYear(now.getFullYear());
         }
-        baseTime = new Date(validLastTime.getTime() + stepMs);
+        baseTime = new Date(validLastTime.getTime() + stepMs + jitter);
     } else {
-        baseTime = new Date(now.getTime() + TWENTY_MINUTES_IN_MS);
+        baseTime = new Date(now.getTime() + TWENTY_MINUTES_IN_MS + jitter);
     }
 
-    return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
+    return snapToGrid(baseTime, jitterSteps > 0 ? FIVE_MINUTES_IN_MS : stepMs);
 }
 
 export function getScheduleHintText(meta = {}) {

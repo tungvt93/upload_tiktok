@@ -26,6 +26,7 @@ export const STEALTH_IGNORE_DEFAULT_ARGS = Object.freeze([
 //   --disable-search-engine-choice-screen         → EU search-engine chooser on first load
 
 import { chromium as playwrightChromium } from 'playwright';
+import { fingerprintLaunchOptions } from './fingerprint.js';
 
 const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
 
@@ -50,17 +51,25 @@ export function resolveIgnoreDefaultArgs(envValue = process.env.STEALTH_IGNORE_D
  * @param {Function}    opts.parseProxy  proxy string → Playwright proxy config
  * @param {Function}    [opts.log]       receives a "Using proxy: ..." line when a proxy is applied
  * @param {string[]}    [opts.extraArgs] additional Chrome args (e.g. --window-size)
- * @param {object}      [opts.viewport]  Playwright viewport option
+ * @param {object}      [opts.viewport]  Playwright viewport option; wins over the fingerprint screen
+ * @param {object}      [opts.fingerprint] `{ fingerprint, headers }` from fingerprint-generator.
+ *                      Sets userAgent / viewport so they match what the
+ *                      injector will later report. Ignored for Patchright profiles.
  */
-export function buildBrowserLaunchOptions(profile, { parseProxy, log, extraArgs = [], viewport } = {}) {
+export function buildBrowserLaunchOptions(profile, { parseProxy, log, extraArgs = [], viewport, fingerprint } = {}) {
     const ignoreDefaultArgs = resolveIgnoreDefaultArgs();
     const options = {
         headless: false,
         // Keep Chrome's own sandbox on (Playwright adds --no-sandbox unless told otherwise).
         chromiumSandbox: true,
-        args: ['--disable-blink-features=AutomationControlled', ...extraArgs]
+        args: ['--disable-blink-features=AutomationControlled', ...extraArgs],
+        // Playwright would otherwise emulate a fixed 1280x720 viewport inside the
+        // real window (outerWidth ≠ innerWidth, screen mismatch). null = the
+        // window decides, exactly like a hand-opened Chrome.
+        viewport: null
     };
     if (ignoreDefaultArgs.length > 0) options.ignoreDefaultArgs = ignoreDefaultArgs;
+    if (fingerprint && !usesPatchright(profile)) Object.assign(options, fingerprintLaunchOptions(fingerprint));
     if (viewport) options.viewport = viewport;
 
     if (profile && profile.proxy && profile.use_proxy !== 0 && typeof parseProxy === 'function') {
@@ -78,6 +87,15 @@ export function buildBrowserLaunchOptions(profile, { parseProxy, log, extraArgs 
 /** A profile runs on Patchright only when its use_patchright flag is explicitly on. */
 export function usesPatchright(profile) {
     return Boolean(profile) && Number(profile.use_patchright) === 1;
+}
+
+/**
+ * Only Playwright profiles with use_fingerprint on get an injected fingerprint.
+ * Patchright profiles run clean on real Chrome (see fingerprint.js).
+ */
+export function shouldInjectFingerprint(profile) {
+    if (!profile || usesPatchright(profile)) return false;
+    return Number(profile.use_fingerprint ?? 1) !== 0;
 }
 
 /**

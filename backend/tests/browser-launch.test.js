@@ -6,7 +6,8 @@ import {
     resolveIgnoreDefaultArgs,
     buildBrowserLaunchOptions,
     usesPatchright,
-    resolveBrowserEngine
+    resolveBrowserEngine,
+    shouldInjectFingerprint
 } from '../browser-launch.js';
 
 const parseProxy = (str) => (str ? { server: `http://${str}`, username: 'u', password: 'p' } : null);
@@ -47,7 +48,9 @@ test('buildBrowserLaunchOptions: base shape, sandbox on, ignore list applied', (
     assert.deepEqual(opts.args, ['--disable-blink-features=AutomationControlled']);
     assert.deepEqual(opts.ignoreDefaultArgs, [...STEALTH_IGNORE_DEFAULT_ARGS]);
     assert.equal(opts.proxy, undefined);
-    assert.equal(opts.viewport, undefined);
+    assert.equal(opts.viewport, null, 'no fingerprint → real window decides the viewport');
+    assert.equal(opts.userAgent, undefined);
+    assert.equal(opts.locale, undefined);
 });
 
 test('buildBrowserLaunchOptions: env "0" omits ignoreDefaultArgs entirely', () => {
@@ -104,4 +107,40 @@ test('resolveBrowserEngine: playwright keeps bundled Chromium', () => {
     const { engine, options } = resolveBrowserEngine({ use_patchright: 0 }, { headless: false });
     assert.equal(engine, 'playwright');
     assert.equal(options.channel, undefined);
+});
+
+const sampleFingerprint = {
+    fingerprint: {
+        navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130', language: 'en-US' },
+        screen: { width: 1536, height: 864 }
+    },
+    headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130', 'accept-language': 'en-US,vi-VN;q=0.9' }
+};
+
+test('buildBrowserLaunchOptions: fingerprint sets userAgent, locale and viewport from the stored screen', () => {
+    const opts = buildBrowserLaunchOptions({ use_patchright: 0 }, { fingerprint: sampleFingerprint });
+    assert.equal(opts.userAgent, sampleFingerprint.fingerprint.navigator.userAgent);
+    assert.equal(opts.locale, undefined, 'injector owns Accept-Language; Playwright locale would override it');
+    assert.deepEqual(opts.viewport, { width: 1536, height: 864 });
+});
+
+test('buildBrowserLaunchOptions: explicit viewport still wins over the fingerprint screen', () => {
+    const opts = buildBrowserLaunchOptions(null, { fingerprint: sampleFingerprint, viewport: { width: 1440, height: 900 } });
+    assert.deepEqual(opts.viewport, { width: 1440, height: 900 });
+    assert.equal(opts.userAgent, sampleFingerprint.fingerprint.navigator.userAgent);
+});
+
+test('buildBrowserLaunchOptions: patchright profiles ignore the fingerprint entirely', () => {
+    const opts = buildBrowserLaunchOptions({ use_patchright: 1 }, { fingerprint: sampleFingerprint });
+    assert.equal(opts.userAgent, undefined);
+    assert.equal(opts.locale, undefined);
+    assert.equal(opts.viewport, null);
+});
+
+test('shouldInjectFingerprint: playwright profiles with the flag on, never patchright', () => {
+    assert.equal(shouldInjectFingerprint({ use_fingerprint: 1, use_patchright: 0 }), true);
+    assert.equal(shouldInjectFingerprint({ use_patchright: 0 }), true, 'column default is 1');
+    assert.equal(shouldInjectFingerprint({ use_fingerprint: 0, use_patchright: 0 }), false);
+    assert.equal(shouldInjectFingerprint({ use_fingerprint: 1, use_patchright: 1 }), false);
+    assert.equal(shouldInjectFingerprint(null), false);
 });
