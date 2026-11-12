@@ -45,7 +45,7 @@ import { jitterMs, randomBetween, typeLikeHuman } from './human-delay.js';
 // Scheduled times get 0..N extra 5-minute steps on top of the profile's
 // interval, so a batch is not published at perfectly regular intervals.
 // Capped at 2 (max +10 minutes per video) so the schedule does not drift far.
-const SCHEDULE_JITTER_STEPS = 2;
+const SCHEDULE_JITTER_STEPS = 0;
 import { resolveDouyinVideoUrls, isDouyinVideoUrl, isDouyinNoteUrl, extractDouyinVideoId } from './douyin-resolver.js';
 import { randomUUID } from 'node:crypto';
 import { exportAllProfiles } from '../export_profiles.js';
@@ -1545,7 +1545,13 @@ app.post('/api/profiles/clear-trash', (req, res) => {
 // Cookie names that identify an authenticated TikTok session — kept across a device-id reset.
 // Everything else on .tiktok.com (odin_tt, tt_webid, msToken, s_v_web_id, ttwid, install_id...)
 // is a device/anti-bot signal that accumulates the longer one browser profile is reused.
-const TIKTOK_SESSION_COOKIE_NAMES = new Set(['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard', 'uid_tt']);
+//
+// tt-target-idc / tt-target-idc-sign are NOT device signals: they tell TikTok's edge which
+// datacenter holds this session. Tested empirically (2026-11-12) — removing tt-target-idc alone,
+// even with sessionid intact, redirects to /login (session "not found" at the wrong DC). Every
+// other cookie (msToken, ttwid, tt_chain_token, multi_sids, _waftokenid, etc.) can be wiped while
+// keeping only the 5 names below plus these two, and the session still survives a reload.
+const TIKTOK_SESSION_COOKIE_NAMES = new Set(['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard', 'uid_tt', 'tt-target-idc', 'tt-target-idc-sign']);
 
 // POST /api/profiles/reset-device-id — Wipe TikTok device-fingerprint cookies + localStorage/IndexedDB
 // for tiktok.com while keeping the login session, so the account looks like a fresh device again
@@ -1598,7 +1604,7 @@ app.post('/api/profiles/reset-device-id', async (req, res) => {
                 const proxyConfig = parseProxy(profile.proxy);
                 if (proxyConfig) launchOptions.proxy = proxyConfig;
             }
-            ctx = await chromium.launchPersistentContext(userDataDir, launchOptions);
+            ctx = await launchProfileBrowser(userDataDir, profile, launchOptions);
 
             const allCookies = await ctx.cookies();
             const keptCookies = allCookies.filter(c =>
