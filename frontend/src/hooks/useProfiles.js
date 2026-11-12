@@ -621,6 +621,29 @@ const useProfiles = () => {
     }
   };
 
+  const resetDeviceId = async () => {
+    const profileIds = [...selectedForRun];
+    if (profileIds.length === 0) {
+      setMessage({ type: 'error', text: 'Chọn ít nhất một profile để Reset Device ID.' });
+      return;
+    }
+    if (!window.confirm(`Reset Device ID cho ${profileIds.length} profile?\nSẽ xóa cookie thiết bị TikTok + localStorage/IndexedDB, giữ nguyên session đăng nhập. Trình duyệt của profile sẽ bị đóng nếu đang mở.`)) return;
+    setMessage({ type: 'info', text: `Đang reset device ID cho ${profileIds.length} profile...` });
+    try {
+      const res = await axios.post('/api/profiles/reset-device-id', { profileIds });
+      const { results } = res.data;
+      const okCount = results.filter(r => !r.error).length;
+      const failCount = results.length - okCount;
+      setMessage({
+        type: failCount > 0 ? 'error' : 'success',
+        text: `Đã reset device ID cho ${okCount}/${results.length} profile${failCount > 0 ? ` (${failCount} lỗi)` : ''}.`,
+      });
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi reset device ID' });
+    }
+    setTimeout(() => setMessage(null), 6000);
+  };
+
   const clearDebugFiles = async () => {
     if (!window.confirm('Xóa toàn bộ file debug PNG và dọn automation.log?\nHành động này không ảnh hưởng đến profile hay cookie.')) return;
     setMessage({ type: 'info', text: 'Đang xóa file debug...' });
@@ -1381,6 +1404,7 @@ const useProfiles = () => {
     stopLoginTikTok,
     startBulkLogin,
     clearTrash,
+    resetDeviceId,
     clearDebugFiles,
     handleExportProfilesJson,
     startBulkEngage,

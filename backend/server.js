@@ -1542,6 +1542,121 @@ app.post('/api/profiles/clear-trash', (req, res) => {
     });
 });
 
+// Cookie names that identify an authenticated TikTok session — kept across a device-id reset.
+// Everything else on .tiktok.com (odin_tt, tt_webid, msToken, s_v_web_id, ttwid, install_id...)
+// is a device/anti-bot signal that accumulates the longer one browser profile is reused.
+const TIKTOK_SESSION_COOKIE_NAMES = new Set(['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard', 'uid_tt']);
+
+// POST /api/profiles/reset-device-id — Wipe TikTok device-fingerprint cookies + localStorage/IndexedDB
+// for tiktok.com while keeping the login session, so the account looks like a fresh device again
+// without a full profile delete + re-login.
+app.post('/api/profiles/reset-device-id', async (req, res) => {
+    const { profileIds } = req.body;
+    if (!profileIds || !Array.isArray(profileIds) || profileIds.length === 0) {
+        return res.status(400).json({ error: 'profileIds array is required' });
+    }
+
+    const stopSession = async (map, id) => {
+        if (map.has(id)) {
+            try {
+                const session = map.get(id);
+                if (session) {
+                    if (session.stop !== undefined) session.stop = true;
+                    if (session.browser) await session.browser.close().catch(() => {});
+                    else if (session.close) await session.close().catch(() => {});
+                }
+            } catch (e) {}
+            map.delete(id);
+        }
+    };
+
+    const results = [];
+
+    for (const profileId of profileIds) {
+        const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+        if (!profile) {
+            results.push({ profileId, profileName: '(unknown)', error: 'Profile not found' });
+            continue;
+        }
+
+        // Close any running browser session so the profile's Cookies DB isn't locked.
+        await stopSession(manualBrowsers, profileId);
+        await stopSession(engagingProfiles, profileId);
+        await stopSession(loggingInProfiles, profileId);
+        await new Promise(r => setTimeout(r, 1000));
+
+        const userDataDir = path.join(PROFILES_DIR, profile.name);
+        if (!fs.existsSync(userDataDir)) {
+            results.push({ profileId, profileName: profile.name, error: 'Profile folder not found' });
+            continue;
+        }
+
+        let ctx;
+        try {
+            const launchOptions = { headless: true, args: ['--no-startup-window'] };
+            if (profile.proxy && profile.use_proxy !== 0) {
+                const proxyConfig = parseProxy(profile.proxy);
+                if (proxyConfig) launchOptions.proxy = proxyConfig;
+            }
+            ctx = await chromium.launchPersistentContext(userDataDir, launchOptions);
+
+            const allCookies = await ctx.cookies();
+            const keptCookies = allCookies.filter(c =>
+                !c.domain.includes('tiktok.com') || TIKTOK_SESSION_COOKIE_NAMES.has(c.name)
+            );
+            const removedCount = allCookies.length - keptCookies.length;
+
+            await ctx.clearCookies();
+            if (keptCookies.length > 0) {
+                const cleaned = keptCookies.map(c => {
+                    const clean = { ...c };
+                    if (typeof clean.expires === 'number') clean.expires = Math.round(clean.expires);
+                    if (clean.sameSite && !['Lax', 'Strict', 'None'].includes(clean.sameSite)) delete clean.sameSite;
+                    return clean;
+                });
+                await ctx.addCookies(cleaned);
+            }
+
+            const page = await ctx.newPage();
+            await page.goto('https://www.tiktok.com', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            const storageCleared = await page.evaluate(async () => {
+                try {
+                    localStorage.clear();
+                    sessionStorage.clear();
+                    if (window.indexedDB && indexedDB.databases) {
+                        const dbs = await indexedDB.databases();
+                        for (const d of dbs) {
+                            if (d.name) indexedDB.deleteDatabase(d.name);
+                        }
+                    }
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }).catch(() => false);
+            await page.close().catch(() => {});
+
+            await ctx.close();
+            ctx = null;
+
+            console.log(`[ResetDeviceId] ${profile.name}: removed ${removedCount} device cookie(s), kept ${keptCookies.length} session cookie(s), storage cleared: ${storageCleared}`);
+            results.push({
+                profileId,
+                profileName: profile.name,
+                removedCookies: removedCount,
+                keptCookies: keptCookies.length,
+                storageCleared,
+            });
+        } catch (err) {
+            if (ctx) await ctx.close().catch(() => {});
+            console.error(`[ResetDeviceId] Error for ${profile.name}: ${err.message}`);
+            results.push({ profileId, profileName: profile.name, error: err.message });
+        }
+    }
+
+    res.json({ success: true, results });
+});
+
 // POST /api/system/clear-debug — Xóa debug PNG + truncate automation.log để giải phóng dung lượng
 app.post('/api/system/clear-debug', (req, res) => {
     try {

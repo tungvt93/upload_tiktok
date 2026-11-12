@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Download,
   Trash2,
+  Fingerprint,
   Bug,
   LogIn,
   BarChart2,
@@ -51,6 +52,7 @@ const ProfilesView = ({
   startBulkLogin,
   openStatsModal,
   clearTrash,
+  resetDeviceId,
   clearDebugFiles,
   isExportingJson = false,
   handleExportProfilesJson,
@@ -212,6 +214,15 @@ const ProfilesView = ({
               color="var(--status-warn)"
               bg="rgba(245, 158, 11, 0.08)"
               border="rgba(245, 158, 11, 0.25)"
+            />
+            <IconActionButton
+              icon={<Fingerprint size={16} />}
+              onClick={resetDeviceId}
+              disabled={!hasSelection}
+              title={hasSelection ? 'Reset Device ID - xóa cookie thiết bị TikTok + localStorage/IndexedDB, giữ session đăng nhập' : 'Tick checkbox trên từng profile cần reset device ID'}
+              color="#EC4899"
+              bg="rgba(236, 72, 153, 0.08)"
+              border="rgba(236, 72, 153, 0.25)"
             />
             <IconActionButton
               icon={<Bug size={16} />}
