@@ -40,7 +40,7 @@ import {
 } from './stats-store.js';
 import { runStatsForProfile } from './stats-automation.mjs';
 import { buildBrowserLaunchOptions, launchProfileBrowser } from './browser-launch.js';
-import { resolveKernelExecutable, readKernelVersion } from './kernel-manager.js';
+import { resolveKernelExecutable, readKernelVersion, listKernels } from './kernel-manager.js';
 import { alignToKernel, validateFingerprint } from './fingerprint.js';
 import { resolveDouyinVideoUrls, isDouyinVideoUrl, isDouyinNoteUrl, extractDouyinVideoId } from './douyin-resolver.js';
 import { randomUUID } from 'node:crypto';
@@ -1637,6 +1637,14 @@ app.post('/api/system/clear-debug', (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// GET /api/kernels — custom Chromium kernels found under <repo>/kernels
+app.get('/api/kernels', (req, res) => {
+    res.json(listKernels().map((k) => ({
+        name: k.name,
+        version: readKernelVersion(k.executable)
+    })));
 });
 
 app.patch('/api/profiles/:id', (req, res) => {

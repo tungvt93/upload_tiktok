@@ -960,6 +960,25 @@ const useProfiles = () => {
     }
   };
 
+  const updateProfileKernel = async (id, kernelPath) => {
+    if (processingRef.current.has(id)) return;
+    const value = kernelPath || null;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, kernel_path: value } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { kernel_path: value || '' });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
   const resetProfileFingerprint = async (id) => {
     if (processingRef.current.has(id)) return;
     processingRef.current.add(id);
@@ -1408,6 +1427,7 @@ const useProfiles = () => {
     updateProfileNeedContentCheck,
     updateProfileUseFingerprint,
     updateProfileUsePatchright,
+    updateProfileKernel,
     resetProfileFingerprint,
     updateProfileAutoIncrementSchedule,
     updateProfileScheduleInterval,
