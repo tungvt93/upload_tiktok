@@ -40,6 +40,22 @@ export function resolveKernelExecutable(kernelPath, baseDir = KERNELS_DIR) {
     return null;
 }
 
+/**
+ * Version of a kernel, read from the "<version>.manifest" file Chrome ships next
+ * to chrome.exe (e.g. "157.0.8103.38.manifest"). Returns null when absent.
+ */
+export function readKernelVersion(executablePath) {
+    if (!executablePath) return null;
+    try {
+        const dir = path.dirname(executablePath);
+        for (const name of fs.readdirSync(dir)) {
+            const m = /^(\d+\.\d+\.\d+\.\d+)\.manifest$/i.exec(name);
+            if (m) return m[1];
+        }
+    } catch { /* unreadable dir */ }
+    return null;
+}
+
 /** Kernel folders available under baseDir (those that contain chrome.exe). */
 export function listKernels(baseDir = KERNELS_DIR) {
     if (!isDir(baseDir)) return [];

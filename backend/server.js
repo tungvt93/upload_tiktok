@@ -40,6 +40,8 @@ import {
 } from './stats-store.js';
 import { runStatsForProfile } from './stats-automation.mjs';
 import { buildBrowserLaunchOptions, launchProfileBrowser } from './browser-launch.js';
+import { resolveKernelExecutable, readKernelVersion } from './kernel-manager.js';
+import { alignToKernel, validateFingerprint } from './fingerprint.js';
 import { resolveDouyinVideoUrls, isDouyinVideoUrl, isDouyinNoteUrl, extractDouyinVideoId } from './douyin-resolver.js';
 import { randomUUID } from 'node:crypto';
 import { exportAllProfiles } from '../export_profiles.js';
@@ -375,6 +377,23 @@ async function applyProfileFingerprint(browserContext, profile) {
         if (!profile || profile.use_fingerprint === 0) return;
         const fpData = getOrGenerateFingerprint(profile.id);
         if (!fpData) return;
+
+        // Custom-kernel profiles: the kernel owns the fingerprint, so do NOT layer JS
+        // overrides on top. Align the stored fingerprint to the kernel's Chrome version
+        // (a generator UA of Chrome 121 on a 157 kernel is a giveaway), validate, persist.
+        const kernelExe = resolveKernelExecutable(profile.kernel_path);
+        if (kernelExe) {
+            const kernelVersion = readKernelVersion(kernelExe);
+            const aligned = alignToKernel(fpData, kernelVersion);
+            const { errors, warnings } = validateFingerprint(aligned, { kernelVersion });
+            if (JSON.stringify(aligned) !== JSON.stringify(fpData)) {
+                db.prepare('UPDATE profiles SET fingerprint = ? WHERE id = ?').run(JSON.stringify(aligned), profile.id);
+            }
+            for (const e of errors) console.error(`[${profile.name}] Fingerprint ERROR: ${e}`);
+            for (const w of warnings) console.warn(`[${profile.name}] Fingerprint warning: ${w}`);
+            console.log(`[${profile.name}] Kernel profile (${kernelVersion || 'unknown version'}): JS fingerprint injection skipped`);
+            return;
+        }
 
         const fp = fpData.fingerprint || fpData;
         const userAgent = fp.navigator?.userAgent;
