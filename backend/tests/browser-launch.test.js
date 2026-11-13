@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { resolveKernelExecutable, listKernels } from '../kernel-manager.js';
 
 import {
     STEALTH_IGNORE_DEFAULT_ARGS,
@@ -98,6 +102,54 @@ test('resolveBrowserEngine: patchright runs on installed Chrome', () => {
         options: { headless: false, channel: 'chrome' }
     });
     assert.equal(base.channel, undefined);
+});
+
+test('resolveBrowserEngine: valid kernel_path → kernel engine with executablePath, no channel', () => {
+    const resolveKernel = (p) => (p === 'k157' ? 'D:/kernels/k157/chrome.exe' : null);
+    const { engine, options } = resolveBrowserEngine(
+        { kernel_path: 'k157', use_patchright: 0 }, { headless: false }, resolveKernel
+    );
+    assert.equal(engine, 'kernel');
+    assert.equal(options.executablePath, 'D:/kernels/k157/chrome.exe');
+    assert.equal(options.channel, undefined);
+});
+
+test('resolveBrowserEngine: missing kernel falls back to the profile default engine', () => {
+    const none = () => null;
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+        assert.equal(resolveBrowserEngine({ kernel_path: 'gone', use_patchright: 0 }, {}, none).engine, 'playwright');
+        assert.equal(resolveBrowserEngine({ kernel_path: 'gone', use_patchright: 1 }, {}, none).engine, 'patchright');
+    } finally {
+        console.warn = warn;
+    }
+});
+
+test('resolveBrowserEngine: blank kernel_path is ignored', () => {
+    let called = false;
+    const spy = () => { called = true; return 'x'; };
+    assert.equal(resolveBrowserEngine({ kernel_path: '  ' }, {}, spy).engine, 'playwright');
+    assert.equal(called, false);
+});
+
+test('resolveKernelExecutable: folder name, absolute folder, direct exe, missing', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'kernels-'));
+    try {
+        const dir = path.join(base, 'chromium-157');
+        fs.mkdirSync(dir);
+        const exe = path.join(dir, process.platform === 'win32' ? 'chrome.exe' : 'chrome');
+        fs.writeFileSync(exe, '');
+        assert.equal(resolveKernelExecutable('chromium-157', base), exe);
+        assert.equal(resolveKernelExecutable(dir, base), exe);
+        assert.equal(resolveKernelExecutable(exe, base), exe);
+        assert.equal(resolveKernelExecutable('nope', base), null);
+        assert.equal(resolveKernelExecutable('', base), null);
+        assert.equal(resolveKernelExecutable(null, base), null);
+        assert.deepEqual(listKernels(base), [{ name: 'chromium-157', executable: exe }]);
+    } finally {
+        fs.rmSync(base, { recursive: true, force: true });
+    }
 });
 
 test('resolveBrowserEngine: playwright keeps bundled Chromium', () => {

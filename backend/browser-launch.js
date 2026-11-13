@@ -26,6 +26,7 @@ export const STEALTH_IGNORE_DEFAULT_ARGS = Object.freeze([
 //   --disable-search-engine-choice-screen         → EU search-engine chooser on first load
 
 import { chromium as playwrightChromium } from 'playwright';
+import { resolveKernelExecutable } from './kernel-manager.js';
 
 const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
 
@@ -82,10 +83,20 @@ export function usesPatchright(profile) {
 
 /**
  * Pick the browser engine for a profile.
- * Patchright always runs on the installed Google Chrome (`channel: 'chrome'`);
- * Playwright keeps its bundled Chromium.
+ * - A profile with a valid kernel_path runs on that custom Chromium via Patchright.
+ *   If the kernel is missing it logs a warning and falls back to the options below,
+ *   so a bad path never stops uploads.
+ * - Patchright otherwise runs on the installed Google Chrome (`channel: 'chrome'`);
+ * - Playwright keeps its bundled Chromium.
  */
-export function resolveBrowserEngine(profile, options = {}) {
+export function resolveBrowserEngine(profile, options = {}, resolveKernel = resolveKernelExecutable) {
+    if (profile && typeof profile.kernel_path === 'string' && profile.kernel_path.trim()) {
+        const executablePath = resolveKernel(profile.kernel_path);
+        if (executablePath) {
+            return { engine: 'kernel', options: { ...options, executablePath } };
+        }
+        console.warn(`[browser-launch] kernel not found: "${profile.kernel_path}" — falling back to default engine`);
+    }
     if (usesPatchright(profile)) {
         return { engine: 'patchright', options: { ...options, channel: 'chrome' } };
     }
@@ -98,7 +109,7 @@ export function resolveBrowserEngine(profile, options = {}) {
  */
 export async function launchProfileBrowser(userDataDir, profile, browserOptions) {
     const { engine, options } = resolveBrowserEngine(profile, browserOptions);
-    const chromium = engine === 'patchright'
+    const chromium = (engine === 'patchright' || engine === 'kernel')
         ? (await import('patchright')).chromium
         : playwrightChromium;
     return chromium.launchPersistentContext(userDataDir, options);

@@ -338,6 +338,11 @@ try {
         db.exec('ALTER TABLE profiles ADD COLUMN use_patchright INTEGER DEFAULT 0;');
         console.log('Added use_patchright column to profiles table');
     }
+    const hasKernelPath = tableInfo.some((col) => col.name === 'kernel_path');
+    if (!hasKernelPath) {
+        db.exec('ALTER TABLE profiles ADD COLUMN kernel_path TEXT;');
+        console.log('Added kernel_path column to profiles table');
+    }
 } catch (err) {
     console.error('Migration error (fingerprint columns):', err);
 }
@@ -1732,6 +1737,10 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = req.body.use_patchright ? 1 : 0;
         db.prepare('UPDATE profiles SET use_patchright = ? WHERE id = ?').run(val, profileId);
     }
+    if (req.body.kernel_path !== undefined) {
+        const val = String(req.body.kernel_path || '').trim() || null;
+        db.prepare('UPDATE profiles SET kernel_path = ? WHERE id = ?').run(val, profileId);
+    }
 
     res.json({ success: true });
 });
@@ -1747,7 +1756,7 @@ app.post('/api/profiles/bulk-update', (req, res) => {
         'group_id', 'proxy', 'use_proxy', 'is_scheduled', 'auto_increment_schedule',
         'schedule_interval', 'set_music', 'upload_count', 'channel_ids', 'needs_render',
         'remove_title', 'need_content_check', 'render_video_long', 'render_concat_video',
-        'cookies', 'music_search', 'use_fingerprint', 'use_patchright'
+        'cookies', 'music_search', 'use_fingerprint', 'use_patchright', 'kernel_path'
     ];
 
     const booleanFields = [

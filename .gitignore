@@ -13,3 +13,6 @@ build/
 docs
 uploads/
 xuat_*.json
+
+# Custom Chromium kernels (large binaries)
+kernels/
