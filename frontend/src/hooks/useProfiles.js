@@ -651,10 +651,19 @@ const useProfiles = () => {
 
   const handleExportProfilesJson = async () => {
     if (isExportingJson) return;
+    if (selectedForRun.size === 0) {
+      setMessage({ type: 'error', text: 'Vui lòng tick chọn profile cần xuất JSON' });
+      setTimeout(() => setMessage(null), 5000);
+      return;
+    }
     setIsExportingJson(true);
     setMessage({ type: 'info', text: 'Đang xuất Profiles + Cookies sang JSON...' });
     try {
-      const res = await axios.get('/api/profiles/export-cookies-json', { responseType: 'blob' });
+      const res = await axios.post(
+        '/api/profiles/export-cookies-json',
+        { profileIds: Array.from(selectedForRun) },
+        { responseType: 'blob' }
+      );
       const disposition = res.headers['content-disposition'] || '';
       const match = disposition.match(/filename="?([^"]+)"?/);
       const filename = match ? match[1] : `tiktok_profiles_export_${Date.now()}.json`;

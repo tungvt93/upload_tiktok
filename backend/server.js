@@ -671,9 +671,18 @@ async function injectProfileCookies(browser, profile) {
 }
 
 // API Routes
-app.get('/api/profiles/export-cookies-json', async (req, res) => {
+// Export only the selected profiles to the tiktok-at JSON format.
+// Body: { profileIds: string[] } — at least one id is required.
+app.post('/api/profiles/export-cookies-json', async (req, res) => {
     try {
-        const exportList = await exportAllProfiles();
+        const profileIds = Array.isArray(req.body?.profileIds) ? req.body.profileIds.filter((id) => typeof id === 'string') : [];
+        if (profileIds.length === 0) {
+            return res.status(400).json({ error: 'Vui lòng chọn ít nhất 1 profile để xuất' });
+        }
+        const exportList = await exportAllProfiles(undefined, { profileIds });
+        if (exportList.length === 0) {
+            return res.status(400).json({ error: 'Không tìm thấy profile nào phù hợp' });
+        }
         const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
         const filename = `tiktok_profiles_export_${exportList.length}profiles_${dateStr}.json`;
 

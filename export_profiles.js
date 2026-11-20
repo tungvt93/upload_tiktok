@@ -77,7 +77,8 @@ async function extractCookiesFromDisk(profileName) {
     }
 }
 
-export async function exportAllProfiles(outputPath) {
+// profileIds: when given, only these DB profiles are exported (disk-only folders are skipped).
+export async function exportAllProfiles(outputPath, { profileIds = null } = {}) {
     console.log('====================================================');
     console.log('🚀 BẮT ĐẦU TRÍCH XUẤT PROFILES & COOKIES TỪ TOOL CŨ');
     console.log('====================================================\n');
@@ -116,8 +117,13 @@ export async function exportAllProfiles(outputPath) {
     }
 
     // Quét thêm các thư mục trong profilesDir nếu chưa có trong DB
+    if (profileIds) {
+        const wanted = new Set(profileIds);
+        profilesFromDb = profilesFromDb.filter(p => wanted.has(p.id));
+    }
+
     const knownNames = new Set(profilesFromDb.map(p => p.name.toLowerCase()));
-    if (fs.existsSync(profilesDir)) {
+    if (!profileIds && fs.existsSync(profilesDir)) {
         const diskEntries = fs.readdirSync(profilesDir, { withFileTypes: true });
         for (const entry of diskEntries) {
             if (entry.isDirectory() && !entry.name.startsWith('.')) {
