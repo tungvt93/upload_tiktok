@@ -33,7 +33,7 @@ const ImportCsvModal = ({
             <div>
               <h3 className="modal-title">Import CSV Profiles</h3>
               <p className="modal-subtitle">
-                Tạo hàng loạt profile từ file CSV
+                Tạo hàng loạt profile từ file JSON (kèm cookie) hoặc CSV
               </p>
             </div>
             <button
@@ -57,14 +57,17 @@ const ImportCsvModal = ({
             }}>
               <Upload size={28} color="var(--text-muted)" style={{ margin: '0 auto 12px', opacity: 0.5 }} />
               <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
-                File CSV cần có các cột:
+                File JSON (version 3) có mảng <code>profiles</code>, mỗi profile gồm:
               </p>
-              <p style={{ fontSize: '0.75rem', color: 'var(--accent)', fontFamily: 'monospace', marginBottom: '16px' }}>
-                profile_name, group_name, account_id, pass, email, pass_email, cookies, music_search
+              <p style={{ fontSize: '0.75rem', color: 'var(--accent)', fontFamily: 'monospace', marginBottom: '8px' }}>
+                name, groupName, username, password, email, emailPassword, proxy, cookies[], musicEnabled, contentCheckEnabled, scheduleIntervalMin
+              </p>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
+                Hoặc CSV với các cột: profile_name, group_name, account_id, pass, email, pass_email, cookies, music_search
               </p>
               <input
                 type="file"
-                accept=".csv"
+                accept=".json,.csv,application/json,text/csv"
                 onChange={handleFileSelect}
                 disabled={isImporting}
                 className="input"

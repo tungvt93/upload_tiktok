@@ -284,13 +284,17 @@ const useProfiles = () => {
 
   const handleImportCsv = async () => {
     if (!importCsvText.trim()) {
-      setMessage({ type: 'error', text: 'Vui lòng chọn file CSV trước' });
+      setMessage({ type: 'error', text: 'Vui lòng chọn file CSV hoặc JSON trước' });
       return;
     }
+    // JSON export (version 3, with cookies) or CSV — chosen by file extension / content.
+    const isJson = /\.json$/i.test(importFileName || '') || importCsvText.trimStart().startsWith('{');
     setIsImporting(true);
     setImportResults(null);
     try {
-      const res = await axios.post('/api/profiles/import-csv', { csvText: importCsvText });
+      const res = isJson
+        ? await axios.post('/api/profiles/import-json', { jsonText: importCsvText })
+        : await axios.post('/api/profiles/import-csv', { csvText: importCsvText });
       setImportResults(res.data);
       await fetchData();
       setMessage({
@@ -299,7 +303,7 @@ const useProfiles = () => {
       });
       setTimeout(() => setMessage(null), 5000);
     } catch (err) {
-      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi import CSV' });
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi import file' });
       setImportResults(null);
     } finally {
       setIsImporting(false);

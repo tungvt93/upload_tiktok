@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
+import { parseProfilesJson, importProfilesJson } from './profile-json-import.js';
 import { FingerprintGenerator } from 'fingerprint-generator';
 import { FingerprintInjector } from 'fingerprint-injector';
 import { exec, spawn, execSync, execFileSync } from 'child_process';
@@ -948,6 +949,29 @@ app.post('/api/profiles/import-csv', (req, res) => {
     } catch (err) {
         console.error('CSV import error:', err);
         res.status(500).json({ error: `Failed to import CSV: ${err.message}` });
+    }
+});
+
+// Import profiles from the JSON export format (version 3, incl. cookies).
+// Body: { jsonText: string } — see backend/profile-json-import.js for the mapping.
+app.post('/api/profiles/import-json', (req, res) => {
+    const { jsonText } = req.body;
+    if (!jsonText || typeof jsonText !== 'string') {
+        return res.status(400).json({ error: 'jsonText is required' });
+    }
+
+    try {
+        const data = parseProfilesJson(jsonText);
+        if (data.profiles.length === 0) {
+            return res.status(400).json({ error: 'File JSON không có profile nào' });
+        }
+        res.json(importProfilesJson(db, data, UPLOADS_DIR));
+    } catch (err) {
+        if (err.message.startsWith('File JSON')) {
+            return res.status(400).json({ error: err.message });
+        }
+        console.error('JSON import error:', err);
+        res.status(500).json({ error: `Failed to import JSON: ${err.message}` });
     }
 });
 
