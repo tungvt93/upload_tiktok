@@ -708,11 +708,14 @@ async function readCookiesFromBrowserProfile(profile) {
     }
 }
 
-// Export profiles to the same JSON format the import accepts (version 3).
-// Body: { profileIds?: string[] } — empty/omitted exports every profile.
+// Export the selected profiles to the same JSON format the import accepts (version 3).
+// Body: { profileIds: string[] } — at least one id is required.
 app.post('/api/profiles/export-import-json', async (req, res) => {
     try {
-        const profileIds = Array.isArray(req.body?.profileIds) ? req.body.profileIds : [];
+        const profileIds = Array.isArray(req.body?.profileIds) ? req.body.profileIds.filter((id) => typeof id === 'string') : [];
+        if (profileIds.length === 0) {
+            return res.status(400).json({ error: 'Vui lòng chọn ít nhất 1 profile để xuất' });
+        }
         const isBusy = (row) => runningProfiles.has(row.id) || processingProfiles.has(row.id) || manualBrowsers.has(row.id) || avatarChangingProfiles.has(row.id);
 
         const { data, stats } = await buildProfilesJsonExport({

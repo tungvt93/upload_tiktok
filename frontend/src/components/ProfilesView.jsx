@@ -237,12 +237,12 @@ const ProfilesView = ({
             <IconActionButton
               icon={<FileJson size={16} />}
               onClick={handleExportImportJson}
-              disabled={isExportingImportJson}
+              disabled={!hasSelection || isExportingImportJson}
               title={isExportingImportJson
                 ? 'Đang xuất JSON...'
                 : (hasSelection
                   ? 'Xuất các profile đã chọn sang JSON (định dạng để import lại)'
-                  : 'Xuất toàn bộ profile sang JSON (định dạng để import lại). Tick để chỉ xuất một số profile')}
+                  : 'Tick checkbox trên các profile cần xuất JSON')}
               color="#F59E0B"
               bg="rgba(245, 158, 11, 0.08)"
               border="rgba(245, 158, 11, 0.25)"

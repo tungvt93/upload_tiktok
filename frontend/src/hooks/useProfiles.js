@@ -600,10 +600,14 @@ const useProfiles = () => {
     setTimeout(() => setMessage(null), 5000);
   };
 
-  // Export in the same version-3 JSON format the import accepts.
-  // Exports the ticked profiles, or every profile when none is ticked.
+  // Export the ticked profiles in the same version-3 JSON format the import accepts.
   const handleExportImportJson = async () => {
     if (isExportingImportJson) return;
+    if (selectedForRun.size === 0) {
+      setMessage({ type: 'error', text: 'Vui lòng tick chọn profile cần xuất JSON' });
+      setTimeout(() => setMessage(null), 5000);
+      return;
+    }
     setIsExportingImportJson(true);
     setMessage({ type: 'info', text: 'Đang xuất JSON (cookie lấy từ DB, nếu không có sẽ đọc từ trình duyệt)...' });
     try {
