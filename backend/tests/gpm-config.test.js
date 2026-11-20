@@ -183,3 +183,17 @@ test('prepareGpmKernelProfile adds GPM args and a real (non-emulated) viewport',
     await prepareGpmKernelProfile('kernel', explicit, tmp(), { name: 'x' });
     assert.deepEqual(explicit.viewport, { width: 800, height: 600 });
 });
+
+test('GPMLoginGlobal cores (ChromiumCore_v142) are listed and found by either name', async () => {
+    const { listKernels, resolveKernelExecutable } = await import('../kernel-manager.js');
+    const base = tmp();
+    const gpm = tmp();
+    const core = path.join(gpm, 'ChromiumCore_v142');
+    fs.mkdirSync(core);
+    fs.writeFileSync(path.join(core, 'chrome.exe'), '');
+    assert.deepEqual(listKernels(base, [gpm]).map((k) => k.name), ['ChromiumCore_v142']);
+    assert.equal(resolveKernelExecutable('ChromiumCore_v142', base, [gpm]), path.join(core, 'chrome.exe'));
+    // a profile saved on a GPMLogin machine still resolves on a GPMLoginGlobal one
+    assert.equal(resolveKernelExecutable('gpm_browser_chromium_core_142', base, [gpm]), path.join(core, 'chrome.exe'));
+    assert.equal(resolveKernelExecutable('gpm_browser_chromium_core_143', base, [gpm]), null);
+});

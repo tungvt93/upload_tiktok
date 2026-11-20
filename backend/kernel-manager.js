@@ -14,13 +14,19 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const KERNELS_DIR = path.join(__dirname, '..', 'kernels');
-// GPM Login keeps its Chromium cores here (gpm_browser_chromium_core_NNN/chrome.exe).
-// They are offered as kernels too, so a profile can run on the exact GPM core.
-export const GPM_CORES_DIR = process.env.GPM_BROWSER_DIR
-    || path.join(process.env.LOCALAPPDATA || '', 'Programs', 'GPMLogin', 'gpm_browser');
-const GPM_CORE_RE = /^gpm_browser_chromium_core_\d+$/i;
+// GPM Login keeps its Chromium cores here and they are offered as kernels too, so a
+// profile can run on the exact GPM core. Two layouts exist:
+//   GPMLogin        ...\Programs\GPMLogin\gpm_browser\gpm_browser_chromium_core_142\chrome.exe
+//   GPMLoginGlobal  ...\Programs\GPMLoginGlobal\Browser\ChromiumCore_v142\chrome.exe
+// GPM_BROWSER_DIR (the folder that holds the core folders) overrides the defaults.
+const PROGRAMS_DIR = path.join(process.env.LOCALAPPDATA || '', 'Programs');
+export const GPM_CORES_DIRS = process.env.GPM_BROWSER_DIR
+    ? [process.env.GPM_BROWSER_DIR]
+    : [path.join(PROGRAMS_DIR, 'GPMLogin', 'gpm_browser'), path.join(PROGRAMS_DIR, 'GPMLoginGlobal', 'Browser')];
+export const GPM_CORES_DIR = GPM_CORES_DIRS[0];
+const GPM_CORE_RE = /^(?:gpm_browser_chromium_core_|ChromiumCore_v)(\d+)$/i;
 // Only the default kernels dir also searches the GPM install; a custom baseDir (tests) stays isolated.
-const defaultExtra = (baseDir) => (baseDir === KERNELS_DIR ? [GPM_CORES_DIR] : []);
+const defaultExtra = (baseDir) => (baseDir === KERNELS_DIR ? GPM_CORES_DIRS : []);
 const EXE_NAME = process.platform === 'win32' ? 'chrome.exe' : 'chrome';
 
 function isFile(p) {
@@ -38,9 +44,20 @@ export function resolveKernelExecutable(kernelPath, baseDir = KERNELS_DIR, extra
     const raw = typeof kernelPath === 'string' ? kernelPath.trim() : '';
     if (!raw) return null;
 
-    const candidates = path.isAbsolute(raw)
-        ? [raw]
-        : [path.join(baseDir, raw), ...extraDirs.filter((d) => GPM_CORE_RE.test(raw)).map((d) => path.join(d, raw))];
+    const candidates = path.isAbsolute(raw) ? [raw] : [path.join(baseDir, raw)];
+    // A GPM core is matched by major version, so a profile saved as
+    // "gpm_browser_chromium_core_142" also finds "ChromiumCore_v142" (GPMLoginGlobal) and back.
+    const core = path.isAbsolute(raw) ? null : GPM_CORE_RE.exec(raw);
+    if (core) {
+        for (const d of extraDirs) {
+            candidates.push(path.join(d, raw));
+            if (!isDir(d)) continue;
+            for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+                const m = e.isDirectory() && GPM_CORE_RE.exec(e.name);
+                if (m && m[1] === core[1]) candidates.push(path.join(d, e.name));
+            }
+        }
+    }
     for (const target of candidates) {
         if (isFile(target)) return target;
         if (isDir(target)) {
