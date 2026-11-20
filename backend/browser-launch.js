@@ -26,7 +26,9 @@ export const STEALTH_IGNORE_DEFAULT_ARGS = Object.freeze([
 //   --disable-search-engine-choice-screen         → EU search-engine chooser on first load
 
 import { chromium as playwrightChromium } from 'playwright';
-import { resolveKernelExecutable } from './kernel-manager.js';
+import { resolveKernelExecutable, readKernelVersion } from './kernel-manager.js';
+import { isGpmKernel, ensureGpmConfig, validateGpmConfig, applyProxyGeo, writeGpmConfig, gpmLaunchArgs } from './gpm-config.js';
+import { resolveProxyGeo } from './proxy-geo.js';
 
 const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
 
@@ -104,11 +106,48 @@ export function resolveBrowserEngine(profile, options = {}, resolveKernel = reso
 }
 
 /**
+ * A GPM Chromium core reads its fingerprint from <user-data-dir>/Default/GPMSoft/gpm_fg.dat.
+ * Create it on first launch (kept afterwards so the profile identity stays stable).
+ * Never throws: a failure here must not stop uploads.
+ */
+export async function prepareGpmKernelProfile(engine, options, userDataDir, profile, deps = {}) {
+    if (engine !== 'kernel' || !isGpmKernel(options.executablePath)) return null;
+    try {
+        const kernelVersion = readKernelVersion(options.executablePath);
+        const { created, config } = ensureGpmConfig(userDataDir, { name: profile?.name, kernelVersion });
+        const tag = `[${profile?.name ?? 'profile'}]`;
+        // Match the GPM launcher: same switches, and a real window (no 1280x720 viewport
+        // emulation) so screen / innerWidth / outerWidth agree like in GPM.
+        options.args = [...(options.args || []), ...gpmLaunchArgs(userDataDir)];
+        if (options.viewport === undefined) options.viewport = null;
+        if (created) console.log(`${tag} GPM core ${kernelVersion || ''}: created gpm_fg.dat`);
+        // Align timezone / geolocation / WebRTC IP with the proxy exit (cached per proxy).
+        if (options.proxy) {
+            const geo = await resolveProxyGeo(userDataDir, options.proxy, deps);
+            if (geo && applyProxyGeo(config, geo)) {
+                writeGpmConfig(userDataDir, config);
+                console.log(`${tag} GPM config aligned to proxy: ${geo.timezone} (${geo.country || '?'}) ${geo.ip || ''}`);
+            } else if (!geo) {
+                console.warn(`${tag} proxy geo lookup failed — timezone/geo left as is`);
+            }
+        }
+        const { errors, warnings } = validateGpmConfig(config, { kernelVersion });
+        errors.forEach((e) => console.error(`${tag} GPM config ERROR: ${e}`));
+        warnings.forEach((w) => console.warn(`${tag} GPM config warning: ${w}`));
+        return config;
+    } catch (err) {
+        console.warn(`[browser-launch] could not prepare GPM config: ${err.message}`);
+        return null;
+    }
+}
+
+/**
  * launchPersistentContext() on the engine selected for this profile.
  * Patchright is imported on first use so Playwright-only profiles never load it.
  */
 export async function launchProfileBrowser(userDataDir, profile, browserOptions) {
     const { engine, options } = resolveBrowserEngine(profile, browserOptions);
+    await prepareGpmKernelProfile(engine, options, userDataDir, profile);
     const chromium = (engine === 'patchright' || engine === 'kernel')
         ? (await import('patchright')).chromium
         : playwrightChromium;

@@ -551,7 +551,7 @@ const EditProfileModal = ({
                   ))}
                 </select>
                 <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '6px' }}>
-                  Đặt kernel trong thư mục <code>kernels/</code>. Khi chọn, profile chạy bằng kernel này (ưu tiên hơn tuỳ chọn Patchright); nếu kernel không tìm thấy sẽ tự quay về engine mặc định. Áp dụng từ lần mở trình duyệt tiếp theo.
+                  Đặt kernel trong thư mục <code>kernels/</code>, hoặc chọn core GPM (<code>gpm_browser_chromium_core_*</code>, tự nhận từ GPM Login; tool sẽ tạo cấu hình fingerprint GPM cho profile). Khi chọn, profile chạy bằng kernel này (ưu tiên hơn tuỳ chọn Patchright); nếu kernel không tìm thấy sẽ tự quay về engine mặc định. Áp dụng từ lần mở trình duyệt tiếp theo.
                 </span>
               </div>
             </div>
