@@ -53,6 +53,7 @@ const useProfiles = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportResults, setExportResults] = useState(null);
   const [isExportingJson, setIsExportingJson] = useState(false);
+  const [isExportingImportJson, setIsExportingImportJson] = useState(false);
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
   const [statsProfileIds,  setStatsProfileIds]  = useState([]);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
@@ -284,13 +285,17 @@ const useProfiles = () => {
 
   const handleImportCsv = async () => {
     if (!importCsvText.trim()) {
-      setMessage({ type: 'error', text: 'Vui lòng chọn file CSV trước' });
+      setMessage({ type: 'error', text: 'Vui lòng chọn file CSV hoặc JSON trước' });
       return;
     }
+    // JSON export (version 3, with cookies) or CSV — chosen by file extension / content.
+    const isJson = /\.json$/i.test(importFileName || '') || importCsvText.trimStart().startsWith('{');
     setIsImporting(true);
     setImportResults(null);
     try {
-      const res = await axios.post('/api/profiles/import-csv', { csvText: importCsvText });
+      const res = isJson
+        ? await axios.post('/api/profiles/import-json', { jsonText: importCsvText })
+        : await axios.post('/api/profiles/import-csv', { csvText: importCsvText });
       setImportResults(res.data);
       await fetchData();
       setMessage({
@@ -299,7 +304,7 @@ const useProfiles = () => {
       });
       setTimeout(() => setMessage(null), 5000);
     } catch (err) {
-      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi import CSV' });
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi import file' });
       setImportResults(null);
     } finally {
       setIsImporting(false);
@@ -593,6 +598,51 @@ const useProfiles = () => {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi dọn rác' });
     }
     setTimeout(() => setMessage(null), 5000);
+  };
+
+  // Export in the same version-3 JSON format the import accepts.
+  // Exports the ticked profiles, or every profile when none is ticked.
+  const handleExportImportJson = async () => {
+    if (isExportingImportJson) return;
+    setIsExportingImportJson(true);
+    setMessage({ type: 'info', text: 'Đang xuất JSON (cookie lấy từ DB, nếu không có sẽ đọc từ trình duyệt)...' });
+    try {
+      const res = await axios.post(
+        '/api/profiles/export-import-json',
+        { profileIds: Array.from(selectedForRun) },
+        { responseType: 'blob' }
+      );
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `tiktok-profiles-export-${Date.now()}.json`;
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      let stats = null;
+      try {
+        const raw = res.headers['x-export-stats'];
+        stats = raw ? JSON.parse(decodeURIComponent(raw)) : null;
+      } catch { stats = null; }
+      const detail = stats
+        ? ` (cookie DB: ${stats.cookiesFromDb}, từ trình duyệt: ${stats.cookiesFromBrowser}, không có cookie: ${stats.noCookies})`
+        : '';
+      setMessage({ type: 'success', text: `Đã xuất ${filename}${detail}` });
+    } catch (err) {
+      let text = err.response?.data?.error || 'Lỗi khi xuất JSON';
+      if (err.response?.data instanceof Blob) {
+        try { text = JSON.parse(await err.response.data.text()).error || text; } catch { /* keep default */ }
+      }
+      setMessage({ type: 'error', text });
+    } finally {
+      setIsExportingImportJson(false);
+      setTimeout(() => setMessage(null), 8000);
+    }
   };
 
   const handleExportProfilesJson = async () => {
@@ -950,6 +1000,25 @@ const useProfiles = () => {
     processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { use_patchright: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const updateProfileKernel = async (id, kernelPath) => {
+    if (processingRef.current.has(id)) return;
+    const value = kernelPath || null;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, kernel_path: value } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { kernel_path: value || '' });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
@@ -1383,6 +1452,8 @@ const useProfiles = () => {
     clearTrash,
     clearDebugFiles,
     handleExportProfilesJson,
+    handleExportImportJson,
+    isExportingImportJson,
     startBulkEngage,
     stopBulkEngage,
     isStatsModalOpen,
@@ -1408,6 +1479,7 @@ const useProfiles = () => {
     updateProfileNeedContentCheck,
     updateProfileUseFingerprint,
     updateProfileUsePatchright,
+    updateProfileKernel,
     resetProfileFingerprint,
     updateProfileAutoIncrementSchedule,
     updateProfileScheduleInterval,

@@ -1,0 +1,169 @@
+{
+  "gpm": {
+    "name": "",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "timezone": "",
+    "fonts": [],
+    "fonts_exclude": [],
+    "font": {
+      "mode": "real",
+      "includes": [],
+      "excludes": []
+    },
+    "screen": {
+      "height": -1,
+      "width": -1,
+      "availHeight": -1,
+      "availWidth": -1,
+      "mode": "real",
+      "maxWindowWidth": -1,
+      "maxWindowHeight": -1
+    },
+    "navigator": {
+      "mode": "noise",
+      "processorCount": 20,
+      "deviceMemory": 8,
+      "jsHeapSizeLimit": 3257273170
+    },
+    "audio": {
+      "mode": "noise",
+      "noise": -1.8259657629066917,
+      "numberInput": 1,
+      "numberOutput": 0
+    },
+    "canvas": {
+      "mode": "real",
+      "noiseGlobalAlpha": -1,
+      "noiseShadowBlur": -1,
+      "noiseShadowOffsetX": -1,
+      "noiseShadowOffsetY": -1,
+      "noiseTextX": -1,
+      "noiseTextY": -1,
+      "noiseToken": 0
+    },
+    "webgpu": {
+      "mode": "real",
+      "vendorId": 4318,
+      "deviceId": 7168
+    },
+    "clientRect": {
+      "mode": "real",
+      "noise": -1
+    },
+    "webgl": {
+      "mode": "real",
+      "webglMetaMode": "real",
+      "canvasNoise": -1,
+      "clientRectNoise": -1,
+      "uniform2fNoise": -1,
+      "uniform1Noise": -1,
+      "uniform2Noise": -1,
+      "uniform3Noise": -1,
+      "uniform4Noise": -1,
+      "readPixelsIndex": -1,
+      "readPixelsNoiseVal": -1,
+      "parameter": {
+        "SHADING_LANGUAGE_VERSION": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "VERSION": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "RENDERER": "WebKit WebGL",
+        "VENDOR": "WebKit",
+        "UNMASKED_VENDOR_WEBGL": "Google Inc. (NVIDIA)",
+        "UNMASKED_RENDERER_WEBGL": "ANGLE (NVIDIA, NVIDIA Quadro P2200 (0x00001C31) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "MAX_FRAGMENT_UNIFORM_VECTORS": 1024,
+        "MAX_3D_TEXTURE_SIZE": 2048,
+        "MAX_ARRAY_TEXTURE_LAYERS": 2048,
+        "MAX_COLOR_ATTACHMENTS": 8,
+        "MAX_COMBINED_TEXTURE_IMAGE_UNITS": 32,
+        "MAX_COMBINED_UNIFORM_BLOCKS": 24,
+        "MAX_CUBE_MAP_TEXTURE_SIZE": 16384,
+        "MAX_DRAW_BUFFERS": 8,
+        "MAX_FRAGMENT_INPUT_COMPONENTS": 120,
+        "MAX_FRAGMENT_UNIFORM_BLOCKS": 12,
+        "MAX_PROGRAM_TEXEL_OFFSET": 7,
+        "MAX_RENDERBUFFER_SIZE": 16384,
+        "MAX_SAMPLES": 8,
+        "MAX_TEXTURE_IMAGE_UNITS": 16,
+        "MAX_TEXTURE_LOD_BIAS": 2,
+        "MAX_TEXTURE_SIZE": 16384,
+        "MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS": 120,
+        "MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS": 4,
+        "MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS": 4,
+        "MAX_UNIFORM_BLOCK_SIZE": 65536,
+        "MAX_UNIFORM_BUFFER_BINDINGS": 24,
+        "MAX_VARYING_COMPONENTS": 120,
+        "MAX_VARYING_VECTORS": 30,
+        "MAX_VERTEX_ATTRIBS": 16,
+        "MAX_VERTEX_OUTPUT_COMPONENTS": 120,
+        "MAX_VERTEX_TEXTURE_IMAGE_UNITS": 16,
+        "MAX_VERTEX_UNIFORM_BLOCKS": 12,
+        "MAX_VERTEX_UNIFORM_COMPONENTS": 16380,
+        "MAX_VERTEX_UNIFORM_VECTORS": 4096,
+        "MAX_FRAGMENT_UNIFORM_COMPONENTS": 4096,
+        "MIN_PROGRAM_TEXEL_OFFSET": -8,
+        "UNIFORM_BUFFER_OFFSET_ALIGNMENT": 256,
+        "MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS": 212988,
+        "MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS": 200704,
+        "STENCIL_VALUE_MASK": 2147483647,
+        "STENCIL_WRITEMASK": 2147483647,
+        "STENCIL_BACK_VALUE_MASK": 2147483647,
+        "STENCIL_BACK_WRITEMASK": 2147483647,
+        "MAX_VIEWPORT_DIMS": [
+          32767,
+          32767
+        ],
+        "ALIASED_LINE_WIDTH_RANGE": [
+          1,
+          1
+        ],
+        "ALIASED_POINT_SIZE_RANGE": [
+          1,
+          1024
+        ]
+      }
+    },
+    "license": {
+      "key": "",
+      "machineId": "",
+      "thirdparty_key": ""
+    },
+    "proxyAuth": {
+      "autoAuth": false,
+      "username": "",
+      "password": "",
+      "support_udp_associate": false
+    },
+    "brand": {
+      "version": "142.0.7444.163"
+    },
+    "webRTC": {
+      "mode": "real",
+      "publicIP": "",
+      "stun_server": "stun:stun.12voip.com:3478",
+      "fake_in_1": true,
+      "fake_relay": true
+    },
+    "advance": {
+      "maxVertexUniform": 4472,
+      "maxFragmentUniform": 1010
+    },
+    "geo_location": {
+      "mode": "real",
+      "latitude": 0,
+      "longitude": 0,
+      "accuracy": 100,
+      "add_small_random": false
+    },
+    "password_config": {
+      "show_prompt": true,
+      "auto_save": false
+    },
+    "extension": {
+      "commandline_extension_load_with_store_extension": true
+    },
+    "overlay_icon": {
+      "short_title": "",
+      "background_color_hex": "#0d6115",
+      "force_color_hex": "#FFFFFF"
+    }
+  }
+}

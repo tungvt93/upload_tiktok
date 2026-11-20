@@ -1,4 +1,6 @@
+import axios from 'axios';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useEffect, useState } from 'react';
 import {
   Clock,
   Fingerprint,
@@ -41,12 +43,23 @@ const EditProfileModal = ({
   onUpdateRenderVideoLong,
   onUpdateUseFingerprint,
   onUpdateUsePatchright,
+  onUpdateKernel,
   onResetFingerprint,
   onSelectAvatar,
   selectedAvatarPath,
   musicSearchTerm,
   onUpdateMusicSearchTerm
 }) => {
+  const [kernels, setKernels] = useState([]);
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    axios.get('/api/kernels')
+      .then((res) => { if (!cancelled && Array.isArray(res.data)) setKernels(res.data); })
+      .catch(() => { if (!cancelled) setKernels([]); });
+    return () => { cancelled = true; };
+  }, [isOpen]);
+
   if (!profile) return null;
 
   const handleBackdropClick = (e) => {
@@ -513,6 +526,33 @@ const EditProfileModal = ({
                     </span>
                   </div>
                 </label>
+              </div>
+
+              {/* Custom Chromium kernel */}
+              <div style={{ marginBottom: '20px', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700', marginBottom: '6px' }}>
+                  <ShieldCheck size={14} color="#10b981" style={{ flexShrink: 0 }} />
+                  Kernel Chromium riêng
+                </span>
+                <select
+                  className="input-field"
+                  value={profile.kernel_path || ''}
+                  onChange={(e) => onUpdateKernel && onUpdateKernel(profile.id, e.target.value)}
+                  style={{ width: '100%' }}
+                >
+                  <option value="">Mặc định (Playwright / Patchright ở trên)</option>
+                  {profile.kernel_path && !kernels.some((k) => k.name === profile.kernel_path) && (
+                    <option value={profile.kernel_path}>{profile.kernel_path} (không tìm thấy)</option>
+                  )}
+                  {kernels.map((k) => (
+                    <option key={k.name} value={k.name}>
+                      {k.name}{k.version ? ` — ${k.version}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <span style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                  Đặt kernel trong thư mục <code>kernels/</code>, hoặc chọn core GPM (<code>gpm_browser_chromium_core_*</code>, tự nhận từ GPM Login; tool sẽ tạo cấu hình fingerprint GPM cho profile). Khi chọn, profile chạy bằng kernel này (ưu tiên hơn tuỳ chọn Patchright); nếu kernel không tìm thấy sẽ tự quay về engine mặc định. Áp dụng từ lần mở trình duyệt tiếp theo.
+                </span>
               </div>
             </div>
 

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -37,8 +38,20 @@ const BulkEditModal = ({
     render_video_long: { active: false, value: 0 },
     render_concat_video: { active: false, value: 0 },
     use_fingerprint: { active: false, value: 1 },
-    use_patchright: { active: false, value: 1 }
+    use_patchright: { active: false, value: 1 },
+    kernel_path: { active: false, value: '' },
+    music_search: { active: false, value: '' }
   });
+
+  const [kernels, setKernels] = useState([]);
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    axios.get('/api/kernels')
+      .then((res) => { if (!cancelled && Array.isArray(res.data)) setKernels(res.data); })
+      .catch(() => { if (!cancelled) setKernels([]); });
+    return () => { cancelled = true; };
+  }, [isOpen]);
 
   const toggleFieldActive = (key) => {
     setFields((prev) => ({
@@ -209,6 +222,29 @@ const BulkEditModal = ({
                   <option value={1}>Bật (Mở Edit video chọn nhạc Favorites)</option>
                   <option value={0}>Tắt</option>
                 </select>
+              </div>
+
+              {/* Favorite Music */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: '600', minWidth: '210px', cursor: 'pointer', userSelect: 'none', paddingTop: '6px' }}>
+                  <input
+                    type="checkbox"
+                    checked={fields.music_search.active}
+                    onChange={() => toggleFieldActive('music_search')}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <Music size={14} color="#f59e0b" />
+                  Favorite Music
+                </label>
+                <textarea
+                  rows={2}
+                  disabled={!fields.music_search.active}
+                  className="input input-compact"
+                  style={{ flex: 1, resize: 'vertical', opacity: fields.music_search.active ? 1 : 0.4 }}
+                  placeholder='Nhập tên bài hát cách nhau bằng dấu phẩy, ví dụ: Bài 1, Bài 2'
+                  value={fields.music_search.value}
+                  onChange={(e) => updateFieldValue('music_search', e.target.value)}
+                />
               </div>
 
               {/* Remove Title */}
@@ -449,6 +485,34 @@ const BulkEditModal = ({
                 >
                   <option value={1}>Patchright (Google Chrome)</option>
                   <option value={0}>Playwright (Chromium)</option>
+                </select>
+              </div>
+
+              {/* Custom Chromium kernel */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: '600', minWidth: '210px', cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={fields.kernel_path.active}
+                    onChange={() => toggleFieldActive('kernel_path')}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <ShieldCheck size={14} color="#10b981" />
+                  Kernel Chromium riêng
+                </label>
+                <select
+                  disabled={!fields.kernel_path.active}
+                  className="input input-compact"
+                  style={{ flex: 1, opacity: fields.kernel_path.active ? 1 : 0.4 }}
+                  value={fields.kernel_path.value}
+                  onChange={(e) => updateFieldValue('kernel_path', e.target.value)}
+                >
+                  <option value="">Mặc định (bỏ kernel riêng)</option>
+                  {kernels.map((k) => (
+                    <option key={k.name} value={k.name}>
+                      {k.name}{k.version ? ` — ${k.version}` : ''}
+                    </option>
+                  ))}
                 </select>
               </div>
 

@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
+import { parseProfilesJson, importProfilesJson } from './profile-json-import.js';
+import { buildProfilesJsonExport } from './profile-json-export.js';
 import { FingerprintGenerator } from 'fingerprint-generator';
 import { FingerprintInjector } from 'fingerprint-injector';
 import { exec, spawn, execSync, execFileSync } from 'child_process';
@@ -40,6 +42,8 @@ import {
 } from './stats-store.js';
 import { runStatsForProfile } from './stats-automation.mjs';
 import { buildBrowserLaunchOptions, launchProfileBrowser } from './browser-launch.js';
+import { resolveKernelExecutable, readKernelVersion, listKernels } from './kernel-manager.js';
+import { alignToKernel, validateFingerprint } from './fingerprint.js';
 import { resolveDouyinVideoUrls, isDouyinVideoUrl, isDouyinNoteUrl, extractDouyinVideoId } from './douyin-resolver.js';
 import { randomUUID } from 'node:crypto';
 import { exportAllProfiles } from '../export_profiles.js';
@@ -338,6 +342,11 @@ try {
         db.exec('ALTER TABLE profiles ADD COLUMN use_patchright INTEGER DEFAULT 0;');
         console.log('Added use_patchright column to profiles table');
     }
+    const hasKernelPath = tableInfo.some((col) => col.name === 'kernel_path');
+    if (!hasKernelPath) {
+        db.exec('ALTER TABLE profiles ADD COLUMN kernel_path TEXT;');
+        console.log('Added kernel_path column to profiles table');
+    }
 } catch (err) {
     console.error('Migration error (fingerprint columns):', err);
 }
@@ -370,6 +379,23 @@ async function applyProfileFingerprint(browserContext, profile) {
         if (!profile || profile.use_fingerprint === 0) return;
         const fpData = getOrGenerateFingerprint(profile.id);
         if (!fpData) return;
+
+        // Custom-kernel profiles: the kernel owns the fingerprint, so do NOT layer JS
+        // overrides on top. Align the stored fingerprint to the kernel's Chrome version
+        // (a generator UA of Chrome 121 on a 157 kernel is a giveaway), validate, persist.
+        const kernelExe = resolveKernelExecutable(profile.kernel_path);
+        if (kernelExe) {
+            const kernelVersion = readKernelVersion(kernelExe);
+            const aligned = alignToKernel(fpData, kernelVersion);
+            const { errors, warnings } = validateFingerprint(aligned, { kernelVersion });
+            if (JSON.stringify(aligned) !== JSON.stringify(fpData)) {
+                db.prepare('UPDATE profiles SET fingerprint = ? WHERE id = ?').run(JSON.stringify(aligned), profile.id);
+            }
+            for (const e of errors) console.error(`[${profile.name}] Fingerprint ERROR: ${e}`);
+            for (const w of warnings) console.warn(`[${profile.name}] Fingerprint warning: ${w}`);
+            console.log(`[${profile.name}] Kernel profile (${kernelVersion || 'unknown version'}): JS fingerprint injection skipped`);
+            return;
+        }
 
         const fp = fpData.fingerprint || fpData;
         const userAgent = fp.navigator?.userAgent;
@@ -660,6 +686,60 @@ app.get('/api/profiles/export-cookies-json', async (req, res) => {
     }
 });
 
+// Read a profile's cookies from its browser profile on disk: open it, load tiktok.com,
+// collect the cookies and close it again. Used only when the DB has no cookies stored.
+async function readCookiesFromBrowserProfile(profile) {
+    const userDataDir = path.join(PROFILES_DIR, profile.name);
+    const browserOptions = buildBrowserLaunchOptions(profile, {
+        parseProxy,
+        log: (msg) => console.log(`[${profile.name}] ${msg}`)
+    });
+    // Cookies are read from the profile's on-disk storage, so run headless: no window pops up.
+    browserOptions.headless = true;
+    const context = await launchProfileBrowser(userDataDir, profile, browserOptions);
+    try {
+        await applyProfileFingerprint(context, profile);
+        const page = await context.newPage();
+        await page.goto('https://www.tiktok.com', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
+        await page.waitForTimeout(3000);
+        return await context.cookies();
+    } finally {
+        await context.close().catch(() => {});
+    }
+}
+
+// Export profiles to the same JSON format the import accepts (version 3).
+// Body: { profileIds?: string[] } — empty/omitted exports every profile.
+app.post('/api/profiles/export-import-json', async (req, res) => {
+    try {
+        const profileIds = Array.isArray(req.body?.profileIds) ? req.body.profileIds : [];
+        const isBusy = (row) => runningProfiles.has(row.id) || processingProfiles.has(row.id) || manualBrowsers.has(row.id) || avatarChangingProfiles.has(row.id);
+
+        const { data, stats } = await buildProfilesJsonExport({
+            db,
+            profileIds,
+            isBusy,
+            readBrowserCookies: readCookiesFromBrowserProfile,
+            log: (msg) => console.log(`[export-json] ${msg}`),
+        });
+
+        if (data.profiles.length === 0) {
+            return res.status(400).json({ error: 'Không tìm thấy profile nào để xuất' });
+        }
+
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const filename = `tiktok-profiles-export-${data.profiles.length}profiles-${dateStr}.json`;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Export-Stats');
+        res.setHeader('X-Export-Stats', encodeURIComponent(JSON.stringify(stats)));
+        res.send(JSON.stringify(data, null, 2));
+    } catch (err) {
+        console.error('Export import-json error:', err);
+        res.status(500).json({ error: `Xuất JSON thất bại: ${err.message}` });
+    }
+});
+
 app.get('/api/profiles', (req, res) => {
     const profiles = db
         .prepare(
@@ -924,6 +1004,29 @@ app.post('/api/profiles/import-csv', (req, res) => {
     } catch (err) {
         console.error('CSV import error:', err);
         res.status(500).json({ error: `Failed to import CSV: ${err.message}` });
+    }
+});
+
+// Import profiles from the JSON export format (version 3, incl. cookies).
+// Body: { jsonText: string } — see backend/profile-json-import.js for the mapping.
+app.post('/api/profiles/import-json', (req, res) => {
+    const { jsonText } = req.body;
+    if (!jsonText || typeof jsonText !== 'string') {
+        return res.status(400).json({ error: 'jsonText is required' });
+    }
+
+    try {
+        const data = parseProfilesJson(jsonText);
+        if (data.profiles.length === 0) {
+            return res.status(400).json({ error: 'File JSON không có profile nào' });
+        }
+        res.json(importProfilesJson(db, data, UPLOADS_DIR));
+    } catch (err) {
+        if (err.message.startsWith('File JSON')) {
+            return res.status(400).json({ error: err.message });
+        }
+        console.error('JSON import error:', err);
+        res.status(500).json({ error: `Failed to import JSON: ${err.message}` });
     }
 });
 
@@ -1615,6 +1718,14 @@ app.post('/api/system/clear-debug', (req, res) => {
     }
 });
 
+// GET /api/kernels — custom Chromium kernels found under <repo>/kernels
+app.get('/api/kernels', (req, res) => {
+    res.json(listKernels().map((k) => ({
+        name: k.name,
+        version: readKernelVersion(k.executable)
+    })));
+});
+
 app.patch('/api/profiles/:id', (req, res) => {
     const { name, video_folder, proxy, use_proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
     const profileId = req.params.id;
@@ -1732,6 +1843,10 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = req.body.use_patchright ? 1 : 0;
         db.prepare('UPDATE profiles SET use_patchright = ? WHERE id = ?').run(val, profileId);
     }
+    if (req.body.kernel_path !== undefined) {
+        const val = String(req.body.kernel_path || '').trim() || null;
+        db.prepare('UPDATE profiles SET kernel_path = ? WHERE id = ?').run(val, profileId);
+    }
 
     res.json({ success: true });
 });
@@ -1747,7 +1862,7 @@ app.post('/api/profiles/bulk-update', (req, res) => {
         'group_id', 'proxy', 'use_proxy', 'is_scheduled', 'auto_increment_schedule',
         'schedule_interval', 'set_music', 'upload_count', 'channel_ids', 'needs_render',
         'remove_title', 'need_content_check', 'render_video_long', 'render_concat_video',
-        'cookies', 'music_search', 'use_fingerprint', 'use_patchright'
+        'cookies', 'music_search', 'use_fingerprint', 'use_patchright', 'kernel_path'
     ];
 
     const booleanFields = [
