@@ -53,6 +53,7 @@ const useProfiles = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportResults, setExportResults] = useState(null);
   const [isExportingJson, setIsExportingJson] = useState(false);
+  const [isExportingImportJson, setIsExportingImportJson] = useState(false);
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
   const [statsProfileIds,  setStatsProfileIds]  = useState([]);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
@@ -597,6 +598,51 @@ const useProfiles = () => {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi dọn rác' });
     }
     setTimeout(() => setMessage(null), 5000);
+  };
+
+  // Export in the same version-3 JSON format the import accepts.
+  // Exports the ticked profiles, or every profile when none is ticked.
+  const handleExportImportJson = async () => {
+    if (isExportingImportJson) return;
+    setIsExportingImportJson(true);
+    setMessage({ type: 'info', text: 'Đang xuất JSON (cookie lấy từ DB, nếu không có sẽ đọc từ trình duyệt)...' });
+    try {
+      const res = await axios.post(
+        '/api/profiles/export-import-json',
+        { profileIds: Array.from(selectedForRun) },
+        { responseType: 'blob' }
+      );
+      const disposition = res.headers['content-disposition'] || '';
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `tiktok-profiles-export-${Date.now()}.json`;
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      let stats = null;
+      try {
+        const raw = res.headers['x-export-stats'];
+        stats = raw ? JSON.parse(decodeURIComponent(raw)) : null;
+      } catch { stats = null; }
+      const detail = stats
+        ? ` (cookie DB: ${stats.cookiesFromDb}, từ trình duyệt: ${stats.cookiesFromBrowser}, không có cookie: ${stats.noCookies})`
+        : '';
+      setMessage({ type: 'success', text: `Đã xuất ${filename}${detail}` });
+    } catch (err) {
+      let text = err.response?.data?.error || 'Lỗi khi xuất JSON';
+      if (err.response?.data instanceof Blob) {
+        try { text = JSON.parse(await err.response.data.text()).error || text; } catch { /* keep default */ }
+      }
+      setMessage({ type: 'error', text });
+    } finally {
+      setIsExportingImportJson(false);
+      setTimeout(() => setMessage(null), 8000);
+    }
   };
 
   const handleExportProfilesJson = async () => {
@@ -1406,6 +1452,8 @@ const useProfiles = () => {
     clearTrash,
     clearDebugFiles,
     handleExportProfilesJson,
+    handleExportImportJson,
+    isExportingImportJson,
     startBulkEngage,
     stopBulkEngage,
     isStatsModalOpen,

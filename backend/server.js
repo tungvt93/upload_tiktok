@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { parseProfilesJson, importProfilesJson } from './profile-json-import.js';
+import { buildProfilesJsonExport } from './profile-json-export.js';
 import { FingerprintGenerator } from 'fingerprint-generator';
 import { FingerprintInjector } from 'fingerprint-injector';
 import { exec, spawn, execSync, execFileSync } from 'child_process';
@@ -682,6 +683,60 @@ app.get('/api/profiles/export-cookies-json', async (req, res) => {
     } catch (err) {
         console.error('Export profiles json error:', err);
         res.status(500).json({ error: err.message });
+    }
+});
+
+// Read a profile's cookies from its browser profile on disk: open it, load tiktok.com,
+// collect the cookies and close it again. Used only when the DB has no cookies stored.
+async function readCookiesFromBrowserProfile(profile) {
+    const userDataDir = path.join(PROFILES_DIR, profile.name);
+    const browserOptions = buildBrowserLaunchOptions(profile, {
+        parseProxy,
+        log: (msg) => console.log(`[${profile.name}] ${msg}`)
+    });
+    // Cookies are read from the profile's on-disk storage, so run headless: no window pops up.
+    browserOptions.headless = true;
+    const context = await launchProfileBrowser(userDataDir, profile, browserOptions);
+    try {
+        await applyProfileFingerprint(context, profile);
+        const page = await context.newPage();
+        await page.goto('https://www.tiktok.com', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
+        await page.waitForTimeout(3000);
+        return await context.cookies();
+    } finally {
+        await context.close().catch(() => {});
+    }
+}
+
+// Export profiles to the same JSON format the import accepts (version 3).
+// Body: { profileIds?: string[] } — empty/omitted exports every profile.
+app.post('/api/profiles/export-import-json', async (req, res) => {
+    try {
+        const profileIds = Array.isArray(req.body?.profileIds) ? req.body.profileIds : [];
+        const isBusy = (row) => runningProfiles.has(row.id) || processingProfiles.has(row.id) || manualBrowsers.has(row.id) || avatarChangingProfiles.has(row.id);
+
+        const { data, stats } = await buildProfilesJsonExport({
+            db,
+            profileIds,
+            isBusy,
+            readBrowserCookies: readCookiesFromBrowserProfile,
+            log: (msg) => console.log(`[export-json] ${msg}`),
+        });
+
+        if (data.profiles.length === 0) {
+            return res.status(400).json({ error: 'Không tìm thấy profile nào để xuất' });
+        }
+
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const filename = `tiktok-profiles-export-${data.profiles.length}profiles-${dateStr}.json`;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Export-Stats');
+        res.setHeader('X-Export-Stats', encodeURIComponent(JSON.stringify(stats)));
+        res.send(JSON.stringify(data, null, 2));
+    } catch (err) {
+        console.error('Export import-json error:', err);
+        res.status(500).json({ error: `Xuất JSON thất bại: ${err.message}` });
     }
 });
 

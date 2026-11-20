@@ -54,6 +54,8 @@ const ProfilesView = ({
   clearDebugFiles,
   isExportingJson = false,
   handleExportProfilesJson,
+  handleExportImportJson,
+  isExportingImportJson = false,
   deleteSelectedProfiles,
   limitUploads = false,
   setLimitUploads,
@@ -231,6 +233,19 @@ const ProfilesView = ({
               color="#10B981"
               bg="rgba(16, 185, 129, 0.08)"
               border="rgba(16, 185, 129, 0.25)"
+            />
+            <IconActionButton
+              icon={<FileJson size={16} />}
+              onClick={handleExportImportJson}
+              disabled={isExportingImportJson}
+              title={isExportingImportJson
+                ? 'Đang xuất JSON...'
+                : (hasSelection
+                  ? 'Xuất các profile đã chọn sang JSON (định dạng để import lại)'
+                  : 'Xuất toàn bộ profile sang JSON (định dạng để import lại). Tick để chỉ xuất một số profile')}
+              color="#F59E0B"
+              bg="rgba(245, 158, 11, 0.08)"
+              border="rgba(245, 158, 11, 0.25)"
             />
           </div>
         </div>

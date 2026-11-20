@@ -39,7 +39,8 @@ const BulkEditModal = ({
     render_concat_video: { active: false, value: 0 },
     use_fingerprint: { active: false, value: 1 },
     use_patchright: { active: false, value: 1 },
-    kernel_path: { active: false, value: '' }
+    kernel_path: { active: false, value: '' },
+    music_search: { active: false, value: '' }
   });
 
   const [kernels, setKernels] = useState([]);
@@ -221,6 +222,29 @@ const BulkEditModal = ({
                   <option value={1}>Bật (Mở Edit video chọn nhạc Favorites)</option>
                   <option value={0}>Tắt</option>
                 </select>
+              </div>
+
+              {/* Favorite Music */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '8px 12px', borderRadius: '8px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: '600', minWidth: '210px', cursor: 'pointer', userSelect: 'none', paddingTop: '6px' }}>
+                  <input
+                    type="checkbox"
+                    checked={fields.music_search.active}
+                    onChange={() => toggleFieldActive('music_search')}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <Music size={14} color="#f59e0b" />
+                  Favorite Music
+                </label>
+                <textarea
+                  rows={2}
+                  disabled={!fields.music_search.active}
+                  className="input input-compact"
+                  style={{ flex: 1, resize: 'vertical', opacity: fields.music_search.active ? 1 : 0.4 }}
+                  placeholder='Nhập tên bài hát cách nhau bằng dấu phẩy, ví dụ: Bài 1, Bài 2'
+                  value={fields.music_search.value}
+                  onChange={(e) => updateFieldValue('music_search', e.target.value)}
+                />
               </div>
 
               {/* Remove Title */}
