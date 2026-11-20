@@ -228,8 +228,12 @@ const ProfilesView = ({
             <IconActionButton
               icon={<FileJson size={16} />}
               onClick={handleExportProfilesJson}
-              disabled={isExportingJson}
-              title={isExportingJson ? 'Đang xuất JSON...' : 'Xuất toàn bộ Profile và Cookies sang file JSON để chuyển sang tool mới tiktok-at'}
+              disabled={!hasSelection || isExportingJson}
+              title={isExportingJson
+                ? 'Đang xuất JSON...'
+                : (hasSelection
+                  ? 'Xuất các profile đã chọn (Profile + Cookies) sang file JSON để chuyển sang tool mới tiktok-at'
+                  : 'Tick checkbox trên các profile cần xuất sang tiktok-at')}
               color="#10B981"
               bg="rgba(16, 185, 129, 0.08)"
               border="rgba(16, 185, 129, 0.25)"
